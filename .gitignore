@@ -1,18 +1,43 @@
+# Build trees
 /build
-/models/*.gguf
-/research/kernel-rs/kernel/target
-/research/kernel-rs/build
-/mindwm/target
 /mindd/target
+/mindshell/target
+/mindwm/target
 /user/target
 /host/target
+/research/kernel-rs/build
+/research/kernel-rs/kernel/target
+/mindshell/ui/node_modules
+/mindshell/ui/dist
+
+# Build products
 *.img
 *.iso
-*.ppm
+*.pkg.tar.zst
+
+# Language models: the catalogue and licences are tracked, the weights are not
+/models/*.gguf
+
+# Generated images. Committed artwork and documentation screenshots are kept;
+# everything else (QEMU captures, UI screenshots, render dumps) is generated.
 *.png
+*.ppm
 !/packages/mindos-theme/*.png
 !/iso/syslinux/*.png
 !/iso/grub/*.png
 !/docs/img/*.png
-*.pkg.tar.zst
+!/mindshell/ui/assets/*.png
+
+# Logs and scratch output
+*.log
+*.orig
+*.rej
+
+# Editors and desktops
+*~
+*.sw[a-p]
+.vscode/
+.idea/
+.DS_Store
+
 __pycache__/
