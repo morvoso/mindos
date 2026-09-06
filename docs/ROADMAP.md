@@ -10,18 +10,22 @@
 - [x] `[mindos]` repository and archiso profile produce an ISO with the bundled model
 - [x] ISO boots in QEMU into mindwm with mindd answering (software rendering in the VM)
 - [x] Screenshot proof: red/white boot, dark Plymouth splash, dark compositor, Mind bar answering a question (`docs/img/`)
+- [x] Screenshot proof of the shell: dock and top bar, columns and tiles layouts with title bars, Settings › Mind, a Qwen3.5 answer without tool lines (`docs/img/shell-*.png`, `settings-mind.png`, `mind-answer.png`)
 
 ## Milestone 2 — installable gaming system
 - [x] `mindos-install` exercised end to end under UEFI in the libvirt dev VM (`docs/DEV-VM.md`); installed system boots into the session with mindd running
 - [x] `mindos-pkg`: one install path across the MindOS/Arch repositories, Flathub and the AUR, driven by the Mind (`docs/PACKAGES.md`); "install octopi" from the Mind bar builds it from the AUR in the dev VM
 - [x] Theme split: red only for GRUB/syslinux/kernel console; dark cyan HUD look for Plymouth, the compositor and the Mind bar
-- [x] `mindshell`: web-rendered desktop shell (Rust host + WebKitGTK + TypeScript UI) with bottom launcher panel, top bar (tray, clock), desktop widgets and KDE-style edit mode; compositor IPC for window lists, focus and minimize
+- [x] `mindshell`: web-rendered desktop shell (Rust host + WebKitGTK + TypeScript UI) with a centred dock, top bar (tray, layout switcher, clock), desktop widgets and KDE-style edit mode; compositor IPC for window lists, focus and minimize
+- [x] Three window layouts in `mindwm` (floating like KDE, tiles like Hyprland, columns like Niri) switched from the top bar, `Super+T` or Settings and remembered across sessions; server-side title bars in the MindOS look
+- [x] Settings app (Mind: tool lines, thinking, model catalog; Wallpaper; Displays with basic/advanced modes over the compositor's `set_output`; Desktop; About) and a Files app, both `mindshell --app` windows
+- [x] Qwen3.5 4B (Apache-2.0) as the default model, switchable at runtime from Settings or `mind model`, with catalog downloads and user-supplied GGUFs
 - [ ] `mindos-install` under BIOS firmware
 - [ ] `linux-mindos-nvidia-open` prebuilt modules (no DKMS build on first boot), `mind doctor` GPU checks
 - [ ] In-tree modules load with `module verification failed` (signature missing) on the current kernel build: keep module signatures intact or turn `MODULE_SIG` off
 - [ ] Steam, gamescope, Proton, MangoHud, GameMode verified with a real game on the 4090
 - [ ] `mindos-update.timer`: LLM-driven nightly update with report
-- [ ] Larger default model (7B–14B class) when a GPU is present; CUDA backend by default on NVIDIA
+- [ ] Pick a bigger catalog model (Qwen3.5 9B / 27B) automatically when a GPU with enough memory is present; CUDA backend by default on NVIDIA
 - [ ] Pointer constraints and relative pointer verified with a first-person game under XWayland
 
 ## Milestone 3 — the mind grows up

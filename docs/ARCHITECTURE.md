@@ -72,12 +72,20 @@ and the config schema are in `COMPOSITOR.md`.
   pointer-constraints, keyboard-shortcuts-inhibit, tearing-control,
   xdg-activation, foreign-toplevel, screencopy, data-device and primary
   selection, XWayland (Steam and most games are X11).
-* Window model: game mode by default. New toplevels open maximized to the
-  output's usable area; dialogs and transient windows are centred over their
-  parent; `Super+F` toggles fullscreen, `Super+M` maximize, `Super+Tab`
-  cycles, `Super+Q` closes, `Super+Enter` opens a terminal, `Super+Space`
-  opens the Mind bar. Server-side decorations are off (games draw their own
-  or none).
+* Window model: three layouts, switched with `Super+T`, the icon next to
+  the clock or the Settings app and remembered across sessions. *Floating*
+  (KDE-like: windows keep their size, open centred and cascade), *Tiles*
+  (Hyprland-like dwindle: every window is a tile, a new one splits the
+  focused tile) and *Columns* (Niri-like: full-height columns on a strip
+  that slides to the focused column). Dialogs float and are centred over
+  their parent; `Super+F` toggles fullscreen, `Super+M` maximize, `Super+Tab`
+  cycles, `Super+Q` closes, `Super+Enter` opens a terminal, a tap on Super
+  or `Super+Space` opens the Mind bar.
+* Server-side decorations in the MindOS look: a 30 px title bar (title,
+  minimise / maximise / close; close only on a tile) for windows that
+  negotiate server decorations (Qt, foot, SDL, Chromium, ...) and for the
+  shell's own app windows; GTK apps keep their client-side bars; games that
+  draw nothing get nothing.
 * The **Mind bar** is drawn by the compositor itself (text rasterised with
   fontdue into a memory buffer, uploaded as a texture): one field that is a
   launcher (type `steam`), a command line (`!pacman -Q | wc -l`) and a chat
@@ -90,8 +98,11 @@ and the config schema are in `COMPOSITOR.md`.
 * Talks to mindd over `/run/mindos/mind.sock`; reconnects when the daemon
   restarts.
 * Exposes a small IPC socket (`MINDWM_SOCKET`, newline-delimited JSON) with
-  the window list, focus/close/minimize requests, outputs and shortcuts, used
-  by mindshell (`docs/SHELL.md`).
+  the window list, focus/close/minimize requests, the layout mode, the
+  preferences (`$XDG_STATE_HOME/mindos/mindwm.json`), the outputs and their
+  modes (the Displays settings change resolution, refresh rate, scale,
+  position, rotation, VRR and the primary output through it) and shortcuts,
+  used by mindshell (`docs/SHELL.md`).
 
 ### mindshell (mindshell/)
 
@@ -101,11 +112,19 @@ WebKitGTK 6 (GPU compositing, one shared web process); the interface is
 HTML/CSS/TypeScript with no framework. Panels and widgets are data
 (`layout.json`); the KDE-style edit mode adds panels on any edge, adds,
 reorders and configures widgets, and places widgets on the desktop. The
-default layout is a bottom launcher panel (start button, pinned and running
-apps) and a top bar (Mind status, system tray, audio, network, battery,
-clock). The host provides the system side: desktop entries and icon themes,
-the StatusNotifier tray, power, audio, network, battery and stats, and the
-compositor IPC. Details in `SHELL.md`.
+default layout is a centred, transparent dock (pinned and running apps,
+macOS-style) and a top bar (Mind status, system tray, audio, network,
+battery, the window-layout switcher, clock). There is no launcher button:
+a tap on Super opens the Mind bar, which is the launcher. The same binary
+also opens ordinary windows (`mindshell --app settings|files`): the
+**Settings** app (Mind: tool lines on/off, thinking, model choice and the
+download catalog; Wallpaper; Displays with a basic and an advanced mode;
+Desktop: layout mode, panels, shortcuts; About) and the **Files** app (a
+small file manager: places, thumbnails, copy/move/trash, open with the
+default application, set as wallpaper). The host provides the system side:
+desktop entries and icon themes, the StatusNotifier tray, power, audio,
+network, battery and stats, the file operations and the compositor IPC.
+Details in `SHELL.md`.
 
 ### mindd and mind (mindd/)
 
@@ -116,6 +135,17 @@ The mind of the OS: a system daemon that owns the model and the tools.
   largest GGUF in `/var/lib/mindos/models` that fits the GPU when
   `path = "auto"`. The OpenAI-compatible API is bound to localhost and used
   only by mindd. An external server can be configured instead.
+* The default model is **Qwen3.5 4B (Q4_K_M, 2.7 GB, Apache-2.0)**: small
+  enough to sit beside a running game on any 8 GB GPU and reliable at tool
+  calling; `make model` downloads it with its licence for the ISO. The
+  choice is a symlink (`models_dir/default.gguf`) so any GGUF a user drops in
+  works, and the Settings app switches models at runtime: a catalog
+  (`/etc/mindos/model-catalog.json`: Qwen3.5 0.8B, 2B, 4B, 4B high quality,
+  9B, 27B, all Apache-2.0) is downloaded with `curl` into the models folder
+  with its licence, or the user points at a file of their own. "Think before
+  answering" (Qwen3.5 reasoning) is off by default for quick answers; both
+  settings live in `/var/lib/mindos/mind-prefs.json` and a change of either
+  restarts `llama-server`.
 * An **agent loop** with tool calling. Tools are typed Rust functions with a
   JSON schema: `system_info`, `gpu_info`, `list_packages`, `search_packages`,
   `check_updates`, `apply_updates`, `install_packages`, `remove_packages`,
@@ -135,8 +165,10 @@ The mind of the OS: a system daemon that owns the model and the tools.
   `/var/log/mindos/mind.jsonl`; `mind history` shows it.
 * Protocol: newline-delimited JSON over a Unix socket owned by `root:mindos`
   (mode 660). Requests: `hello`, `chat`, `confirm`, `tool_result`, `cancel`,
-  `status`, `history`. Events: `welcome`, `delta`, `tool_call`,
-  `tool_result`, `client_tool`, `done`, `status`, `history`, `error`.
+  `status`, `history`, `models`, `set_model`, `set_thinking`,
+  `download_model`, `cancel_download`. Events: `welcome`, `delta`,
+  `tool_call`, `tool_result`, `client_tool`, `done`, `status`, `history`,
+  `models`, `download`, `error`.
 * Configuration: `/etc/mindos/mind.toml` (model, daemon, policy sections).
 
 ### mindos-session (packages/mindos-session)
@@ -192,7 +224,9 @@ All builds run in `scripts/buildbox.sh`, a Docker container based on
 (`--root` for the privileged steps). `make` targets: `kernel`, `packages`,
 `repo` (`repo-add` into `build/repo`), `iso-stage` (profile + repo + model
 into `build/iso-profile`), `iso` (`mkarchiso` into `build/out`), `qemu` /
-`qemu-bios` (boot the ISO with KVM and virtio-gpu), `screenshot`, `qemu-stop`.
+`qemu-bios` (boot the ISO with KVM and virtio-gpu), `screenshot`, `qemu-stop`,
+`model` (download the default Qwen3.5 4B GGUF and its licence into `models/`
+for the ISO).
 
 ## Boot sequence
 
@@ -201,5 +235,5 @@ firmware → GRUB or syslinux (white on red)
   → linux-mindos (white-on-red VT) → plymouth "mindos" (dark, cyan)
   → systemd → mindd (llama-server loads the model) · greetd on VT 1
   → mindos-session → mindwm (DRM/KMS) → session-startup → mindos-shell.service
-  → panels, launcher, tray · Mind bar (Super+Space): "What should we do?"
+  → dock, top bar, tray · Mind bar (Super tap or Super+Space): "What should we do?"
 ```

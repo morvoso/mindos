@@ -1,12 +1,14 @@
 # mindshell — the MindOS desktop shell
 
-`mindshell` is the MindOS desktop environment: panels, launcher, taskbar,
-system tray, clock and desktop widgets. It is one small Rust process (the
-*host*) that opens layer-shell windows on the compositor and renders every
-window with WebKitGTK; the user interface itself is HTML/CSS/TypeScript
-(`mindshell/ui`). The host owns everything that needs the system (D-Bus,
-the compositor IPC, files, processes); the UI owns everything visual and is
-hot-reloadable.
+`mindshell` is the MindOS desktop environment: the dock, the top bar
+(system tray, clock, layout switcher), desktop widgets, and the Settings and
+Files apps. It is one small Rust process (the *host*) that opens layer-shell
+windows on the compositor and renders every window with WebKitGTK; the user
+interface itself is HTML/CSS/TypeScript (`mindshell/ui`). The host owns
+everything that needs the system (D-Bus, the compositor IPC, files,
+processes); the UI owns everything visual and is hot-reloadable. There is no
+launcher button: a tap on Super opens the compositor's Mind bar, which
+launches programs, runs commands and talks to the Mind.
 
 ```
 mindwm ──(layer-shell + IPC socket)── mindshell host ──(bridge)── WebKit UI
@@ -16,6 +18,8 @@ mindwm ──(layer-shell + IPC socket)── mindshell host ──(bridge)─�
                                           ├── wpctl / nmcli / sysfs / procfs
                                           └── ~/.config/mindos/shell/layout.json
 ```
+
+![The default desktop in the dev VM: top bar, centred dock, desktop clock](img/shell-desktop.png)
 
 Design rules: minimal, dark, futuristic. One accent (electric cyan). Red is
 reserved for the kernel/boot stages and never appears in the shell. No blur,
@@ -35,6 +39,7 @@ data with a nicer UI.
 | host config | `/etc/mindos/shell.toml`, `~/.config/mindos/shell.toml` |
 | user service | `mindos-shell.service` (systemd --user, `Restart=on-failure`), started by `/etc/xdg/mindos/autostart/50-mindshell` |
 | log | `journalctl --user -u mindos-shell` |
+| app windows | `mindshell --app settings [--page mind\|wallpaper\|displays\|shell\|about]`, `mindshell --app files [PATH]`: ordinary toplevels (app id `mindos-settings` / `mindos-files`) with the compositor's title bar; desktop entries `mindos-settings`, `mindos-files` (the default handler for `inode/directory`), `mindos-displays`, `mindos-wallpaper` |
 
 Environment: `WAYLAND_DISPLAY` (from the compositor), `MINDWM_SOCKET` (the
 compositor IPC socket, exported by mindwm to everything it spawns and imported
@@ -49,32 +54,44 @@ WebKit inspector, `mindshell --devtools` does the same).
 icon_theme = "breeze-dark"      # any installed XDG icon theme; hicolor is the fallback
 hardware_acceleration = "always" # always | never (WebKit compositing policy)
 terminal = "foot"
-
-[popups]
-launcher_width = 720
-launcher_height = 560
+icon_size = 48                   # dock / taskbar icon size in logical pixels
 ```
 
 ## Layout (`layout.json`)
+
+The default (`mindshell/data/layout.json`): a centred, transparent dock at
+the bottom and a full-width bar at the top.
 
 ```json
 {
   "version": 1,
   "panels": [
     {
-      "id": "bottom", "output": "*", "edge": "bottom",
-      "size": 48, "length": 100, "align": "center", "margin": 0,
-      "layer": "top", "opacity": 0.92,
+      "id": "dock",
+      "output": "*",
+      "edge": "bottom",
+      "size": 56,
+      "length": 0,
+      "align": "center",
+      "margin": 0,
+      "layer": "top",
+      "opacity": 0,
+      "autohide": false,
       "widgets": [
-        { "id": "start", "type": "start", "config": {} },
-        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "foot.desktop", "steam.desktop"] } },
-        { "id": "sp1", "type": "spacer", "config": { "expand": true } }
+        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "mindos-files.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } }
       ]
     },
     {
-      "id": "top", "output": "*", "edge": "top",
-      "size": 30, "length": 100, "align": "center", "margin": 0,
-      "layer": "top", "opacity": 0.92,
+      "id": "top",
+      "output": "*",
+      "edge": "top",
+      "size": 30,
+      "length": 100,
+      "align": "center",
+      "margin": 0,
+      "layer": "top",
+      "opacity": 0.92,
+      "autohide": false,
       "widgets": [
         { "id": "mind", "type": "mind", "config": {} },
         { "id": "sp2", "type": "spacer", "config": { "expand": true } },
@@ -82,6 +99,7 @@ launcher_height = 560
         { "id": "audio", "type": "audio", "config": {} },
         { "id": "net", "type": "network", "config": {} },
         { "id": "bat", "type": "battery", "config": {} },
+        { "id": "layout", "type": "layout-mode", "config": {} },
         { "id": "clock", "type": "clock", "config": { "seconds": false, "date": true, "hour24": true } }
       ]
     }
@@ -99,9 +117,13 @@ launcher_height = 560
   otherwise a connector name (`DP-1`, `Virtual-1`).
 * `edge`: `top | bottom | left | right`. `size` is the thickness in logical
   pixels (also the exclusive zone). `length` is a percentage of the edge
-  (100 = full width). `align`: `start | center | end` when `length < 100`.
-  `layer`: `top` (normal) or `bottom` (windows cover it, like a dock that
-  hides under maximized windows). `margin`: distance from the edge.
+  (100 = full width); `0` means *fit to content*: the panel is as long as its
+  widgets and grows and shrinks with them (the dock). `align`:
+  `start | center | end` when `length < 100`. `layer`: `top` (normal) or
+  `bottom` (windows cover it, like a dock that hides under maximized
+  windows). `margin`: distance from the edge. `opacity` is the panel
+  background's alpha (`0` = the widgets float on the wallpaper, macOS-style);
+  `autohide` slides the panel away until the pointer touches its edge.
 * Widgets are ordered left→right (or top→bottom on vertical panels). A
   `spacer` with `expand: true` pushes what follows to the far end.
 * Desktop widgets have a position/size in logical pixels on their output.
@@ -111,10 +133,10 @@ launcher_height = 560
 
 | type | container | what |
 |---|---|---|
-| `start` | panel | the MindOS button; opens the launcher popup |
-| `taskbar` | panel | pinned apps + running windows; click focus/minimize, middle-click new instance, right-click pin/unpin/close |
+| `taskbar` | panel | pinned apps + running windows (the dock); click focuses (a second click minimises in floating mode; tiles are never minimised, the columns strip slides to the window instead), middle-click new instance, right-click pin/unpin/close |
 | `spacer` | panel | flexible or fixed gap (`expand`, `size`) |
 | `clock` | panel | time (+ date); click opens the calendar popup |
+| `layout-mode` | panel | the compositor's window layout (floating / tiles / columns) as an icon; click opens the layout picker popup |
 | `tray` | panel | StatusNotifierItems; left-click activate, right-click menu, scroll |
 | `audio` | panel | default sink volume; scroll adjusts, click opens the slider popup, middle-click mutes |
 | `network` | panel | wired/wifi state |
@@ -138,7 +160,8 @@ and one `mindos://shell/` origin.
 |---|---|---|
 | `desktop` (one per output) | `background`, anchored to all edges, exclusive −1, keyboard `none` (`on-demand` while in edit mode) | wallpaper, desktop widgets, edit-mode toolbar, right-click menu |
 | `panel` (one per panel × output) | `top`/`bottom` per layout, anchored to the panel edge (+ both sides when `length` = 100), exclusive zone = `size` + `margin`, keyboard `none` | the panel and its widgets; in edit mode the window is enlarged by 140 px toward the screen centre (exclusive zone unchanged) to show the panel settings strip |
-| `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` | launcher, calendar, audio slider, power menu, tray menus, widget catalog, widget settings, context menus. Clicking the transparent area or pressing Escape closes it |
+| `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus. Clicking the transparent area or pressing Escape closes it |
+| `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings and Files apps; one process per window, `app.close` ends it |
 
 Every window loads `mindos://shell/app/index.html?kind=<kind>&id=<id>&output=<name>`
 (`&popup=<name>&arg=<json>` for popups). `?kind=preview` renders every
@@ -189,6 +212,21 @@ data so the UI can be developed in Chromium/Firefox.
 | `tray.menuClick` | `{ id, item }` |
 | `mind.toggle` | opens/closes the compositor's Mind bar |
 | `mind.status` | → `{ connected, ready, model }` |
+| `mind.request` | `{ request }` (a `{ type, ... }` object for mindd: `models`, `set_model`, `set_thinking`, `download_model`, `cancel_download`, `status`) → the first event the daemon answers with (the Settings page polls `models` while a download runs) |
+| `panel.fit` | `{ length }` (content length in logical pixels) from a `length: 0` panel: the host resizes the panel window and answers `{ length }` |
+| `wm.layoutMode` | → `{ mode, label, modes: [{ mode, label, description }] }` |
+| `wm.setLayoutMode` / `wm.cycleLayoutMode` | `{ mode }` / none → the new `{ mode, label }`; also broadcast as `layout_mode` |
+| `wm.outputs` | → `{ outputs }` with the compositor's full output records (modes, position, transform, VRR, primary) |
+| `wm.setOutput` | `{ name, width?, height?, refresh? (mHz), scale?, position?: [x, y], transform?, enabled?, vrr?, primary? }` → applied and persisted by the compositor |
+| `prefs.get` / `prefs.set` | none / `{ prefs }` → `{ prefs }` (compositor preferences: `layout_mode`, `mind_show_tools`, `primary_output`, `outputs`); `prefs` is broadcast on every change |
+| `wallpaper.list` | → `[{ path, name, folder }]`: the images in `/usr/share/mindos/wallpapers`, `~/.local/share/mindos/wallpapers` and `Wallpapers/` under the pictures folder (images are shown through `mindos://shell/thumb/`) |
+| `fs.home` / `fs.places` | → `{ path }` / `[{ name, path, icon, kind: "place" \| "drive", removable? }]` (home and the XDG user folders, the root file system, mounted drives) |
+| `fs.list` | `{ path, hidden? }` → `{ path, parent, entries: [{ name, path, dir, size, mtime, hidden, symlink, mime, icon, image }] }` |
+| `fs.stat` / `fs.mkdir` / `fs.rename` | `{ path }` / `{ path, name }` / `{ path, name }` |
+| `fs.copy` / `fs.move` / `fs.trash` | `{ paths, dest }` / `{ paths, dest }` / `{ paths }` → `{ count }` (`cp` / `mv`; trash goes through GIO, so it lands in the freedesktop trash) |
+| `fs.open` | `{ path }` → opens with the default application for the file's MIME type (GIO; `Terminal=true` entries get the configured terminal) |
+| `shell.openApp` | `{ name: "settings" \| "files", page?, arg? }` → spawns `mindshell --app` |
+| `app.close` / `app.setTitle` | none / `{ title }` (app windows only) |
 | `system.power` | `{ action: "shutdown" \| "reboot" \| "suspend" \| "logout" }` |
 | `system.stats` | → `{ cpu, memUsed, memTotal, gpu?: { util, temp, mem, memTotal, name }, load, uptime }` |
 | `audio.get` | → `{ volume, muted, sink }` |
@@ -211,11 +249,16 @@ data so the UI can be developed in Chromium/Firefox.
 | `popup_state` | `{ name, open, output }` |
 | `mind` | `{ connected, ready, model }` |
 | `audio` | `{ volume, muted }` |
-| `shortcut` | `{ name }` forwarded from the compositor (`launcher`, `overview`) |
+| `shortcut` | `{ name }` forwarded from the compositor (`overview`) |
+| `layout_mode` | `{ mode, label, modes? }` whenever the compositor's window layout changes |
+| `prefs` | `{ prefs }` whenever a compositor preference changes |
 
 `mindos://shell/icon/<name>?size=N` serves an icon from the configured theme
 (`hicolor` fallback, SVG or PNG); an absolute path in place of `<name>` serves
 that file. `mindos://shell/tray/<id>` serves a tray item's pixmap.
+`mindos://shell/file/<absolute path>` serves a file from disk (wallpapers,
+image previews) and `mindos://shell/thumb/<absolute path>?size=N` a scaled
+thumbnail of an image.
 `mindos://shell/app/...` serves the UI bundle; `mindos://shell/app/fonts/...`
 serves the bundle's own `fonts/` first and falls back to
 `/usr/share/fonts/mindos` and the system font directories.
@@ -243,9 +286,9 @@ What `mindshell` (the Rust host in `mindshell/`) does beyond the tables above:
   its action (`shell.setEditMode`, `popup.open`, `shell.exec`, ...) still gets
   that request answered.
 * **`shortcut` events are forwarded only.** The host broadcasts the
-  compositor's `shortcut` to every view and opens nothing itself; the `start`
-  widget on the first output answers `launcher`. Without a shell connected the
-  compositor falls back to its own Mind bar for the Super tap.
+  compositor's `shortcut` to every view and opens nothing itself. The
+  compositor keeps the Super tap for its own Mind bar (there is no launcher
+  popup) and only forwards `overview`.
 * **Extra methods.** `windows.unminimize`, `windows.toggleFullscreen`,
   `windows.toggleMaximize`, `mind.open`, `mind.close`, `outputs.list`.
   `shell.exec` also accepts `terminal: true`.
@@ -306,15 +349,21 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `launch` | `exec`, `terminal?` | spawn in the session |
 | `terminal` | | open the configured terminal |
 | `quit` | | end the session |
+| `get_layout_mode` | | `{ mode, label, modes: [{ mode, label, description }] }` |
+| `set_layout_mode` / `cycle_layout_mode` | `mode` / | the new `{ mode, label }`; every window is re-arranged and the choice is persisted |
+| `get_prefs` / `set_prefs` | / `prefs` (partial) | `{ prefs }`: `layout_mode`, `mind_show_tools` (show the Mind's tool lines), `primary_output`, `outputs: { name: { enabled, mode: "WxH@mHz", scale, position, transform, vrr } }`, stored in `$XDG_STATE_HOME/mindos/mindwm.json` |
+| `set_output` | `name`, then any of `width` + `height` + `refresh` (mHz), `scale`, `position: [x, y]`, `transform`, `enabled`, `vrr`, `primary` | applies the mode/scale/position/rotation/VRR/primary change, persists it and sends an `outputs` event |
 
 Events (`{"event":"...", ...}`):
 
 | event | fields |
 |---|---|
 | `windows` | `windows: [{ id, title, app_id, focused, fullscreen, maximized, minimized, x11, output }]`, `focused: id \| null` |
-| `outputs` | `outputs: [{ name, make, model, x, y, width, height, scale, refresh }]` (logical pixels; `refresh` in Hz, e.g. `240.0`) |
-| `shortcut` | `name`: `launcher` (a tap on Super alone), `overview` (`Super+W`). Only sent while someone is subscribed; without a shell the compositor opens its own Mind bar / window preview instead |
+| `outputs` | `outputs: [{ name, make, model, x, y, width, height, scale, refresh, transform, modes: [{ width, height, refresh (mHz), preferred, current }], enabled, vrr, vrr_supported, primary, mm_width, mm_height }]` (logical pixels; `refresh` in Hz, e.g. `240.0`) |
+| `shortcut` | `name`: `overview` (`Super+W`). Only sent while someone is subscribed; without a shell the compositor opens its own window preview instead. A tap on Super alone always opens the compositor's Mind bar |
 | `mindbar` | `open: bool` |
+| `layout_mode` | `mode`, `label`, `modes` (after `subscribe` and on every change) |
+| `prefs` | `prefs` (after `subscribe` and on every change) |
 
 Window ids are stable for the life of a window and follow creation order.
 Snapshots are sent whenever any listed field changes (map, unmap, title,
@@ -377,8 +426,8 @@ output.
 
 | name | arg |
 |---|---|
-| `launcher` | none (size from `config.popups.launcher_width/height`, default 760×560) |
 | `calendar` | `{ hour24? }` |
+| `layout-mode` | none (lists the compositor's modes, the current one marked) |
 | `audio` | none |
 | `power` | none |
 | `context-menu` | `{ title?, items: [{ label, icon?, disabled?, separator?, danger?, action? }] }` |
@@ -391,16 +440,33 @@ An `action` is one of `{ call, params }`, `{ popup, arg?, keyboard? }`,
 run it through the host so a popup window can act on another window's
 behalf.
 
-**`shortcut` events.** The host forwards them to every view; the `start`
-widget on the first output (per `outputs` order) toggles the launcher, so the
-host must not open the launcher itself as well. `layout.reset` is expected to
+**`shortcut` events.** The host forwards them to every view and opens
+nothing itself; only `overview` arrives today. `layout.reset` is expected to
 broadcast a `layout` event like `layout.save` does.
 
+**Fit panels.** A panel with `length: 0` measures its widgets after every
+render and calls `panel.fit` with the content length; the host resizes the
+window (keeping `align`) and the panel background is drawn by the UI, so
+`opacity: 0` gives free-floating icons.
+
+![Settings › Mind: tool lines, thinking, the model catalog](img/settings-mind.png)
+
+**App windows.** `?kind=app&app=<name>&page=<page>&arg=<json>` renders the
+Settings (`settings`) or Files (`files`) app in an ordinary window. Apps use
+the same widgets, theme and bridge as the panels; `app.setTitle` updates the
+compositor's title bar and `app.close` ends the process. Settings pages:
+`mind` (tool lines, thinking, model catalog and downloads through
+`mind.request`), `wallpaper` (`wallpaper.list`, the layout's
+`desktop.wallpaper`), `displays` (basic: resolution / refresh rate / scale
+per output; advanced: position, rotation, VRR, primary, enable, through
+`wm.outputs` / `wm.setOutput`), `shell` (layout mode, panels, edit mode),
+`about`.
+
 **Wallpaper.** With `desktop.wallpaper.mode = "image"` the desktop sets
-`background-image: url(file://<path>)` (a path that already has a scheme is
-used verbatim). The host must allow `file:` images from the `mindos://` origin
-or rewrite the path to a `mindos://shell/...` URL before handing the layout
-to the UI.
+`background-image: url(mindos://shell/file/<path>)` (a path that already has
+a scheme is used verbatim); `mode = "builtin"` draws the generated MindOS
+wallpaper. The Settings › Wallpaper page and the Files app's "Set as
+wallpaper" write `desktop.wallpaper` through `layout.save`.
 
 **Widget settings.** Widgets declare `settings: { key: { label, type, min?,
 max?, step?, options?, help? } }` with `type` one of `boolean | number |

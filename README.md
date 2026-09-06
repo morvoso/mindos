@@ -21,7 +21,7 @@ dark, minimal and futuristic: void black, electric cyan, chamfered HUD panels.
 │  │ Mind bar   │ │ Steam    │ │ Gamescope│ │ any Linux app      │   │
 │  │ (LLM chat) │ │ (X11)    │ │ (nested) │ │ (Wayland / X11)    │   │
 │  └─────┬──────┘ └──────────┘ └──────────┘ └────────────────────┘   │
-│  mindshell ── panels, launcher, tray, widgets: WebKit + TypeScript,  │
+│  mindshell ── dock, top bar, Settings, Files: WebKit + TypeScript,   │
 │               KDE-style edit mode, driven over the compositor IPC    │
 ├────────┼────────────────────────────────────────────────────────────┤
 │  mindd ── LLM daemon: llama.cpp, tools, policy, audit log            │
@@ -39,11 +39,9 @@ dark, minimal and futuristic: void black, electric cyan, chamfered HUD panels.
 | Component | Where | What it does |
 | --- | --- | --- |
 | `linux-mindos` | `packages/linux-mindos/` | Custom kernel: kernel.org 7.2.y + BORE scheduler + MindOS console theme, built with Clang ThinLTO for the local CPU (`X86_NATIVE_CPU`), 1000 Hz, full preemption, `amd-pstate`, ntsync. Headers package for DKMS (NVIDIA). |
-| `mindwm` | `mindwm/`, `packages/mindwm/` | The compositor (Rust, Smithay). Game mode by default: every window opens maximized, `Super+F` fullscreens, `Super+Space` opens the **Mind bar** (launcher, shell and LLM chat in one field). Wayland and XWayland. See `docs/COMPOSITOR.md`. |
-* [docs/PACKAGES.md](docs/PACKAGES.md) — package sources: MindOS/Arch repositories, Flathub and the AUR through `mindos-pkg`, and how the Mind installs software
-* [docs/DEV-VM.md](docs/DEV-VM.md) — persistent development VM on libvirt/virt-manager: shared source tree, snapshots, dev loops
-| `mindshell` | `mindshell/`, `packages/mindshell/` | The desktop shell: a lean Rust host that opens layer-shell windows and renders them with WebKitGTK; the UI is HTML/CSS/TypeScript. Bottom launcher panel (start button, pins, running apps), top bar (Mind status, tray, audio, network, battery, clock), desktop widgets, and a KDE-like **edit mode** to add panels and widgets. See `docs/SHELL.md`. |
-| `mindd` / `mind` | `mindd/`, `packages/mindos-mind/` | The mind: a system daemon that runs `llama-server` on a local GGUF model, exposes typed tools (packages, updates, services, journal, files, commands, kernel parameters, game library) behind an observe/change/forbidden policy, logs everything to `/var/log/mindos/mind.jsonl`, and speaks newline-delimited JSON on `/run/mindos/mind.sock`. `mind` is the CLI. |
+| `mindwm` | `mindwm/`, `packages/mindwm/` | The compositor (Rust, Smithay). Three window layouts (floating like KDE, tiles like Hyprland, columns like Niri), title bars in the MindOS look, `Super+F` fullscreens, a tap on Super opens the **Mind bar** (launcher, shell and LLM chat in one field). Wayland and XWayland. See `docs/COMPOSITOR.md`. |
+| `mindshell` | `mindshell/`, `packages/mindshell/` | The desktop shell: a lean Rust host that opens layer-shell windows and renders them with WebKitGTK; the UI is HTML/CSS/TypeScript. A centred dock (pins, running apps), top bar (Mind status, tray, audio, network, battery, layout switcher, clock), desktop widgets, a KDE-like **edit mode**, and the **Settings** (Mind, wallpaper, displays, desktop) and **Files** apps. See `docs/SHELL.md`. |
+| `mindd` / `mind` | `mindd/`, `packages/mindos-mind/` | The mind: a system daemon that runs `llama-server` on a local GGUF model (Qwen3.5 4B by default; any model from the catalog or your own file), exposes typed tools (packages, updates, services, journal, files, commands, kernel parameters, game library) behind an observe/change/forbidden policy, logs everything to `/var/log/mindos/mind.jsonl`, and speaks newline-delimited JSON on `/run/mindos/mind.sock`. `mind` is the CLI. |
 | `mindos-base` | `packages/mindos-base/` | Identity and tuning: `os-release`, kernel command line, sysctl (`vm.max_map_count`, BBR, split-lock mitigation off), zram, I/O scheduler and controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset. |
 | `mindos-session` | `packages/mindos-session/` | greetd config (`/etc/mindos/greetd.toml`), the `mindos-session` launcher, `session-startup`, the compositor defaults (`/etc/mindos/mindwm.toml`). |
 | `mindos-theme` | `packages/mindos-theme/` | White-on-red GRUB and console theme service (the boot stage), the dark animated Plymouth theme, the display fonts (Orbitron, Share Tech Mono), the system font rendering defaults for fontconfig, wallpaper and icon. |
@@ -96,3 +94,4 @@ runs in active mode, the NVIDIA open kernel modules are built by DKMS against
 * `docs/THEME.md` — the theme, stage by stage: red boot loader and console, dark cyan loading screen, compositor and shell.
 * `docs/PACKAGES.md` — where packages come from and how `mindos-pkg` and the Mind install them.
 * `docs/ROADMAP.md` — what is done and what is next.
+* `docs/DEV-VM.md` — persistent development VM on libvirt/virt-manager: shared source tree, snapshots, dev loops.

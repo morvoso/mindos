@@ -121,9 +121,11 @@ grid, cyan glow), `splash.png` (the boot screen as a still) and `mindos.png`
 
 `mindwm` clears to the void, draws the MINDOS wordmark and key hints on an
 empty desktop, and renders the Mind bar as a chamfered bg-0 panel with the
-cyan accent (`mindwm/src/mindbar.rs`, `docs/COMPOSITOR.md`). `mindshell`
-draws the panels, launcher and desktop widgets from the same tokens
-(`mindshell/ui/src/theme.css`, `docs/SHELL.md`). The compositor colours can
+cyan accent, and gives every decorated window the same 30 px title bar
+(`mindwm/src/mindbar.rs`, `mindwm/src/shell/ssd.rs`, `docs/COMPOSITOR.md`).
+`mindshell` draws the top bar, the dock, the Settings and Files apps and the
+desktop widgets from the same tokens (`mindshell/ui/src/theme.css`,
+`docs/SHELL.md`). The compositor colours can
 be changed in `/etc/mindos/mindwm.toml` (`[theme] background`, `foreground`,
 `accent`), but the defaults are the brand.
 
