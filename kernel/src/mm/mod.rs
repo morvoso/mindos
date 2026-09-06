@@ -1,6 +1,7 @@
 //! Memory management: physical frames, kernel heap, page tables, address spaces.
 
 pub mod addrspace;
+pub mod errno;
 pub mod heap;
 pub mod pmm;
 pub mod vmm;
@@ -29,6 +30,7 @@ pub const fn page_align_up(x: usize) -> usize {
 pub fn init(boot: &BootInfo) {
     pmm::init(boot);
     vmm::init(boot);
+    pmm::init_refcounts();
     let (total, free) = pmm::stats();
     klog!("mm", "physical memory: {} MiB total, {} MiB free; hhdm at {:#x}", total * 4 / 1024, free * 4 / 1024, boot.hhdm);
 }

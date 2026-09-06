@@ -36,8 +36,8 @@ pub fn init() {
     let scale = if fbi.width >= 2400 { 2 } else { 1 };
     let cols = (fbi.width as usize - 2 * PAD) / (font.width * scale);
     let rows = (fbi.height as usize - 2 * PAD) / (font.height * scale);
-    let bg = fbi.pixel(0x0c, 0x0f, 0x14);
-    let fg = fbi.pixel(0xc8, 0xcd, 0xd5);
+    let bg = fbi.pixel(0x8c, 0x10, 0x10);
+    let fg = fbi.pixel(0xff, 0xff, 0xff);
     fbi.fill_rect(0, 0, fbi.width, fbi.height, bg);
     let mut c = FbCon { fb: fbi, font, scale, cols, rows, cx: 0, cy: 0, cells: Vec::new(), fg, bg, esc: 0, escbuf: [0; 16], esclen: 0 };
     c.cells.resize(cols * rows, b' ');

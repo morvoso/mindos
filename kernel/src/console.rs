@@ -58,6 +58,17 @@ pub fn write_bytes(s: &[u8]) {
     }
 }
 
+/// Write user-visible output to the console devices without logging it.
+pub fn write_output(s: &[u8]) {
+    let c = CONSOLE.lock();
+    if c.serial {
+        crate::dev::serial::write(s);
+    }
+    if c.screen {
+        crate::dev::fbcon::write(s);
+    }
+}
+
 struct Writer;
 impl Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {

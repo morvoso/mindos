@@ -180,7 +180,90 @@ pub fn free_frames(pa: u64, n: usize) {
 }
 
 /// (total usable frames, free frames)
+pub unsafe fn total_frames() -> usize {
+    PMM.lock().frames
+}
+
 pub fn stats() -> (usize, usize) {
     let p = PMM.lock();
     (p.total_usable, p.free)
+}
+
+// ---- frame reference counts ---------------------------------------------------
+//
+// Frames handed out by the allocator start with a count of 1. Frames that were
+// never allocated (reserved, MMIO, boot modules) keep a count of 0 and are
+// immune to inc/dec: they are never freed.
+
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static mut REFCOUNTS: *mut AtomicU32 = core::ptr::null_mut();
+static mut REFCOUNT_FRAMES: usize = 0;
+
+pub fn init_refcounts() {
+    let frames = unsafe { crate::mm::pmm::total_frames() };
+    let bytes = frames * 4;
+    let layout = core::alloc::Layout::from_size_align(bytes, 64).unwrap();
+    let p = unsafe { alloc::alloc::alloc_zeroed(layout) } as *mut AtomicU32;
+    assert!(!p.is_null());
+    unsafe {
+        REFCOUNTS = p;
+        REFCOUNT_FRAMES = frames;
+    }
+}
+
+#[inline]
+fn refcell(pa: u64) -> Option<&'static AtomicU32> {
+    let idx = (pa >> 12) as usize;
+    unsafe {
+        if REFCOUNTS.is_null() || idx >= REFCOUNT_FRAMES {
+            None
+        } else {
+            Some(&*REFCOUNTS.add(idx))
+        }
+    }
+}
+
+/// Allocate a frame with reference count 1.
+pub fn alloc_frame_ref() -> Option<u64> {
+    let pa = alloc_frame()?;
+    if let Some(c) = refcell(pa) {
+        c.store(1, Ordering::Relaxed);
+    }
+    Some(pa)
+}
+pub fn alloc_zeroed_ref() -> Option<u64> {
+    let pa = alloc_zeroed()?;
+    if let Some(c) = refcell(pa) {
+        c.store(1, Ordering::Relaxed);
+    }
+    Some(pa)
+}
+
+pub fn ref_inc(pa: u64) {
+    if let Some(c) = refcell(pa) {
+        if c.load(Ordering::Relaxed) != 0 {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Drop a reference; frees the frame when the last one goes away.
+pub fn ref_dec(pa: u64) {
+    if let Some(c) = refcell(pa) {
+        let v = c.load(Ordering::Relaxed);
+        if v == 0 {
+            return;
+        }
+        if v == 1 {
+            c.store(0, Ordering::Relaxed);
+            free_frame(pa);
+        } else {
+            c.store(v - 1, Ordering::Relaxed);
+        }
+    }
+}
+
+pub fn ref_count(pa: u64) -> u32 {
+    refcell(pa).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0)
 }

@@ -84,7 +84,6 @@ def main():
         cmd += ['-drive', 'file=build/data.img,format=raw,if=none,id=hd1', '-device', 'virtio-blk-pci,drive=hd1']
     if not args.no_kvm and os.path.exists('/dev/kvm'):
         cmd += ['-enable-kvm', '-cpu', 'host']
-    cmd += ['-device', 'virtio-net-pci,netdev=n0', '-netdev', 'user,id=n0']
     open(serial_log, 'wb').close()
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     ok = True

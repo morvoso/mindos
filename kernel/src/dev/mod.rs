@@ -1,5 +1,10 @@
+pub mod chardev;
+pub mod evdev;
 pub mod fb;
 pub mod fbcon;
+pub mod fbdev;
 pub mod input;
 pub mod ps2;
+pub mod rtc;
 pub mod serial;
+pub mod tty;

@@ -17,7 +17,6 @@ QEMU_ARGS ?= -machine q35 -m $(MEM) -smp $(CPUS) -cpu host -enable-kvm \
              -device virtio-blk-pci,drive=hd0 \
              -drive file=$(BUILD)/data.img,format=raw,if=none,id=hd1 \
              -device virtio-blk-pci,drive=hd1 \
-             -device virtio-net-pci,netdev=n0 -netdev user,id=n0 \
              -no-reboot -no-shutdown -serial mon:stdio \
              -debugcon file:$(BUILD)/debugcon.log -global isa-debugcon.iobase=0xe9
 
