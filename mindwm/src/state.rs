@@ -1312,6 +1312,32 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         }
     }
 
+    /// Surfaces come and go under a pointer that does not move (a panel
+    /// maps, a window closes, a popup disappears): point the pointer at
+    /// whatever is under it now, as a real motion would, so the next click
+    /// lands on it. Called once per event-loop turn.
+    pub fn refresh_pointer_focus(&mut self) {
+        if self.pointer.is_grabbed() {
+            return;
+        }
+        let location = self.pointer.current_location();
+        let under = self.surface_under(location);
+        if under.as_ref().map(|(target, _)| target) == self.pointer.current_focus().as_ref() {
+            return;
+        }
+        let pointer = self.pointer.clone();
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial: crate::input_handler::next_serial(),
+                time: self.clock.now().as_millis(),
+            },
+        );
+        pointer.frame(self);
+    }
+
     /// Raise the bottom-most window to the top and focus it (Super+Tab).
     pub fn cycle_windows(&mut self) {
         let windows: Vec<WindowElement> = self.space.elements().cloned().collect();

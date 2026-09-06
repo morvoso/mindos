@@ -45,11 +45,19 @@ raises it; `Super+Tab` cycles.
 
 Layer-shell surfaces (the shell's panels, popups, wallpaper) follow the
 usual rules: a `top`/`overlay` surface with *exclusive* keyboard
-interactivity gets every key (a shell popup that asks for it), one with *on-demand* gets
-the keyboard when clicked, and one with *none* (a plain panel) never takes
-focus, and clicking it does not hand the focus to the window underneath
-either. `bottom`/`background` surfaces only get focus when clicked and set to
-on-demand, so clicking the wallpaper does not steal the keyboard from a game.
+interactivity gets every key (the Mind bar popup), one with *on-demand* gets
+the keyboard the moment it appears and whenever it is clicked (a context
+menu or the layout picker can be dismissed with Escape straight away), and
+one with *none* (a plain panel) never takes focus, and clicking it does not
+hand the focus to the window underneath either. `bottom`/`background`
+surfaces only get focus when clicked and set to on-demand, so clicking the
+wallpaper does not steal the keyboard from a game. When a popup that held the
+keyboard goes away, the top-most window gets it back, so a question to Mind
+does not leave the terminal deaf.
+
+The pointer is re-aimed once per event-loop turn: when a panel maps, a popup
+disappears or a window closes under a pointer that has not moved, the next
+click still lands on whatever is there now.
 
 Windows can be **minimised** through the IPC (the taskbar): a minimised window
 leaves the space, so it is not rendered, gets no input and no frame callbacks
@@ -90,10 +98,24 @@ parent, X11 transient and utility windows) float in every mode, centred over
 their parent. Maximised and fullscreen windows leave the tiling while they
 are maximised.
 
+![Columns: the strip scrolled to the third, focused column](img/shell-columns.png)
+![Tiles: dwindle split, close-only title bars](img/shell-tiles.png)
+
+In the two tiling modes the layout owns every tile's place and size, so a
+tile's title bar carries only the close glyph (no minimise, no maximise, no
+double-click to maximise; `Super+Shift+F` floats the window, which brings
+the full set back). The columns strip does not jump:
+when the focus moves to a column that is off-screen or half visible, from a
+click, `Super+Left/Right`, a new window or the dock, the strip slides there
+in 260 ms (ease-out, recomputed every frame). Clicking a dock icon of a
+running app focuses that window; in floating mode a second click minimises
+it, in the tiling modes tiles are never minimised.
+
 The title bar (`src/shell/ssd.rs`) is rendered on the CPU with the same
 tokens and fonts as the shell and only redrawn when its title, focus, hover
-or width changes; drag it to move the window, double-click to maximise, and
-the glyphs on the right minimise, maximise and close. A window that asks for
+or width changes; drag it to move the window, double-click to maximise
+(floating windows), and the glyphs on the right minimise, maximise and close
+(close only on a tile). A window that asks for
 client-side decorations gets none from the compositor; one that never asks
 gets none either, except the shell's app windows (`mindos-settings`,
 `mindos-files`), which open undecorated so they get the same bar as

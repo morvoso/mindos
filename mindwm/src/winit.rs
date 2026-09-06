@@ -461,6 +461,7 @@ pub fn run_winit() {
             state.space.refresh();
             state.refresh_focus();
             state.layout_refresh();
+            state.refresh_pointer_focus();
             state.refresh_decorations();
             state.ipc_refresh();
             state.popups.cleanup();
