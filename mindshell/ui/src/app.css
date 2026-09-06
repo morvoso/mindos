@@ -259,6 +259,19 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; app
 .task.active { background: rgb(var(--accent-a) / .08); }
 .task-ic { width: clamp(16px, calc(var(--panel-size) - 16px), 40px); height: auto; aspect-ratio: 1; object-fit: contain; transition: transform 120ms ease-out; }
 .task.minimized .task-ic { opacity: .45; }
+.task-ic-wrap { position: relative; display: flex; flex: none; }
+/* Windows-program badge: a small chamfered tag on the icon's corner. */
+.task-badge {
+  --chamfer: 3px;
+  position: absolute; right: -4px; bottom: -3px; display: none; align-items: center; justify-content: center;
+  width: 16px; height: 16px; color: var(--accent); background: var(--bg-1);
+  box-shadow: inset 0 0 0 1px var(--line-strong), 0 0 6px rgb(var(--accent-a) / .35);
+  clip-path: polygon(var(--chamfer) 0, 100% 0, 100% calc(100% - var(--chamfer)), calc(100% - var(--chamfer)) 100%, 0 100%, 0 var(--chamfer));
+  pointer-events: none;
+}
+.task.wine .task-badge { display: flex; }
+.task-badge svg { width: 10px; height: 10px; display: block; }
+.task.minimized .task-badge { opacity: .6; }
 .task-label { display: none; overflow: hidden; text-overflow: ellipsis; font: 500 13px/1 var(--ui); color: var(--fg); }
 .labels .task.running .task-label { display: block; }
 .vertical .task-label { display: none !important; }
@@ -283,6 +296,7 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; app
 .bare .task-ic { filter: drop-shadow(0 2px 4px rgb(0 0 0 / .55)); }
 .bare .task:hover { background: rgb(230 237 243 / .07); }
 .bare .task:hover .task-ic { transform: translateY(-2px) scale(1.06); }
+.bare .task-badge { right: -3px; bottom: -1px; }
 .bare.editing .panel-bar { background: rgb(10 13 18 / .6); }
 
 /* window layout mode */

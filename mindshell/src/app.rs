@@ -976,6 +976,8 @@ impl App {
                         "iconName": a.icon,
                         "categories": a.categories,
                         "terminal": a.terminal,
+                        "wmClass": a.wm_class,
+                        "wine": a.wine,
                     })
                 })
                 .collect(),

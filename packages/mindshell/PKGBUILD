@@ -4,7 +4,7 @@
 # the user service and the session autostart entry.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=5
+pkgrel=6
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings and Files apps, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://mindos.local"

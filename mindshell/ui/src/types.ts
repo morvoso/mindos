@@ -70,6 +70,8 @@ export interface WindowInfo {
   maximized: boolean;
   minimized: boolean;
   x11: boolean;
+  /** A Windows program running under Wine or Proton. */
+  wine?: boolean;
   output: string | null;
 }
 
@@ -81,6 +83,10 @@ export interface AppInfo {
   icon: string;
   categories: string[];
   terminal: boolean;
+  /** StartupWMClass from the desktop entry, when it names the windows' app_id. */
+  wmClass?: string;
+  /** The entry starts a Windows program through Wine. */
+  wine?: boolean;
 }
 
 export interface TrayItem {

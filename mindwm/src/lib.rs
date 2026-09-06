@@ -19,6 +19,7 @@ pub mod input_handler;
 pub mod ipc;
 pub mod layout;
 pub mod prefs;
+pub mod procinfo;
 pub mod render;
 pub mod shell;
 pub mod state;

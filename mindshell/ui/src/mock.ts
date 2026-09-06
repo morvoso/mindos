@@ -92,10 +92,16 @@ const APPS: AppInfo[] = [
   app('org.gnome.Calculator', 'Calculator', ['Utility', 'Calculator'], { comment: 'Do the maths' }),
   app('org.kde.ark', 'Ark', ['Utility', 'Archiving'], { comment: 'Archive manager' }),
   app('mangohud', 'MangoHud Config', ['Game', 'Settings'], { comment: 'Performance overlay' }),
+  app('wine-Programs-7-Zip-7-Zip File Manager', '7-Zip File Manager', ['Utility', 'Archiving'], {
+    comment: 'Archive manager (Windows)',
+    exec: 'env WINEPREFIX=/home/mind/.wine wine C:\\\\ProgramData\\\\7-Zip.lnk',
+    wmClass: '7zfm.exe',
+    wine: true,
+  }),
 ];
 
 function win(id: number, title: string, app_id: string, extra: Partial<WindowInfo> = {}): WindowInfo {
-  return { id, title, app_id, focused: false, fullscreen: false, maximized: true, minimized: false, x11: false, output: 'Virtual-1', ...extra };
+  return { id, title, app_id, focused: false, fullscreen: false, maximized: true, minimized: false, x11: false, wine: false, output: 'Virtual-1', ...extra };
 }
 
 function trayIcon(letter: string, hue: number): string {
@@ -136,6 +142,7 @@ export function installMock(): MindosGlobal {
     win(1, 'Steam', 'steam', { x11: true }),
     win(2, 'MindOS — Mozilla Firefox', 'firefox', { focused: true }),
     win(3, '~ — foot', 'foot'),
+    win(4, 'C:\\Program Files\\7-Zip\\', '7zfm.exe', { x11: true, wine: true, maximized: false }),
     win(4, 'Discord', 'discord', { x11: true }),
     win(5, 'mindshell — Visual Studio Code', 'code'),
     win(6, 'Lutris', 'lutris', { minimized: true }),

@@ -39,6 +39,8 @@ const P: Record<string, string> = {
   panel: '<rect x="3" y="4.5" width="18" height="15" rx="1"/><path d="M3 15.5h18"/>',
   note: '<path d="M5.5 3.5h9l4 4v13h-13z"/><path d="M14.5 3.5v4h4M8.5 12h7M8.5 15.5h7"/>',
   window: '<rect x="3" y="4.5" width="18" height="15" rx="1"/><path d="M3 9.5h18"/>',
+  // Four tilted panes: the "this is a Windows program" badge on dock icons.
+  winapp: '<path d="M3 6.2l7.4-1.1v6.6H3zM11.6 4.9L21 3.5v8.2h-9.4zM3 12.7h7.4v6.6L3 18.2zM11.6 12.7H21v8.2l-9.4-1.4z" fill="currentColor" stroke="none"/>',
   apps: '<circle cx="6" cy="6" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="18" cy="12" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="12" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>',
   gamepad: '<path d="M7 8h10a4.5 4.5 0 0 1 4.3 5.8l-1 3.2a2 2 0 0 1-3.3.7L15 15.5H9L7 17.7a2 2 0 0 1-3.3-.7l-1-3.2A4.5 4.5 0 0 1 7 8z"/><path d="M8 11v3M6.5 12.5h3M15.5 11.5h.01M17.5 13.5h.01"/>',
   code: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/>',

@@ -58,6 +58,8 @@ pub struct WindowInfo {
     pub maximized: bool,
     pub minimized: bool,
     pub x11: bool,
+    /// The window belongs to a Wine (or Proton) process: a Windows program.
+    pub wine: bool,
     pub output: Option<String>,
 }
 
@@ -777,6 +779,7 @@ mod tests {
                 maximized: true,
                 minimized: false,
                 x11: true,
+                wine: false,
                 output: Some("DP-1".into()),
             }],
             focused: Some(1),
@@ -786,6 +789,7 @@ mod tests {
         assert_eq!(line["focused"], 1);
         assert_eq!(line["windows"][0]["app_id"], "steam");
         assert_eq!(line["windows"][0]["output"], "DP-1");
+        assert_eq!(line["windows"][0]["wine"], false);
         let line: Value = serde_json::from_str(&shortcut_event("launcher")).unwrap();
         assert_eq!(line["name"], "launcher");
     }

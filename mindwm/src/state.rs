@@ -1505,13 +1505,13 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             .elements()
             .filter_map(|w| {
                 let output = self.space.outputs_for_element(w).first().map(|o| o.name());
-                window_info(w, focused.as_ref() == Some(w), false, output)
+                window_info(w, focused.as_ref() == Some(w), false, output, &self.display_handle)
             })
             .collect();
         windows.extend(
             self.minimized
                 .iter()
-                .filter_map(|m| window_info(&m.window, false, true, m.output.clone())),
+                .filter_map(|m| window_info(&m.window, false, true, m.output.clone(), &self.display_handle)),
         );
         windows.sort_by_key(|w| w.id);
         WindowsSnapshot {
@@ -1767,20 +1767,32 @@ fn window_is_fullscreen(window: &WindowElement) -> bool {
 
 /// The IPC view of one window; `None` for windows the shell should not list
 /// (override-redirect X11 windows, toplevels that have not drawn yet).
-fn window_info(window: &WindowElement, focused: bool, minimized: bool, output: Option<String>) -> Option<WindowInfo> {
-    let (title, app_id, fullscreen, maximized, x11) = if let Some(toplevel) = window.0.toplevel() {
+fn window_info(
+    window: &WindowElement,
+    focused: bool,
+    minimized: bool,
+    output: Option<String>,
+    dh: &DisplayHandle,
+) -> Option<WindowInfo> {
+    let (title, app_id, fullscreen, maximized, x11, pid) = if let Some(toplevel) = window.0.toplevel() {
         let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
             let data = states.data_map.get::<XdgToplevelSurfaceData>()?.lock().ok()?;
             Some((data.title.clone().unwrap_or_default(), data.app_id.clone().unwrap_or_default()))
         })
         .unwrap_or_default();
         let states = toplevel.current_state().states;
+        let pid = toplevel
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_credentials(dh).ok())
+            .map(|credentials| credentials.pid as u32);
         (
             title,
             app_id,
             states.contains(xdg_toplevel::State::Fullscreen),
             states.contains(xdg_toplevel::State::Maximized),
             false,
+            pid,
         )
     } else {
         #[cfg(feature = "xwayland")]
@@ -1795,6 +1807,7 @@ fn window_info(window: &WindowElement, focused: bool, minimized: bool, output: O
                 surface.is_fullscreen(),
                 surface.is_maximized(),
                 true,
+                surface.pid(),
             )
         }
         #[cfg(not(feature = "xwayland"))]
@@ -1817,6 +1830,7 @@ fn window_info(window: &WindowElement, focused: bool, minimized: bool, output: O
         maximized,
         minimized,
         x11,
+        wine: crate::procinfo::is_wine(pid),
         output,
     })
 }

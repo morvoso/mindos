@@ -1,6 +1,6 @@
 import * as bridge from '../bridge';
 import { h, reconcile } from '../dom';
-import { hashHue, letterIcon } from '../icons';
+import { hashHue, iconSvg, letterIcon } from '../icons';
 import { registerWidget } from './registry';
 import { outputPoint } from './common';
 import type { AppInfo, MenuAction, ShellState, WindowInfo } from '../types';
@@ -11,6 +11,8 @@ interface Group {
   label: string;
   windows: WindowInfo[];
   pinned: boolean;
+  /** A Windows program (Wine/Proton): the icon carries a badge saying so. */
+  wine: boolean;
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/\.desktop$/, '');
@@ -29,6 +31,11 @@ function appIndex(apps: AppInfo[]): Map<string, AppInfo> {
   const put = (k: string, a: AppInfo) => {
     if (k && !idx.has(k)) idx.set(k, a);
   };
+  // StartupWMClass is the entry's own statement of what its windows are
+  // called, so it wins over the guesses below (Wine's generated entries rely
+  // on it: the id is a menu path, the windows carry the exe name).
+  for (const a of apps) if (a.wmClass) put(norm(a.wmClass), a);
+  for (const a of apps) if (a.wmClass) put(norm(a.wmClass).replace(/\.exe$/, ''), a);
   for (const a of apps) put(norm(a.id), a);
   for (const a of apps) put(last(norm(a.id)), a);
   for (const a of apps) put(norm(execBase(a.exec)), a);
@@ -48,7 +55,7 @@ function buildGroups(state: ShellState, pins: string[]): Group[] {
   const byKey = new Map<string, Group>();
   for (const pin of pins) {
     const app = state.apps.find((a) => a.id === pin);
-    const g: Group = { key: `pin:${pin}`, app, label: app?.name ?? norm(pin), windows: [], pinned: true };
+    const g: Group = { key: `pin:${pin}`, app, label: app?.name ?? norm(pin), windows: [], pinned: true, wine: !!app?.wine };
     groups.push(g);
     if (app) byApp.set(app, g);
     else byKey.set(norm(pin), g);
@@ -57,12 +64,13 @@ function buildGroups(state: ShellState, pins: string[]): Group[] {
     const app = matchApp(idx, w.app_id);
     let g = app ? byApp.get(app) : byKey.get(norm(w.app_id));
     if (!g) {
-      g = { key: app ? `app:${app.id}` : `win:${norm(w.app_id) || w.id}`, app, label: app?.name ?? (w.app_id || w.title || 'Window'), windows: [], pinned: false };
+      g = { key: app ? `app:${app.id}` : `win:${norm(w.app_id) || w.id}`, app, label: app?.name ?? (w.app_id || w.title || 'Window'), windows: [], pinned: false, wine: !!app?.wine };
       groups.push(g);
       if (app) byApp.set(app, g);
       else byKey.set(norm(w.app_id), g);
     }
     g.windows.push(w);
+    if (w.wine) g.wine = true;
   }
   return groups;
 }
@@ -144,9 +152,12 @@ registerWidget({
         (g) => g.key,
         (g) => {
           const img = h('img', { class: 'task-ic', src: iconFor(g), alt: '', draggable: false });
+          const badge = h('span', { class: 'task-badge', title: 'Windows application (Wine)' });
+          badge.innerHTML = iconSvg('winapp', 9);
+          const icon = h('span', { class: 'task-ic-wrap' }, img, badge);
           const label = h('span', { class: 'task-label' });
           const dots = h('span', { class: 'task-dots' });
-          const item = h('div', { class: 'task', tabindex: -1 }, img, label, dots);
+          const item = h('div', { class: 'task', tabindex: -1 }, icon, label, dots);
           item.addEventListener('click', (e) => onClick(current.get(g.key) ?? g, e));
           item.addEventListener('auxclick', (e) => {
             if (e.button === 1) onClick(current.get(g.key) ?? g, e);
@@ -155,7 +166,7 @@ registerWidget({
           return item;
         },
         (item, g) => {
-          const img = item.firstElementChild as HTMLImageElement;
+          const img = item.firstElementChild!.firstElementChild as HTMLImageElement;
           const src = iconFor(g);
           if (img.getAttribute('src') !== src) img.src = src;
           const label = item.children[1] as HTMLElement;
@@ -163,7 +174,9 @@ registerWidget({
           const text = cfg.labels ? (focusedWin ?? g.windows[0])?.title || g.label : '';
           if (label.textContent !== text) label.textContent = text;
           label.style.maxWidth = `${Number(cfg.maxLabel) || 160}px`;
-          item.title = g.windows.length ? g.windows.map((w) => w.title).join('\n') : g.label;
+          const titles = g.windows.length ? g.windows.map((w) => w.title).join('\n') : g.label;
+          item.title = g.wine ? `${titles}\nWindows application (Wine)` : titles;
+          item.classList.toggle('wine', g.wine);
           item.classList.toggle('running', g.windows.length > 0);
           item.classList.toggle('active', g.windows.some((w) => w.focused));
           item.classList.toggle('minimized', g.windows.length > 0 && g.windows.every((w) => w.minimized));

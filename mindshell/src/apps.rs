@@ -18,6 +18,11 @@ pub struct AppEntry {
     pub icon_path: Option<String>,
     pub categories: Vec<String>,
     pub terminal: bool,
+    /// `StartupWMClass`: the app_id / WM_CLASS its windows carry when that
+    /// differs from the desktop id (Wine's generated entries: `notepad++.exe`).
+    pub wm_class: String,
+    /// The entry starts a Windows program through Wine (or Proton).
+    pub wine: bool,
     /// Lower-cased name, generic name, comment and keywords for matching.
     pub haystack: String,
 }
@@ -129,6 +134,7 @@ pub fn parse_desktop_entry(text: &str, id: &str, current_desktop: &[String]) -> 
     let mut keywords = String::new();
     let mut categories = Vec::new();
     let mut terminal = false;
+    let mut wm_class = String::new();
     let mut hidden = false;
     let mut is_app = true;
     let mut only_show_in: Option<Vec<String>> = None;
@@ -160,6 +166,7 @@ pub fn parse_desktop_entry(text: &str, id: &str, current_desktop: &[String]) -> 
                     .collect()
             }
             "Terminal" => terminal = value == "true",
+            "StartupWMClass" => wm_class = value.to_string(),
             "NoDisplay" | "Hidden" => hidden |= value == "true",
             "OnlyShowIn" => {
                 only_show_in = Some(value.split(';').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
@@ -187,7 +194,11 @@ pub fn parse_desktop_entry(text: &str, id: &str, current_desktop: &[String]) -> 
     if exec.is_empty() {
         return None;
     }
-    let haystack = format!("{} {} {} {}", name, generic, comment, keywords).to_lowercase();
+    let wine = exec_is_wine(&exec);
+    let mut haystack = format!("{} {} {} {}", name, generic, comment, keywords).to_lowercase();
+    if wine {
+        haystack.push_str(" windows wine");
+    }
     Some(AppEntry {
         id: id.to_string(),
         name,
@@ -197,8 +208,28 @@ pub fn parse_desktop_entry(text: &str, id: &str, current_desktop: &[String]) -> 
         icon_path: None,
         categories,
         terminal,
+        wm_class,
+        wine,
         haystack,
     })
+}
+
+/// Does this (cleaned) Exec line run a Windows program under Wine? Wine's
+/// menu builder writes `env WINEPREFIX="..." wine C:\\...`; hand-written
+/// entries use `wine`, `wine64` or `wine start`; Proton-backed launchers
+/// pass the exe through `proton run`.
+pub fn exec_is_wine(exec: &str) -> bool {
+    let mut words = exec.split_whitespace().peekable();
+    // Skip `env` and its VAR=value assignments.
+    if words.peek() == Some(&"env") {
+        words.next();
+        while words.peek().is_some_and(|w| w.contains('=')) {
+            words.next();
+        }
+    }
+    let Some(program) = words.next() else { return false };
+    let program = program.rsplit('/').next().unwrap_or(program);
+    matches!(program, "wine" | "wine64" | "wine-preloader" | "wine64-preloader" | "proton")
 }
 
 /// Strip desktop-entry field codes (%f, %U, ...) so the string can be run by `sh -c`.
@@ -271,6 +302,24 @@ mod tests {
     }
 
     #[test]
+    fn recognises_wine_entries() {
+        assert!(exec_is_wine("env WINEPREFIX=/home/u/.wine wine C:\\\\Program\\ Files\\\\7-Zip\\\\7zFM.exe"));
+        assert!(exec_is_wine("wine64 notepad"));
+        assert!(exec_is_wine("/opt/wine-staging/bin/wine start /unix /x.exe"));
+        assert!(exec_is_wine("env A=1 B=2 proton run game.exe"));
+        assert!(!exec_is_wine("winetricks"));
+        assert!(!exec_is_wine("env FOO=bar firefox"));
+        assert!(!exec_is_wine("lutris lutris:rungameid/3"));
+        assert!(!exec_is_wine(""));
+
+        let text = "[Desktop Entry]\nType=Application\nName=7-Zip File Manager\nExec=env WINEPREFIX=\"/home/u/.wine\" wine C:\\\\\\\\ProgramData\\\\\\\\7-Zip.lnk\nIcon=A0B1_7zFM.0\nStartupWMClass=7zfm.exe\n";
+        let app = parse_desktop_entry(text, "wine-Programs-7-Zip-7-Zip File Manager.desktop", &["MindOS".into()]).unwrap();
+        assert!(app.wine);
+        assert_eq!(app.wm_class, "7zfm.exe");
+        assert!(app.haystack.contains("windows"));
+    }
+
+    #[test]
     fn parses_entries() {
         let text = "[Desktop Entry]\nType=Application\nName=Steam\nComment=Games\nExec=steam %U\nIcon=steam\nCategories=Game;Network;\nTerminal=false\n\n[Desktop Action Store]\nName=Store\nExec=steam store\n";
         let app = parse_desktop_entry(text, "steam.desktop", &["MindOS".into()]).unwrap();
@@ -279,6 +328,8 @@ mod tests {
         assert_eq!(app.icon, "steam");
         assert_eq!(app.categories, vec!["Game", "Network"]);
         assert!(!app.terminal);
+        assert!(!app.wine);
+        assert_eq!(app.wm_class, "");
         assert!(app.haystack.contains("games"));
 
         let hidden = "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true\n";

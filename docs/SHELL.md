@@ -133,7 +133,7 @@ the bottom and a full-width bar at the top.
 
 | type | container | what |
 |---|---|---|
-| `taskbar` | panel | pinned apps + running windows (the dock); click focuses (a second click minimises in floating mode; tiles are never minimised, the columns strip slides to the window instead), middle-click new instance, right-click pin/unpin/close |
+| `taskbar` | panel | pinned apps + running windows (the dock); click focuses (a second click minimises in floating mode; tiles are never minimised, the columns strip slides to the window instead), middle-click new instance, right-click pin/unpin/close. Windows programs (a window with `wine: true`, or an entry with `wine: true`) show a small four-pane badge on the icon's corner and say so in the tooltip; the entry is matched to its windows through `wmClass` first |
 | `spacer` | panel | flexible or fixed gap (`expand`, `size`) |
 | `clock` | panel | time (+ date); click opens the calendar popup |
 | `layout-mode` | panel | the compositor's window layout (floating / tiles / columns) as an icon; click opens the layout picker popup |
@@ -203,7 +203,7 @@ data so the UI can be developed in Chromium/Firefox.
 | `windows.close` | `{ id }` |
 | `windows.minimize` | `{ id }` |
 | `windows.toggleMinimize` | `{ id }` |
-| `apps.list` | → `[{ id, name, comment, exec, icon, categories, terminal }]` (`icon` is a `mindos://shell/icon/...` URL) |
+| `apps.list` | → `[{ id, name, comment, exec, icon, categories, terminal, wmClass, wine }]` (`icon` is a `mindos://shell/icon/...` URL; `wmClass` is the entry's `StartupWMClass`; `wine` marks an entry whose Exec runs `wine`/`proton`, such as the ones Wine's menu builder writes under `applications/wine/`) |
 | `apps.launch` | `{ id }` or `{ exec, terminal }` |
 | `tray.items` | → `[{ id, title, tooltip, icon, status, hasMenu }]` |
 | `tray.activate` / `tray.secondaryActivate` | `{ id, x, y }` |
@@ -358,7 +358,7 @@ Events (`{"event":"...", ...}`):
 
 | event | fields |
 |---|---|
-| `windows` | `windows: [{ id, title, app_id, focused, fullscreen, maximized, minimized, x11, output }]`, `focused: id \| null` |
+| `windows` | `windows: [{ id, title, app_id, focused, fullscreen, maximized, minimized, x11, wine, output }]`, `focused: id \| null`. `wine` is true when the window's process runs under Wine or Proton (a Windows program), judged from `/proc/<pid>/exe` and `WINELOADER` in its environment |
 | `outputs` | `outputs: [{ name, make, model, x, y, width, height, scale, refresh, transform, modes: [{ width, height, refresh (mHz), preferred, current }], enabled, vrr, vrr_supported, primary, mm_width, mm_height }]` (logical pixels; `refresh` in Hz, e.g. `240.0`) |
 | `shortcut` | `name`: `overview` (`Super+W`). Only sent while someone is subscribed; without a shell the compositor opens its own window preview instead. A tap on Super alone always opens the compositor's Mind bar |
 | `mindbar` | `open: bool` |
