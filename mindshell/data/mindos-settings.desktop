@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+GenericName=MindOS Settings
+Comment=Mind, wallpaper, displays and the shell
+Exec=mindshell --app settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;
+Keywords=mind;model;wallpaper;display;monitor;resolution;refresh;shell;
+StartupWMClass=mindos-settings

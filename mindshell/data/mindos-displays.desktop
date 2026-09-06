@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Displays
+Comment=Resolution, refresh rate, scale and arrangement of your monitors
+Exec=mindshell --app settings --page displays
+Icon=preferences-desktop-display
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=monitor;screen;resolution;refresh;hz;scale;vrr;
+StartupWMClass=mindos-settings
+NoDisplay=false

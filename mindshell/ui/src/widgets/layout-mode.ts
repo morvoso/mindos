@@ -1,0 +1,89 @@
+// The window layout mode switch: shows the compositor's current mode next to
+// the clock; click for the chooser, middle-click to cycle (Super+T).
+
+import * as bridge from '../bridge';
+import { h } from '../dom';
+import { icon } from '../icons';
+import { registerWidget } from './registry';
+import { panelItem } from './common';
+
+export interface ModeInfo {
+  name: string;
+  label: string;
+  icon: string;
+  like: string;
+  blurb: string;
+  hint: string;
+}
+
+/** The three modes mindwm offers, in the order Super+T cycles them. */
+export const MODES: ModeInfo[] = [
+  {
+    name: 'floating',
+    label: 'Floating',
+    icon: 'mode-floating',
+    like: 'like KDE',
+    blurb: 'Windows open where they like and overlap. Drag them by the title bar, maximise or snap them.',
+    hint: 'Super+M maximise · Super+F full screen',
+  },
+  {
+    name: 'dwindle',
+    label: 'Tiles',
+    icon: 'mode-tiles',
+    like: 'like Hyprland',
+    blurb: 'Every window gets a tile; each new one splits the focused tile in half. Nothing overlaps.',
+    hint: 'Super+arrows focus · Super+Shift+arrows move · Super+Shift+F float',
+  },
+  {
+    name: 'columns',
+    label: 'Columns',
+    icon: 'mode-columns',
+    like: 'like Niri',
+    blurb: 'Windows line up in columns on an endless strip that scrolls sideways. Great on ultrawides.',
+    hint: 'Super+R column width · Super+arrows focus',
+  },
+];
+
+export function modeInfo(name: string | undefined): ModeInfo {
+  return MODES.find((m) => m.name === name) ?? { name: name ?? '', label: name ? name[0].toUpperCase() + name.slice(1) : 'Layout', icon: 'layout', like: '', blurb: '', hint: '' };
+}
+
+registerWidget({
+  type: 'layout-mode',
+  name: 'Window layout',
+  description: 'Shows how windows are arranged (floating, tiles or columns). Click to change it, middle-click to cycle.',
+  icon: 'layout',
+  containers: ['panel'],
+  defaults: { label: false },
+  settings: { label: { label: 'Show the mode name', type: 'boolean' } },
+  create(ctx) {
+    const el = panelItem(ctx, 'w-layout-mode');
+    const ic = h('span', { class: 'w-ic' });
+    const label = h('span', { class: 'w-label' });
+    el.append(ic, label);
+    let cfg = ctx.config;
+    const render = () => {
+      const info = modeInfo(ctx.store.layoutMode?.mode);
+      ic.replaceChildren(icon(info.icon, 18));
+      label.textContent = info.label;
+      label.hidden = !cfg.label || !!ctx.panel?.vertical;
+      el.title = `Window layout: ${info.label}${info.like ? ` (${info.like})` : ''} · click to change · Super+T cycles`;
+      el.dataset.mode = info.name;
+    };
+    render();
+    if (!ctx.store.layoutMode) void ctx.store.fetchLayoutMode();
+    ctx.store.bind(el, 'layoutMode', render);
+    ctx.store.bind(el, 'popups', () => el.classList.toggle('open', ctx.store.popups.has('layout-mode')));
+    el.addEventListener('click', () => ctx.togglePopup('layout-mode', {}, { anchor: ctx.anchorOf(el) }));
+    el.addEventListener('auxclick', (e) => {
+      if (e.button === 1) bridge.send('wm.cycleLayoutMode');
+    });
+    return {
+      el,
+      update(c) {
+        cfg = c;
+        render();
+      },
+    };
+  },
+});

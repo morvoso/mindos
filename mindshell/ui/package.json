@@ -1,0 +1,17 @@
+{
+  "name": "mindshell-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The MindOS desktop shell user interface (vanilla TypeScript, rendered by the mindshell host in WebKitGTK)",
+  "license": "MIT",
+  "scripts": {
+    "build": "bash build.sh dist",
+    "dev": "bash build.sh dist && esbuild src/main.ts --bundle --format=iife --target=es2022 --outfile=dist/app.js --watch=forever",
+    "check": "tsc --noEmit",
+    "shot": "bash build.sh dist && bash shot.sh"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.0"
+  }
+}

@@ -1,0 +1,81 @@
+# Maintainer: MindOS <build@mindos.local>
+# The MindOS desktop shell: the Rust host (../../mindshell) plus the TypeScript
+# UI bundle (../../mindshell/ui, built with esbuild), the default layout,
+# the user service and the session autostart entry.
+pkgname=mindshell
+pkgver=0.1.0
+pkgrel=5
+pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings and Files apps, all rendered by WebKitGTK"
+arch=(x86_64)
+url="https://mindos.local"
+license=(MIT OFL-1.1)
+# Only what the binary links against plus an icon theme; the runtime tools the
+# host shells out to (wpctl, nmcli, ip, xdg-open, systemctl) come from the
+# mindos-base / mindos-session metapackages, and those cannot be listed here:
+# `makepkg -s` in the build box resolves dependencies from the Arch repos only.
+depends=(glibc gcc-libs gtk4 webkitgtk-6.0 gtk4-layer-shell glib2 libsoup3
+         breeze-icons hicolor-icon-theme)
+optdepends=('mindos-session: starts the shell from the session autostart directory'
+            'mindos-theme: Orbitron in /usr/share/fonts/mindos and the system font rendering defaults (the UI bundle ships its own copies of Inter, JetBrains Mono and Orbitron)'
+            'wireplumber: audio widget (wpctl)'
+            'networkmanager: network widget (nmcli)'
+            'iproute2: IP address in the network widget'
+            'xdg-utils: open external links from the shell'
+            'gvfs: trash and removable drives in the Files app'
+            'nvidia-utils: GPU statistics in the system monitor widgets'
+            'papirus-icon-theme: alternative icon theme (icon_theme in shell.toml)')
+makedepends=(rust clang lld rsync esbuild pkgconf)
+backup=(etc/mindos/shell.toml)
+options=(!lto !debug)
+
+_srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export CARGO_HOME="${CARGO_HOME:-$_srcroot/build/cargo-home}"
+
+prepare() {
+  rm -rf "$srcdir/mindshell"
+  rsync -a --exclude target --exclude .git --exclude ui/node_modules --exclude ui/dist \
+    -- "$_srcroot/mindshell/" "$srcdir/mindshell/"
+  cd "$srcdir/mindshell"
+  cargo fetch
+}
+
+build() {
+  cd "$srcdir/mindshell"
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=x86-64-v3"
+  cargo build --release --target-dir "$srcdir/target"
+  bash "$srcdir/mindshell/ui/build.sh" "$srcdir/ui-dist"
+}
+
+check() {
+  cd "$srcdir/mindshell"
+  cargo test --release --target-dir "$srcdir/target"
+}
+
+package() {
+  install -Dm755 "$srcdir/target/release/mindshell" "$pkgdir/usr/bin/mindshell"
+
+  # UI bundle.
+  install -dm755 "$pkgdir/usr/share/mindos/shell/ui"
+  cp -a "$srcdir/ui-dist/." "$pkgdir/usr/share/mindos/shell/ui/"
+  find "$pkgdir/usr/share/mindos/shell/ui" -type d -exec chmod 755 {} + -o -type f -exec chmod 644 {} +
+
+  # Default layout and configuration.
+  install -Dm644 "$srcdir/mindshell/data/layout.json" "$pkgdir/usr/share/mindos/shell/layout.json"
+  install -Dm644 "$srcdir/mindshell/data/shell.toml"  "$pkgdir/etc/mindos/shell.toml"
+
+  # systemd --user service and the session autostart entry that starts it.
+  install -Dm644 "$srcdir/mindshell/data/mindos-shell.service" "$pkgdir/usr/lib/systemd/user/mindos-shell.service"
+  install -Dm755 "$srcdir/mindshell/data/50-mindshell" "$pkgdir/etc/xdg/mindos/autostart/50-mindshell"
+
+  # The Settings and Files apps (the same binary with --app) and the folder default.
+  for entry in mindos-settings mindos-displays mindos-wallpaper mindos-files; do
+    install -Dm644 "$srcdir/mindshell/data/$entry.desktop" "$pkgdir/usr/share/applications/$entry.desktop"
+  done
+  install -Dm644 "$srcdir/mindshell/data/mimeapps.list" "$pkgdir/usr/share/applications/mimeapps.list"
+
+  install -Dm644 "$srcdir/mindshell/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+  if [[ -d "$srcdir/mindshell/ui/fonts" ]]; then
+    install -dm755 "$pkgdir/usr/share/licenses/$pkgname"
+    install -m644 "$srcdir/mindshell/ui/fonts"/OFL-*.txt "$pkgdir/usr/share/licenses/$pkgname/" 2>/dev/null || true
+  fi
+}

@@ -1,0 +1,10 @@
+#!/bin/bash
+# Start the MindOS desktop shell for this session. Run by session-startup once
+# the compositor's Wayland socket is up (WAYLAND_DISPLAY, DISPLAY and
+# MINDWM_SOCKET are set in the environment).
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-system-running >/dev/null 2>&1; then
+  systemctl --user import-environment WAYLAND_DISPLAY DISPLAY MINDWM_SOCKET XDG_CURRENT_DESKTOP \
+    XDG_SESSION_TYPE XDG_SESSION_DESKTOP 2>/dev/null
+  exec systemctl --user restart mindos-shell.service
+fi
+exec setsid -f mindshell >/dev/null 2>&1

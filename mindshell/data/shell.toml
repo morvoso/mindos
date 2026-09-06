@@ -1,0 +1,12 @@
+# MindOS shell (mindshell) configuration. Overlay: ~/.config/mindos/shell.toml.
+# Every key is optional; these are the defaults.
+
+[shell]
+# XDG icon theme for application and tray icons (hicolor is always a fallback).
+icon_theme = "breeze-dark"
+# WebKit compositing: "always" or "never" (try "never" on a GPU without working GL).
+hardware_acceleration = "always"
+# Terminal emulator for desktop entries with Terminal=true.
+terminal = "foot"
+# Logical pixel size requested for application icons.
+icon_size = 48

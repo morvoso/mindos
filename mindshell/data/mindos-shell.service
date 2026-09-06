@@ -1,0 +1,22 @@
+[Unit]
+Description=MindOS desktop shell (panels, dock, tray, desktop widgets)
+Documentation=file:///usr/share/doc/mindshell/README.md
+PartOf=graphical-session.target
+After=graphical-session.target
+# Never hold the session hostage with a crash loop: five restarts a minute is enough.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+# The compositor starts this through /etc/xdg/mindos/autostart/50-mindshell once
+# its Wayland socket and IPC socket are up.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mindshell
+# Only the host gets SIGTERM; it tears the views down itself and WebKit's
+# helper processes follow (with KillMode=control-group they die first and
+# every view reports a crash during shutdown).
+KillMode=mixed
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=1
+Slice=session.slice

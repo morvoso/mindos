@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "panels": [
+    {
+      "id": "dock",
+      "output": "*",
+      "edge": "bottom",
+      "size": 56,
+      "length": 0,
+      "align": "center",
+      "margin": 0,
+      "layer": "top",
+      "opacity": 0,
+      "autohide": false,
+      "widgets": [
+        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "mindos-files.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } }
+      ]
+    },
+    {
+      "id": "top",
+      "output": "*",
+      "edge": "top",
+      "size": 30,
+      "length": 100,
+      "align": "center",
+      "margin": 0,
+      "layer": "top",
+      "opacity": 0.92,
+      "autohide": false,
+      "widgets": [
+        { "id": "mind", "type": "mind", "config": {} },
+        { "id": "sp2", "type": "spacer", "config": { "expand": true } },
+        { "id": "tray", "type": "tray", "config": {} },
+        { "id": "audio", "type": "audio", "config": {} },
+        { "id": "net", "type": "network", "config": {} },
+        { "id": "bat", "type": "battery", "config": {} },
+        { "id": "layout", "type": "layout-mode", "config": {} },
+        { "id": "clock", "type": "clock", "config": { "seconds": false, "date": true, "hour24": true } }
+      ]
+    }
+  ],
+  "desktop": {
+    "wallpaper": { "mode": "builtin" },
+    "widgets": [
+      { "id": "d-clock", "type": "desktop-clock", "output": "*", "x": 64, "y": 64, "w": 320, "h": 120, "config": {} }
+    ]
+  }
+}

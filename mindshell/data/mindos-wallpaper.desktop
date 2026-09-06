@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpaper
+Comment=Choose the desktop background
+Exec=mindshell --app settings --page wallpaper
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Categories=Settings;DesktopSettings;
+Keywords=background;wallpaper;desktop;
+StartupWMClass=mindos-settings
