@@ -1,8 +1,11 @@
 [Plymouth Theme]
 Name=MindOS
-Description=MindOS wordmark and progress bar, white on MindOS red
+Description=MindOS boot: the dark void, a glowing wordmark and a cyan progress line
 ModuleName=script
 
 [script]
 ImageDir=/usr/share/plymouth/themes/mindos
 ScriptFile=/usr/share/plymouth/themes/mindos/mindos.script
+# Copied into the initramfs by the mkinitcpio plymouth hook (Image.Text uses it).
+Font=Rajdhani 15
+MonospaceFont=Share Tech Mono 13
