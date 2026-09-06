@@ -41,6 +41,22 @@ enum Cmd {
     },
     /// Interactive chat.
     Chat,
+    /// Installed models, the download catalog and the current choice.
+    Models,
+    /// Switch to a model: a file name from `mind models`, a path, or "auto".
+    Model { path: String },
+    /// Let the model think before answering (slower; off by default).
+    Thinking {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Download a catalog model by id (see `mind models`) and switch to it.
+    Download {
+        id: String,
+        /// Only download; keep the current model.
+        #[arg(long)]
+        keep: bool,
+    },
 }
 
 #[tokio::main]
@@ -81,6 +97,78 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Some(Cmd::Models) => {
+            client.send(&Request::Models).await?;
+            if let Some(Event::Models { current, model, ready, auto, thinking, models_dir, external, gpu_memory, models, catalog, download }) = client.next().await? {
+                println!("running: {} ({}){}", model, if ready { "ready" } else { "loading" }, if external { "  [external server]" } else { "" });
+                println!("choice:  {}", if auto { "automatic (largest model that fits the GPU)".to_string() } else { current.unwrap_or_default() });
+                println!("thinking: {}   gpu memory: {}", if thinking { "on" } else { "off" }, gpu_memory.map(|b| format!("{:.1} GiB", b as f64 / 1073741824.0)).unwrap_or_else(|| "unknown".into()));
+                println!("\ninstalled in {}:", models_dir);
+                for m in &models {
+                    println!("  {} {:<44} {:>7.2} GiB", if m.active { "*" } else { " " }, m.file, m.size as f64 / 1073741824.0);
+                }
+                if models.is_empty() {
+                    println!("  (none)");
+                }
+                println!("\ncatalog:");
+                for c in &catalog {
+                    println!("  {:<14} {:<36} {:>6.2} GiB  {}{}{}", c.id, c.name, c.size as f64 / 1073741824.0, c.license, if c.recommended { "  recommended" } else { "" }, if c.installed { "  [installed]" } else { "" });
+                }
+                if let Some(dl) = download {
+                    println!("\ndownload: {} {}/{} {}", dl.file, dl.received, dl.total, dl.error.map(|e| format!("FAILED: {e}")).unwrap_or_else(|| if dl.done { "done".into() } else { "running".into() }));
+                }
+            }
+        }
+        Some(Cmd::Model { path }) => {
+            client.send(&Request::SetModel { path }).await?;
+            match client.next().await? {
+                Some(Event::Models { model, current, auto, .. }) => println!("switching to {} (llama-server restarts){}", if auto { "the automatic choice".to_string() } else { current.unwrap_or(model) }, ""),
+                Some(Event::Error { message }) => return Err(anyhow!("{}", message)),
+                _ => {}
+            }
+        }
+        Some(Cmd::Thinking { state }) => {
+            client.send(&Request::SetThinking { enabled: state == "on" }).await?;
+            match client.next().await? {
+                Some(Event::Models { thinking, .. }) => println!("thinking {}", if thinking { "on" } else { "off" }),
+                Some(Event::Error { message }) => return Err(anyhow!("{}", message)),
+                _ => {}
+            }
+        }
+        Some(Cmd::Download { id, keep }) => {
+            client.send(&Request::Models).await?;
+            let Some(Event::Models { catalog, .. }) = client.next().await? else { return Err(anyhow!("unexpected reply from mindd")) };
+            let entry = catalog.iter().find(|c| c.id == id || c.file == id).ok_or_else(|| anyhow!("no catalog entry '{}' (see `mind models`)", id))?.clone();
+            client.send(&Request::DownloadModel { url: entry.url.clone(), file: entry.file.clone(), size: entry.size, use_after: !keep }).await?;
+            eprintln!("downloading {} ({:.2} GiB, {})", entry.file, entry.size as f64 / 1073741824.0, entry.license);
+            loop {
+                match client.next().await? {
+                    Some(Event::Download(dl)) => {
+                        if let Some(e) = dl.error {
+                            eprintln!();
+                            return Err(anyhow!("download failed: {}", e));
+                        }
+                        if dl.done {
+                            eprintln!("\rdone: {}                         ", dl.file);
+                            if keep {
+                                break;
+                            }
+                        } else if dl.total > 0 {
+                            eprint!("\r{:>5.1}%  {:.2} / {:.2} GiB   ", dl.received as f64 * 100.0 / dl.total as f64, dl.received as f64 / 1073741824.0, dl.total as f64 / 1073741824.0);
+                        } else {
+                            eprint!("\r{:.2} GiB   ", dl.received as f64 / 1073741824.0);
+                        }
+                    }
+                    Some(Event::Models { model, .. }) => {
+                        println!("switching to {} (llama-server restarts)", model);
+                        break;
+                    }
+                    Some(Event::Error { message }) => return Err(anyhow!("{}", message)),
+                    Some(_) => {}
+                    None => return Err(anyhow!("mindd closed the connection")),
+                }
+            }
+        }
         Some(Cmd::Update) => {
             chat(&mut client, "Update this system. First check the Arch news for required manual interventions, then check what would be updated, apply the updates, and report: what changed, any .pacnew files to merge, and whether a reboot is needed.".into(), cli.session, true, cli.thinking).await?;
         }
@@ -111,7 +199,7 @@ async fn main() -> Result<()> {
         }
         None => {
             if text.trim().is_empty() {
-                eprintln!("usage: mind <what you want> | mind update | mind doctor | mind status | mind history | mind chat");
+                eprintln!("usage: mind <what you want> | mind update | mind doctor | mind status | mind history | mind chat | mind models | mind model <file|auto> | mind download <id> | mind thinking on|off");
                 return Ok(());
             }
             chat(&mut client, text, cli.session, cli.autopilot, cli.thinking).await?;
@@ -199,7 +287,7 @@ async fn chat(client: &mut Client, text: String, session: Option<String>, autopi
                 }
                 return Err(anyhow!("{}", message));
             }
-            Event::Welcome { .. } | Event::Status { .. } | Event::History { .. } => {}
+            Event::Welcome { .. } | Event::Status { .. } | Event::History { .. } | Event::Models { .. } | Event::Download(_) => {}
         }
     }
 }

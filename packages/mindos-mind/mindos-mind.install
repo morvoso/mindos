@@ -3,8 +3,11 @@ post_install() {
   systemd-tmpfiles --create mindos.conf >/dev/null 2>&1 || true
   cat <<'MSG'
 ==> MindOS Mind installed.
-    * Put a GGUF model in /var/lib/mindos/models/ (default.gguf wins, else the
-      largest one that fits the GPU) and: systemctl enable --now mindd
+    * The ISO ships Qwen3.5 4B in /var/lib/mindos/models/ (Apache-2.0). Any
+      GGUF placed there works too (default.gguf wins, else the largest one that
+      fits the GPU); then: systemctl enable --now mindd
+    * Settings > Mind (or `mind models` / `mind model` / `mind download`) switches
+      models and downloads others from /etc/mindos/model-catalog.json.
     * Users who may talk to the Mind must be in group "mindos":
         usermod -aG mindos <user>
     * Then: mind chat | mind update | mind doctor

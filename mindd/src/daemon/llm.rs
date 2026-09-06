@@ -216,8 +216,11 @@ pub fn select_model(cfg: &ModelConfig) -> Result<PathBuf> {
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().map(|x| x == "gguf").unwrap_or(false) {
-                if let Ok(m) = e.metadata() {
-                    candidates.push((m.len(), p));
+                // follow symlinks (default.gguf usually is one) and skip dangling ones
+                if let Ok(m) = std::fs::metadata(&p) {
+                    if m.is_file() {
+                        candidates.push((m.len(), p));
+                    }
                 }
             }
         }
@@ -270,8 +273,9 @@ pub struct ServerProcess {
     pub gpu: bool,
 }
 
-/// Spawn llama-server for `model`. `gpu_layers` follows the config (-1 = all).
-pub fn spawn_server(cfg: &ModelConfig, model: &Path, gpu: bool) -> Result<ServerProcess> {
+/// Spawn llama-server for `model`. `gpu_layers` follows the config (-1 = all);
+/// `thinking` maps to `--reasoning on|off` (Qwen3 and friends honour it).
+pub fn spawn_server(cfg: &ModelConfig, model: &Path, gpu: bool, thinking: bool) -> Result<ServerProcess> {
     let mut cmd = Command::new(&cfg.llama_server);
     cmd.arg("-m")
         .arg(model)
@@ -287,6 +291,8 @@ pub fn spawn_server(cfg: &ModelConfig, model: &Path, gpu: bool) -> Result<Server
         .arg("1")
         .arg("--reasoning-format")
         .arg("deepseek")
+        .arg("--reasoning")
+        .arg(if thinking { "on" } else { "off" })
         .arg("--log-prefix");
     if gpu {
         let layers = if cfg.gpu_layers < 0 { 999 } else { cfg.gpu_layers };

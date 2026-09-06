@@ -30,6 +30,11 @@ pub struct ModelConfig {
     pub external_url: Option<String>,
     pub temperature: f32,
     pub max_tokens: u32,
+    /// Let the model think before answering (`--reasoning on`). Off by
+    /// default; the Settings app can change it at runtime (mind-prefs.json).
+    pub thinking: bool,
+    /// Download catalog shown by the Settings app (JSON array of models).
+    pub catalog: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +81,8 @@ impl Default for ModelConfig {
             external_url: None,
             temperature: 0.3,
             max_tokens: 2048,
+            thinking: false,
+            catalog: PathBuf::from("/etc/mindos/model-catalog.json"),
         }
     }
 }

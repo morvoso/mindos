@@ -77,29 +77,49 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
     }
     let mut gpu = d.config.model.gpu_layers != 0;
     let mut backoff = 2u64;
+    let mut last_model: Option<std::path::PathBuf> = None;
     loop {
         let model = match llm::select_model(&d.config.model) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("mindd: no model: {:#} (retrying in 30s)", e);
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                *d.model_name.lock().unwrap() = "(no model)".into();
+                *d.model_path.lock().unwrap() = None;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                    _ = d.restart.notified() => {}
+                }
                 continue;
             }
         };
+        // default.gguf is a link: show and remember the real file
+        let model = std::fs::canonicalize(&model).unwrap_or(model);
+        if last_model.as_ref() != Some(&model) {
+            // a new model gets a fresh try on the GPU
+            gpu = d.config.model.gpu_layers != 0;
+            backoff = 2;
+            last_model = Some(model.clone());
+        }
+        let thinking = d.thinking.load(Ordering::Relaxed);
         *d.model_name.lock().unwrap() = model.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        eprintln!("mindd: starting llama-server with {} ({})", model.display(), if gpu { "GPU" } else { "CPU" });
-        let mut proc = match llm::spawn_server(&d.config.model, &model, gpu) {
+        *d.model_path.lock().unwrap() = Some(model.clone());
+        eprintln!("mindd: starting llama-server with {} ({}, thinking {})", model.display(), if gpu { "GPU" } else { "CPU" }, if thinking { "on" } else { "off" });
+        let mut proc = match llm::spawn_server(&d.config.model, &model, gpu, thinking) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("mindd: {:#}", e);
-                tokio::time::sleep(Duration::from_secs(backoff)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(backoff)) => {}
+                    _ = d.restart.notified() => {}
+                }
                 backoff = (backoff * 2).min(60);
                 continue;
             }
         };
-        // wait for health
+        // wait for health (a model change meanwhile starts over)
         let started = std::time::Instant::now();
         let mut healthy = false;
+        let mut restart = false;
         while started.elapsed() < Duration::from_secs(300) {
             if let Ok(Some(status)) = proc.child.try_wait() {
                 eprintln!("mindd: llama-server exited during startup: {}", status);
@@ -109,7 +129,15 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
                 healthy = true;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                _ = d.restart.notified() => { restart = true; break; }
+            }
+        }
+        if restart {
+            eprintln!("mindd: model change requested; restarting llama-server");
+            let _ = proc.child.kill().await;
+            continue;
         }
         if !healthy {
             let _ = proc.child.kill().await;
@@ -117,7 +145,10 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
                 eprintln!("mindd: GPU backend failed, falling back to CPU");
                 gpu = false;
             } else {
-                tokio::time::sleep(Duration::from_secs(backoff)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(backoff)) => {}
+                    _ = d.restart.notified() => {}
+                }
                 backoff = (backoff * 2).min(60);
             }
             continue;
@@ -130,6 +161,11 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
             tokio::select! {
                 status = proc.child.wait() => {
                     eprintln!("mindd: llama-server exited: {:?}; restarting", status.ok());
+                    break;
+                }
+                _ = d.restart.notified() => {
+                    eprintln!("mindd: model change requested; restarting llama-server");
+                    let _ = proc.child.kill().await;
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_secs(10)) => {

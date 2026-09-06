@@ -2,21 +2,21 @@
 # The Mind: mindd (local-LLM system daemon) and the `mind` CLI, built from ../../mindd.
 pkgname=mindos-mind
 pkgver=0.1.0
-pkgrel=3
+pkgrel=4
 pkgdesc="MindOS Mind: local LLM system daemon (mindd) and its CLI (mind)"
 arch=(x86_64)
 url="https://mindos.local"
 license=(MIT)
 depends=(glibc gcc-libs llama-cpp ggml-vulkan pacman systemd pciutils coreutils util-linux
-         sudo git base-devel flatpak paru)
+         sudo git base-devel flatpak paru curl)
 # ggml-cuda pulls the full CUDA toolkit (~4 GB); mindos-install adds it on NVIDIA systems.
 optdepends=('ggml-cuda: CUDA backend for llama-server on NVIDIA GPUs (faster than Vulkan)')
 makedepends=(rust clang lld rsync)
-backup=(etc/mindos/mind.toml)
+backup=(etc/mindos/mind.toml etc/mindos/model-catalog.json)
 install=mindos-mind.install
 options=(!lto !debug)
-source=(mind.toml mindd.service mindos.sysusers mindos.tmpfiles mindos-pkg 20-mindos-build.sudoers)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP)
+source=(mind.toml model-catalog.json mindd.service mindos.sysusers mindos.tmpfiles mindos-pkg 20-mindos-build.sudoers)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 _srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export CARGO_HOME="${CARGO_HOME:-$_srcroot/build/cargo-home}"
@@ -41,6 +41,8 @@ package() {
   install -Dm644 "$srcdir/mindos.sysusers" "$pkgdir/usr/lib/sysusers.d/mindos.conf"
   install -Dm644 "$srcdir/mindos.tmpfiles" "$pkgdir/usr/lib/tmpfiles.d/mindos.conf"
   install -Dm644 "$srcdir/mind.toml" "$pkgdir/etc/mindos/mind.toml"
+  # The models the Settings app offers to download (Qwen3.5, Apache-2.0).
+  install -Dm644 "$srcdir/model-catalog.json" "$pkgdir/etc/mindos/model-catalog.json"
   install -Dm755 "$srcdir/mindos-pkg" "$pkgdir/usr/bin/mindos-pkg"
   install -Dm440 "$srcdir/20-mindos-build.sudoers" "$pkgdir/etc/sudoers.d/20-mindos-build"
   install -dm755 "$pkgdir/var/lib/mindos/models"

@@ -3,7 +3,9 @@
 
 [model]
 # GGUF file to serve, or "auto": default.gguf in models_dir, else the largest
-# GGUF that fits in ~80% of GPU memory.
+# GGUF that fits in ~80% of GPU memory. MindOS ships Qwen3.5 4B (Apache-2.0);
+# Settings › Mind switches models and downloads others from the catalog, and
+# its choice is kept in <state_dir>/mind-prefs.json, which overrides this.
 path = "auto"
 models_dir = "/var/lib/mindos/models"
 context = 8192
@@ -17,6 +19,11 @@ port = 8642
 extra_args = []
 temperature = 0.3
 max_tokens = 2048
+# Let the model reason before answering (Qwen3 "thinking"). Slower; off by
+# default. Settings › Mind or `mind thinking on` toggles it at runtime.
+thinking = false
+# Models the Settings app offers to download (a JSON array).
+catalog = "/etc/mindos/model-catalog.json"
 # Point at an already running OpenAI-compatible server instead of spawning one:
 # external_url = "http://127.0.0.1:11434/v1"
 

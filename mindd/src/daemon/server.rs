@@ -152,6 +152,25 @@ async fn handle(d: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 conn.send(Event::History { entries: d.audit.tail(limit.min(1000)) });
             }
             Request::Cancel | Request::Confirm { .. } | Request::ToolResult { .. } => {}
+            Request::Models => conn.send(d.models_event()),
+            Request::SetModel { path } => match d.set_model(&path) {
+                Ok(()) => {
+                    d.audit.record("model", "", conn.uid, serde_json::json!({"path": path, "client": conn.client}));
+                    conn.send(d.models_event());
+                }
+                Err(e) => conn.send(Event::Error { message: format!("{:#}", e) }),
+            },
+            Request::SetThinking { enabled } => match d.set_thinking(enabled) {
+                Ok(()) => conn.send(d.models_event()),
+                Err(e) => conn.send(Event::Error { message: format!("{:#}", e) }),
+            },
+            Request::DownloadModel { url, file, size, use_after } => {
+                match d.start_download(url.clone(), file.clone(), size, use_after, conn.tx.clone()) {
+                    Ok(()) => d.audit.record("download", "", conn.uid, serde_json::json!({"url": url, "file": file, "client": conn.client})),
+                    Err(e) => conn.send(Event::Error { message: format!("{:#}", e) }),
+                }
+            }
+            Request::CancelDownload => d.cancel_download(),
             Request::Chat { session, text, autopilot } => {
                 if !d.is_ready() {
                     conn.send(Event::Error { message: "the model is still loading, try again in a moment".into() });
