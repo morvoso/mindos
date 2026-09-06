@@ -1,0 +1,2 @@
+# The AUR build user may install what it built (paru calls sudo pacman).
+mindos-build ALL=(root) NOPASSWD: /usr/bin/pacman

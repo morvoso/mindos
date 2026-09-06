@@ -13,6 +13,7 @@
 
 ## Milestone 2 — installable gaming system
 - [x] `mindos-install` exercised end to end under UEFI in the libvirt dev VM (`docs/DEV-VM.md`); installed system boots into the session with mindd running
+- [x] `mindos-pkg`: one install path across the MindOS/Arch repositories, Flathub and the AUR, driven by the Mind (`docs/PACKAGES.md`); "install octopi" from the Mind bar builds it from the AUR in the dev VM
 - [ ] `mindos-install` under BIOS firmware
 - [ ] `linux-mindos-nvidia-open` prebuilt modules (no DKMS build on first boot), `mind doctor` GPU checks
 - [ ] In-tree modules load with `module verification failed` (signature missing) on the current kernel build: keep module signatures intact or turn `MODULE_SIG` off

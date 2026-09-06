@@ -1,2 +1,4 @@
 # Members of "mindos" may talk to the Mind daemon over /run/mindos/mind.sock.
 g mindos -
+# Unprivileged user that builds AUR packages for the Mind (mindos-pkg).
+u mindos-build - "MindOS package builder" /var/lib/mindos/build

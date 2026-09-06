@@ -37,6 +37,7 @@ kernel console to the desktop, is white text on MindOS red (`#8c1010`).
 | --- | --- | --- |
 | `linux-mindos` | `packages/linux-mindos/` | Custom kernel: kernel.org 7.2.y + BORE scheduler + MindOS console theme, built with Clang ThinLTO for the local CPU (`X86_NATIVE_CPU`), 1000 Hz, full preemption, `amd-pstate`, ntsync. Headers package for DKMS (NVIDIA). |
 | `mindwm` | `mindwm/`, `packages/mindwm/` | The compositor (Rust, Smithay). Game mode by default: every window opens maximized, `Super+F` fullscreens, `Super+Space` opens the **Mind bar** (launcher, shell and LLM chat in one field). Wayland and XWayland. See `docs/COMPOSITOR.md`. |
+* [docs/PACKAGES.md](docs/PACKAGES.md) — package sources: MindOS/Arch repositories, Flathub and the AUR through `mindos-pkg`, and how the Mind installs software
 * [docs/DEV-VM.md](docs/DEV-VM.md) — persistent development VM on libvirt/virt-manager: shared source tree, snapshots, dev loops
 | `mindd` / `mind` | `mindd/`, `packages/mindos-mind/` | The mind: a system daemon that runs `llama-server` on a local GGUF model, exposes typed tools (packages, updates, services, journal, files, commands, kernel parameters, game library) behind an observe/change/forbidden policy, logs everything to `/var/log/mindos/mind.jsonl`, and speaks newline-delimited JSON on `/run/mindos/mind.sock`. `mind` is the CLI. |
 | `mindos-base` | `packages/mindos-base/` | Identity and tuning: `os-release`, kernel command line, sysctl (`vm.max_map_count`, BBR, split-lock mitigation off), zram, I/O scheduler and controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset. |
@@ -85,4 +86,5 @@ runs in active mode, the NVIDIA open kernel modules are built by DKMS against
 * `docs/ARCHITECTURE.md` — how the pieces fit together.
 * `docs/COMPOSITOR.md` — mindwm features, keybindings, the Mind bar, configuration.
 * `docs/THEME.md` — the white-on-red boot theme, stage by stage.
+* `docs/PACKAGES.md` — where packages come from and how `mindos-pkg` and the Mind install them.
 * `docs/ROADMAP.md` — what is done and what is next.

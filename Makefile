@@ -5,7 +5,9 @@ SHELL       := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 BUILDBOX    := scripts/buildbox.sh
 # Build order matters only for dependencies at install time, not for makepkg.
-PKGS        := mindos-mind mindwm mindos-theme mindos-base mindos-session mindos-gaming mindos-dev mindos-install
+# paru is the AUR helper (vendored AUR recipe, built from source against the current libalpm) that
+# mindos-mind needs for mindos-pkg; the box has the toolchains, so only mindwm syncs deps with -s.
+PKGS        := paru mindos-mind mindwm mindos-theme mindos-base mindos-session mindos-gaming mindos-dev mindos-install
 REPO        := build/repo
 ISO_PROFILE := build/iso-profile
 ISO_OUT     := build/out
@@ -32,7 +34,7 @@ packages:
 	mkdir -p build/logs build/cargo-home
 	for p in $(PKGS); do \
 	  case $$p in \
-	    mindos-mind|mindwm) opts="-sf" ;; \
+	    mindwm) opts="-sf" ;; \
 	    *) opts="-fd" ;; \
 	  esac; \
 	  $(BUILDBOX) bash -c "cd packages/$$p && makepkg $$opts --noconfirm --skippgpcheck" || exit 1; \

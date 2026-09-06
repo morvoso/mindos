@@ -103,6 +103,10 @@ The mind of the OS: a system daemon that owns the model and the tools.
   `write_config`, `run_command`, `set_kernel_parameter`, `game_library`,
   `launch`. Clients can register additional tools (the compositor registers
   `launch_app`, `open_terminal` and `run_in_terminal`).
+* The package tools go through `mindos-pkg` (shipped by `mindos-mind`), which
+  resolves a plain name against the MindOS/Arch repositories, then Flathub,
+  then the AUR (built by the unprivileged `mindos-build` user) and reports
+  which source it used. See `docs/PACKAGES.md`.
 * A **policy layer** classifies every tool call as *observe* (runs
   immediately), *change* (the requesting client must confirm unless autopilot
   is on for that category) or *forbidden* (never: wiping disks, disabling

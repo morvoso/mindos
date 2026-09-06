@@ -26,12 +26,12 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef { name: "system_info", description: "Hardware, kernel, drivers, uptime and MindOS version of this machine.", parameters: none.clone(), policy: Policy::Observe, category: "info" },
         ToolDef { name: "gpu_info", description: "GPU model(s), driver in use, VRAM, Vulkan availability (lspci, nvidia-smi, vulkaninfo).", parameters: none.clone(), policy: Policy::Observe, category: "info" },
         ToolDef { name: "list_packages", description: "Installed packages (pacman -Q), optionally filtered by a substring.", parameters: json!({"type":"object","properties":{"filter":{"type":"string","description":"substring to match package names"}}}), policy: Policy::Observe, category: "packages" },
-        ToolDef { name: "search_packages", description: "Search the repositories for packages (pacman -Ss).", parameters: json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}), policy: Policy::Observe, category: "packages" },
-        ToolDef { name: "package_info", description: "Details about a package: version, description, dependencies, whether it is installed.", parameters: json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}), policy: Policy::Observe, category: "packages" },
+        ToolDef { name: "search_packages", description: "Search for packages in the MindOS/Arch repositories, on Flathub and in the AUR.", parameters: json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}), policy: Policy::Observe, category: "packages" },
+        ToolDef { name: "package_info", description: "Where a package comes from (repository, Flathub, AUR), whether it is installed, version and description.", parameters: json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}), policy: Policy::Observe, category: "packages" },
         ToolDef { name: "check_updates", description: "List available package updates without installing anything.", parameters: none.clone(), policy: Policy::Observe, category: "update" },
         ToolDef { name: "apply_updates", description: "Update every installed package (pacman -Syu). Reports pacnew files and whether a reboot is needed.", parameters: none.clone(), policy: Policy::Change, category: "update" },
-        ToolDef { name: "install_packages", description: "Install packages from the repositories.", parameters: json!({"type":"object","properties":{"packages":{"type":"array","items":{"type":"string"}}},"required":["packages"]}), policy: Policy::Change, category: "packages" },
-        ToolDef { name: "remove_packages", description: "Remove packages (and their unneeded dependencies).", parameters: json!({"type":"object","properties":{"packages":{"type":"array","items":{"type":"string"}}},"required":["packages"]}), policy: Policy::Change, category: "packages" },
+        ToolDef { name: "install_packages", description: "Install packages by plain name (e.g. discord, octopi). Tries the MindOS/Arch repositories, then Flathub, then the AUR (built locally, can take minutes) and reports which source was used.", parameters: json!({"type":"object","properties":{"packages":{"type":"array","items":{"type":"string"}}},"required":["packages"]}), policy: Policy::Change, category: "packages" },
+        ToolDef { name: "remove_packages", description: "Remove installed packages or Flatpaks (and their unneeded dependencies).", parameters: json!({"type":"object","properties":{"packages":{"type":"array","items":{"type":"string"}}},"required":["packages"]}), policy: Policy::Change, category: "packages" },
         ToolDef { name: "service_status", description: "Status of a systemd unit, or a list of failed units when no unit is given.", parameters: json!({"type":"object","properties":{"unit":{"type":"string"}}}), policy: Policy::Observe, category: "services" },
         ToolDef { name: "service_control", description: "start, stop, restart, enable or disable a systemd unit.", parameters: json!({"type":"object","properties":{"unit":{"type":"string"},"action":{"type":"string","enum":["start","stop","restart","enable","disable","enable-now","disable-now"]}},"required":["unit","action"]}), policy: Policy::Change, category: "services" },
         ToolDef { name: "journal", description: "Recent log lines from the systemd journal, for the current boot. Filter by unit and/or priority (err, warning, info).", parameters: json!({"type":"object","properties":{"unit":{"type":"string"},"priority":{"type":"string"},"lines":{"type":"integer","default":80},"grep":{"type":"string"}}}), policy: Policy::Observe, category: "info" },
@@ -132,7 +132,7 @@ fn pkg_list(args: &Value) -> Result<String> {
     }
     for n in &names {
         if !n.chars().all(|c| c.is_ascii_alphanumeric() || "+-._@".contains(c)) {
-            return Err(anyhow!("invalid package name: {}", n));
+            return Err(anyhow!("\"{}\" is not a package name (letters, digits, + - . _ @ only)", n));
         }
     }
     Ok(names.join(" "))
@@ -171,11 +171,11 @@ pub async fn execute(name: &str, args: &Value, cfg: &Config) -> Result<Value> {
         }
         "search_packages" => {
             let q = args["query"].as_str().ok_or_else(|| anyhow!("query required"))?;
-            Ok(ok_out(sh(&format!("pacman -Ss -- {} | head -80", shell_quote(q)), timeout).await?))
+            Ok(ok_out(sh(&format!("mindos-pkg search {}", shell_quote(q)), timeout).await?))
         }
         "package_info" => {
             let n = args["name"].as_str().ok_or_else(|| anyhow!("name required"))?;
-            Ok(ok_out(sh(&format!("pacman -Qi -- {n} 2>/dev/null || pacman -Si -- {n}", n = shell_quote(n)), timeout).await?))
+            Ok(ok_out(sh(&format!("mindos-pkg info {}", shell_quote(n.trim())), timeout).await?))
         }
         "check_updates" => Ok(ok_out(sh("checkupdates 2>&1; rc=$?; [ $rc -eq 2 ] && echo 'system is up to date'; true", timeout).await?)),
         "apply_updates" => {
@@ -184,11 +184,11 @@ pub async fn execute(name: &str, args: &Value, cfg: &Config) -> Result<Value> {
         }
         "install_packages" => {
             let list = pkg_list(args)?;
-            Ok(ok_out(sh(&format!("pacman -S --needed --noconfirm {}", list), timeout).await?))
+            Ok(ok_out(sh(&format!("mindos-pkg install {}", list), timeout).await?))
         }
         "remove_packages" => {
             let list = pkg_list(args)?;
-            Ok(ok_out(sh(&format!("pacman -Rs --noconfirm {}", list), timeout).await?))
+            Ok(ok_out(sh(&format!("mindos-pkg remove {}", list), timeout).await?))
         }
         "service_status" => {
             let unit = args["unit"].as_str().unwrap_or("").trim();

@@ -1,0 +1,162 @@
+#!/bin/bash
+# mindos-pkg — one front door for every package source on MindOS.
+#
+#   mindos-pkg install NAME...   repositories (pacman) → Flathub (flatpak) → AUR (paru, built as mindos-build)
+#   mindos-pkg remove NAME...    pacman or flatpak, whichever has it
+#   mindos-pkg search QUERY      all three sources, short list
+#   mindos-pkg info NAME         where it comes from, whether it is installed, details
+#   mindos-pkg where NAME        one word: installed | flatpak-installed | repo | flatpak | aur | none
+#
+# Speaks plain sentences so the Mind (mindd) can relay them. Exit status is 0
+# only when every requested package succeeded. Installing needs root.
+set -uo pipefail
+export LC_ALL=C
+BUILD_USER=mindos-build
+FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
+refreshed=0
+
+has() { command -v "$1" >/dev/null 2>&1; }
+valid() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9@._+-]*$ ]]; }
+indent() { sed 's/^/    /'; }
+
+# ---- sources -----------------------------------------------------------------
+repo_has()   { pacman -Si -- "$1" >/dev/null 2>&1; }
+repo_name()  { pacman -Si -- "$1" 2>/dev/null | awk '/^Repository/ {print $3; exit}'; }
+pkg_ver()    { pacman -Q -- "$1" 2>/dev/null | cut -d' ' -f2; }
+db_stale()   { local f; f=$(ls -t /var/lib/pacman/sync/*.db 2>/dev/null | head -1); [[ -z $f || $(( $(date +%s) - $(stat -c %Y "$f") )) -gt 43200 ]]; }
+refresh_db() { [[ $refreshed == 1 ]] && return 0; pacman -Sy >/dev/null 2>&1 && refreshed=1; }
+
+flathub_ready() {
+  has flatpak || return 1
+  flatpak remotes --system 2>/dev/null | grep -q '^flathub' && return 0
+  flatpak remote-add --system --if-not-exists flathub "$FLATHUB" >/dev/null 2>&1
+}
+# Flathub app id whose name or last id segment equals NAME (case-insensitive)
+flatpak_match() {
+  local n=${1,,}
+  flatpak search --system --columns=application,name -- "$1" 2>/dev/null | awk -v n="$n" '
+    { id=$1; k=split(id, p, "."); if (tolower(p[k])==n || tolower($2)==n) { print id; exit } }'
+}
+flatpak_installed_id() {
+  local n=${1,,}
+  flatpak list --system --columns=application,name 2>/dev/null | awk -v n="$n" '
+    { id=$1; k=split(id, p, "."); if (id==n || tolower(p[k])==n || tolower($2)==n) { print id; exit } }'
+}
+
+paru_run() {
+  has paru || return 127
+  if [[ $EUID -eq 0 ]]; then sudo -u "$BUILD_USER" -H paru "$@"; else paru "$@"; fi
+}
+aur_has() { has paru && paru_run -Sia -- "$1" >/dev/null 2>&1; }
+
+# ---- commands ----------------------------------------------------------------
+where_one() {
+  local n=$1
+  if pacman -Q -- "$n" >/dev/null 2>&1; then echo installed
+  elif [[ -n $(flatpak_installed_id "$n") ]]; then echo flatpak-installed
+  elif repo_has "$n"; then echo repo
+  elif flathub_ready && [[ -n $(flatpak_match "$n") ]]; then echo flatpak
+  elif aur_has "$n"; then echo aur
+  else echo none; fi
+}
+
+install_one() {
+  local n=$1 out rc id
+  valid "$n" || { echo "$n: that is not a package name"; return 1; }
+  if pacman -Q -- "$n" >/dev/null 2>&1; then echo "$n: already installed ($(pkg_ver "$n"))"; return 0; fi
+  id=$(flatpak_installed_id "$n"); [[ -n $id ]] && { echo "$n: already installed as the Flatpak $id"; return 0; }
+
+  # 1. MindOS and Arch repositories
+  if repo_has "$n" || { db_stale && refresh_db && repo_has "$n"; }; then
+    if [[ $refreshed == 1 ]]; then
+      # the database was refreshed: avoid a partial upgrade by upgrading along with the install
+      out=$(pacman -Su --needed --noconfirm -- "$n" 2>&1); rc=$?
+    else
+      out=$(pacman -S --needed --noconfirm -- "$n" 2>&1); rc=$?
+    fi
+    if [[ $rc -eq 0 ]]; then
+      echo "$n: installed from the $(repo_name "$n") repository ($(pkg_ver "$n"))"
+      [[ $refreshed == 1 ]] && echo "    (package database refreshed; pending updates were applied with it)"
+      return 0
+    fi
+    echo "$n: found in the $(repo_name "$n") repository but the install failed:"; tail -n 12 <<<"$out" | indent; return 1
+  fi
+
+  # 2. Flathub
+  if flathub_ready; then
+    id=$(flatpak_match "$n")
+    if [[ -n $id ]]; then
+      out=$(flatpak install --system -y --noninteractive flathub "$id" 2>&1); rc=$?
+      if [[ $rc -eq 0 ]]; then echo "$n: installed from Flathub as $id (sandboxed app, appears in the launcher; 'flatpak run $id')"; return 0; fi
+      echo "$n: found on Flathub as $id but the install failed:"; tail -n 12 <<<"$out" | indent; return 1
+    fi
+  fi
+
+  # 3. AUR, built locally as an unprivileged user
+  if aur_has "$n"; then
+    echo "$n: not in the repositories or on Flathub; building it from the AUR (community recipe, compiled here)..."
+    out=$(paru_run -S --needed --noconfirm --skipreview --removemake --cleanafter --mflags=--skippgpcheck -- "$n" 2>&1); rc=$?
+    if [[ $rc -eq 0 ]] && pacman -Q -- "$n" >/dev/null 2>&1; then echo "$n: installed from the AUR ($(pkg_ver "$n"))"; return 0; fi
+    echo "$n: the AUR build failed:"; tail -n 15 <<<"$out" | indent; return 1
+  fi
+
+  echo "$n: not found in the MindOS or Arch repositories, on Flathub, or in the AUR. Check the spelling: mindos-pkg search $n"
+  return 1
+}
+
+remove_one() {
+  local n=$1 out id
+  valid "$n" || { echo "$n: that is not a package name"; return 1; }
+  if pacman -Q -- "$n" >/dev/null 2>&1; then
+    out=$(pacman -Rs --noconfirm -- "$n" 2>&1) && { echo "$n: removed (with dependencies nothing else needed)"; return 0; }
+    echo "$n: removal failed:"; tail -n 8 <<<"$out" | indent; return 1
+  fi
+  id=$(flatpak_installed_id "$n")
+  if [[ -n $id ]]; then
+    out=$(flatpak uninstall --system -y --noninteractive "$id" 2>&1) && { echo "$n: removed the Flatpak $id"; return 0; }
+    echo "$n: Flatpak removal failed:"; tail -n 8 <<<"$out" | indent; return 1
+  fi
+  echo "$n: is not installed"; return 1
+}
+
+search_cmd() {
+  local q=$1
+  echo "Repositories (pacman):"
+  pacman -Ss -- "$q" 2>/dev/null | paste - - | sed -E 's#^([^ ]+) ([^ ]+)[^\t]*\t\s*#  \1 \2  —  #' | head -12
+  if flathub_ready; then
+    echo "Flathub (flatpak):"
+    flatpak search --system --columns=application,name,description -- "$q" 2>/dev/null | head -8 | sed 's/^/  /'
+  fi
+  if has paru; then
+    echo "AUR (built from source):"
+    paru_run -Ssa -- "$q" 2>/dev/null | paste - - | sed -E 's#^aur/([^ ]+) ([^ ]+)[^\t]*\t\s*#  \1 \2  —  #' | head -10
+  fi
+}
+
+info_one() {
+  local n=$1 w
+  w=$(where_one "$n")
+  case $w in
+    installed)          echo "$n is installed ($(pkg_ver "$n")) from $(repo_name "$n" 2>/dev/null || echo 'a local build/AUR')."; pacman -Qi -- "$n" | grep -E '^(Description|Version|Install Date|Installed Size)' ;;
+    flatpak-installed)  echo "$n is installed as the Flatpak $(flatpak_installed_id "$n")."; flatpak info --system "$(flatpak_installed_id "$n")" 2>/dev/null | head -8 ;;
+    repo)               echo "$n is available from the $(repo_name "$n") repository, not installed."; pacman -Si -- "$n" | grep -E '^(Description|Version|Download Size|Installed Size)' ;;
+    flatpak)            echo "$n is available on Flathub as $(flatpak_match "$n"), not installed." ;;
+    aur)                echo "$n is available in the AUR (would be built locally), not installed."; paru_run -Sia -- "$n" 2>/dev/null | grep -E '^(Description|Version|Votes|Out-of-date)' ;;
+    *)                  echo "$n: not found in the repositories, on Flathub, or in the AUR."; return 1 ;;
+  esac
+}
+
+cmd=${1:-}; shift || true
+[[ -n $cmd && $# -gt 0 ]] || { sed -n '2,10p' "$0"; exit 2; }
+rc=0
+case $cmd in
+  install) [[ $EUID -eq 0 ]] || { echo "mindos-pkg install needs root (sudo)"; exit 1; }
+           for n in "$@"; do install_one "$n" || rc=1; done ;;
+  remove)  [[ $EUID -eq 0 ]] || { echo "mindos-pkg remove needs root (sudo)"; exit 1; }
+           for n in "$@"; do remove_one "$n" || rc=1; done ;;
+  search)  search_cmd "$*" ;;
+  info)    for n in "$@"; do info_one "$n" || rc=1; done ;;
+  where)   for n in "$@"; do where_one "$n"; done ;;
+  *)       sed -n '2,10p' "$0"; exit 2 ;;
+esac
+exit $rc
