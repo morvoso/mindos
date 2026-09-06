@@ -1,0 +1,20 @@
+#!/bin/bash
+# session-startup: run by mindwm once its Wayland socket is up (WAYLAND_DISPLAY
+# and DISPLAY are set). Publishes the display to systemd --user / D-Bus and
+# launches autostart entries.
+
+systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP \
+  XDG_SESSION_TYPE XDG_SESSION_DESKTOP 2>/dev/null
+dbus-update-activation-environment --systemd --all 2>/dev/null
+# xdg-desktop-portal-wlr is not started: it needs wlr_screencopy/ext_image_copy_capture,
+# which mindwm does not implement yet (it exits with "Compositor supports neither").
+
+# Autostart: every executable file in these directories, detached.
+for dir in /etc/xdg/mindos/autostart "${XDG_CONFIG_HOME:-$HOME/.config}/mindos/autostart"; do
+  [[ -d $dir ]] || continue
+  for f in "$dir"/*; do
+    [[ -x $f && -f $f ]] || continue
+    setsid -f "$f" >/dev/null 2>&1
+  done
+done
+exit 0

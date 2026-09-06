@@ -1,0 +1,52 @@
+[package]
+name = "mindwm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The MindOS compositor (Wayland + XWayland, DRM/KMS), derived from Smithay's anvil"
+publish = false
+
+[dependencies]
+bitflags = "2"
+rand = "0.8"
+tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_debug"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+xcursor = "0.3"
+xkbcommon = "0.8"
+smithay-drm-extras = { version = "0.1", default-features = false }
+profiling = "1.0"
+fontdue = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+libc = "0.2"
+
+[dependencies.smithay]
+version = "0.7"
+default-features = false
+features = [
+  "desktop", "wayland_frontend", "use_system_lib", "backend_egl",
+  "backend_libinput", "backend_udev", "backend_drm", "backend_gbm", "backend_vulkan",
+  "backend_session_libseat", "renderer_gl", "renderer_pixman", "renderer_multi",
+  "backend_winit", "xwayland", "x11rb_event_source",
+]
+
+[dependencies.x11rb]
+version = "0.13"
+default-features = false
+features = ["composite"]
+
+[features]
+default = ["egl", "winit", "udev", "xwayland"]
+egl = []
+winit = []
+udev = []
+xwayland = []
+renderer_sync = []
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+debug = 1

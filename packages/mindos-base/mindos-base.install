@@ -1,0 +1,6 @@
+post_install() {
+  /usr/lib/mindos/apply-branding || true
+}
+post_upgrade() {
+  /usr/lib/mindos/apply-branding || true
+}

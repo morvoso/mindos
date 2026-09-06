@@ -1,0 +1,17 @@
+# /etc/mindos/mindwm.toml — MindOS compositor defaults.
+# Per-user overrides go in ~/.config/mindos/mindwm.toml (same keys).
+
+[startup]
+# Commands spawned once the Wayland socket is up; WAYLAND_DISPLAY and DISPLAY
+# are set in their environment.
+exec = ["/usr/lib/mindos/session-startup"]
+
+[apps]
+terminal = "foot"
+
+[mind]
+socket = "/run/mindos/mind.sock"
+
+[theme]
+background = "#8c1010"
+foreground = "#ffffff"

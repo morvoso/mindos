@@ -1,0 +1,38 @@
+# /etc/mindos/mind.toml — configuration of the MindOS Mind daemon (mindd).
+# Every key is optional; the values below are the defaults.
+
+[model]
+# GGUF file to serve, or "auto": default.gguf in models_dir, else the largest
+# GGUF that fits in ~80% of GPU memory.
+path = "auto"
+models_dir = "/var/lib/mindos/models"
+context = 8192
+# -1 = offload every layer to the GPU, 0 = CPU only.
+gpu_layers = -1
+# 0 = let llama-server pick the thread count.
+threads = 0
+llama_server = "/usr/bin/llama-server"
+host = "127.0.0.1"
+port = 8642
+extra_args = []
+temperature = 0.3
+max_tokens = 2048
+# Point at an already running OpenAI-compatible server instead of spawning one:
+# external_url = "http://127.0.0.1:11434/v1"
+
+[daemon]
+socket = "/run/mindos/mind.sock"
+log = "/var/log/mindos/mind.jsonl"
+state_dir = "/var/lib/mindos"
+# Members of this group may talk to the Mind (the socket is 660 root:group).
+group = "mindos"
+max_tool_rounds = 16
+tool_timeout_secs = 1800
+
+[policy]
+# true: run every state-changing tool without asking first.
+autopilot = false
+# Tool categories that never need confirmation, e.g. ["update"].
+autopilot_categories = []
+# Extra read-only commands allowed through run_command without confirmation.
+extra_observe_commands = []

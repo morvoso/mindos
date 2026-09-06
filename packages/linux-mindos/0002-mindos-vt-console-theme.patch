@@ -1,0 +1,50 @@
+From: MindOS Build <build@mindos.local>
+Subject: [PATCH] vt: MindOS console theme (white text on MindOS red)
+
+Make the virtual terminal default to bright white text on a red background
+and set palette entry 4 to MindOS red (#8c1010), so every boot message is
+rendered in the MindOS theme. Stock kernels get the same look with
+vt.color=0x4f vt.default_red=... on the command line.
+
+--- a/drivers/tty/vt/vt.c	2026-09-02 08:33:21.000000000 -0400
++++ b/drivers/tty/vt/vt.c	2026-09-06 12:22:14.871566238 -0400
+@@ -1399,22 +1399,27 @@
+ EXPORT_SYMBOL(color_table);
+ 
+ /* the default colour table, for VGA+ colour systems */
++/*
++ * MindOS: palette entry 4 (red) is MindOS red (#8c1010); together with the
++ * default attribute below the console is white text on a red background
++ * from the first kernel message onwards.
++ */
+ unsigned char default_red[] = {
+-	0x00, 0xaa, 0x00, 0xaa, 0x00, 0xaa, 0x00, 0xaa,
++	0x00, 0xaa, 0x00, 0xaa, 0x8c, 0xaa, 0x00, 0xaa,
+ 	0x55, 0xff, 0x55, 0xff, 0x55, 0xff, 0x55, 0xff
+ };
+ module_param_array(default_red, byte, NULL, S_IRUGO | S_IWUSR);
+ EXPORT_SYMBOL(default_red);
+ 
+ unsigned char default_grn[] = {
+-	0x00, 0x00, 0xaa, 0x55, 0x00, 0x00, 0xaa, 0xaa,
++	0x00, 0x00, 0xaa, 0x55, 0x10, 0x00, 0xaa, 0xaa,
+ 	0x55, 0x55, 0xff, 0xff, 0x55, 0x55, 0xff, 0xff
+ };
+ module_param_array(default_grn, byte, NULL, S_IRUGO | S_IWUSR);
+ EXPORT_SYMBOL(default_grn);
+ 
+ unsigned char default_blu[] = {
+-	0x00, 0x00, 0x00, 0x00, 0xaa, 0xaa, 0xaa, 0xaa,
++	0x00, 0x00, 0x00, 0x00, 0x10, 0xaa, 0xaa, 0xaa,
+ 	0x55, 0x55, 0x55, 0x55, 0xff, 0xff, 0xff, 0xff
+ };
+ module_param_array(default_blu, byte, NULL, S_IRUGO | S_IWUSR);
+@@ -3808,7 +3813,7 @@
+ 	return ldisc == N_TTY ? 0 : -EINVAL;
+ }
+ 
+-static int default_color           = 7; /* white */
++static int default_color           = 0x4f; /* MindOS: bright white on red */
+ static int default_italic_color    = 2; // green (ASCII)
+ static int default_underline_color = 3; // cyan (ASCII)
+ module_param_named(color, default_color, int, S_IRUGO | S_IWUSR);

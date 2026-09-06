@@ -1,0 +1,13 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = filesystem
+Target = plymouth
+Target = mindos-base
+
+[Action]
+Description = Applying MindOS branding...
+When = PostTransaction
+Depends = mindos-base
+Exec = /usr/lib/mindos/apply-branding

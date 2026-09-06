@@ -1,0 +1,95 @@
+# MindOS live ISO package list
+# --- MindOS ---
+linux-mindos
+linux-mindos-headers
+mindos-base
+mindos-theme
+mindos-session
+mindos-mind
+mindwm
+mindos-install
+# --- boot / live ---
+base
+linux-firmware
+amd-ucode
+intel-ucode
+mkinitcpio
+mkinitcpio-archiso
+mkinitcpio-nfs-utils
+syslinux
+grub
+efibootmgr
+edk2-shell
+memtest86+
+memtest86+-efi
+# --- graphics (also pulled by mindos-base) ---
+mesa
+vulkan-radeon
+vulkan-icd-loader
+nvidia-open-dkms
+nvidia-utils
+dkms
+clang
+llvm
+lld
+# --- install / disks ---
+arch-install-scripts
+gptfdisk
+parted
+btrfs-progs
+dosfstools
+e2fsprogs
+exfatprogs
+f2fs-tools
+xfsprogs
+ntfs-3g
+cryptsetup
+lvm2
+mdadm
+nvme-cli
+smartmontools
+hdparm
+ddrescue
+testdisk
+pv
+# --- network ---
+networkmanager
+wpa_supplicant
+wireless-regdb
+iw
+openssh
+rsync
+curl
+wget
+bind
+ethtool
+# --- desktop bits for the live session ---
+foot
+firefox
+wl-clipboard
+pipewire
+wireplumber
+pipewire-pulse
+pipewire-alsa
+alsa-utils
+sof-firmware
+bluez
+bluez-utils
+# --- tools ---
+git
+nano
+vim
+less
+man-db
+man-pages
+usbutils
+pciutils
+dmidecode
+lsscsi
+terminus-font
+htop
+btop
+nvtop
+fastfetch
+tmux
+zsh

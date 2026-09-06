@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=MindOS
+Comment=MindOS game-mode compositor with the Mind bar
+Exec=mindos-session
+Type=Application
+DesktopNames=MindOS

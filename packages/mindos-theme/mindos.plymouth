@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=MindOS
+Description=MindOS wordmark and progress bar, white on MindOS red
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/mindos
+ScriptFile=/usr/share/plymouth/themes/mindos/mindos.script

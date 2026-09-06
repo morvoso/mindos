@@ -1,0 +1,137 @@
+# The MindOS development VM
+
+A persistent MindOS install on libvirt, managed from virt-manager, for
+developing the system itself without losing anything between reboots or
+experiments.
+
+* The **source tree stays on the host** (this repository, under git). The VM
+  sees it read-write at `~/mindos` through virtiofs, so nothing you edit lives
+  only inside the VM.
+* The **VM disk persists**: packages you install and files you change survive
+  reboots, unlike the live ISO.
+* **Snapshots** (virt-manager: View > Snapshots, or `make vm-snapshot`) freeze
+  the whole VM before a risky change; reverting only touches the VM disk,
+  never the shared source tree.
+* pacman inside the VM prefers packages you build on the host
+  (`build/repo` on the share), so `make packages && make repo` on the host
+  followed by `sudo pacman -Syu` in the VM is the update path.
+* The QEMU guest agent is installed, so the host can run commands in the
+  guest without typing into the console (`scripts/vm/vdrive.py exec`).
+
+## Host setup (CachyOS / Arch, once)
+
+```sh
+sudo pacman -S --needed qemu-desktop libvirt virt-manager virt-install virt-viewer \
+                        edk2-ovmf virtiofsd swtpm dnsmasq
+sudo systemctl enable --now libvirtd
+sudo usermod -aG libvirt "$USER"
+sudo virsh net-autostart default && sudo virsh net-start default
+```
+
+If Docker or ufw is on the host, libvirt's default nftables firewall backend
+cannot get guest traffic past their `DROP` policies (no DHCP, no DNS, no
+internet in the VM). Switch libvirt to its iptables backend, whose rules are
+inserted ahead of theirs:
+
+```sh
+sudo sed -i 's/^#firewall_backend = "nftables"/firewall_backend = "iptables"/' /etc/libvirt/network.conf
+sudo virsh net-destroy default; sudo systemctl restart libvirtd; sudo virsh net-start default
+```
+
+## Create and install
+
+```sh
+make iso                       # or use an existing build/out/*.iso
+make vm                        # define + start "mindos-dev" booting the newest ISO
+make vm-install                # unattended install, follows the serial log
+scripts/vm/mindos-vm.sh stop && scripts/vm/mindos-vm.sh start   # first boot from disk
+make vm-snapshot NAME=fresh-install
+make vm-console                # virt-manager window on the VM
+```
+
+`make vm` runs `scripts/vm/mindos-vm.sh create`: UEFI (OVMF, no Secure
+Boot), 8 vCPUs, 16 GiB, an 80 GiB qcow2 in `/var/lib/libvirt/images`, virtio
+disk/net/video, SPICE graphics, the repository shared as virtiofs tag
+`mindos`, a serial console logged to `/var/lib/libvirt/images/mindos-dev-serial.log`.
+`VM_NAME`, `VM_MEM_MB`, `VM_VCPUS`, `VM_DISK_GB`, `VM_SHARE` override the
+defaults.
+
+`make vm-install` types one command into the live ISO's root console
+(Ctrl+Alt+F2): mount the share and run `scripts/vm/guest-install.sh`. That
+script runs `mindos-install` unattended and then adds the dev-VM extras:
+
+| Setting | Default | Override |
+|---|---|---|
+| target disk | `/dev/vda` | `MINDOS_DISK` |
+| hostname | `mindos-dev` | `MINDOS_HOSTNAME` |
+| user / password | `morvoso` / `mindos` | `MINDOS_USER`, `MINDOS_PASSWORD` |
+| timezone | `America/New_York` | `MINDOS_TZ` |
+| gaming stack | off (no GPU in the VM) | `MINDOS_INSTALL_GAMING=1` |
+| dev stack (mindos-dev) | on | `MINDOS_INSTALL_DEV=0` |
+
+Extras: `qemu-guest-agent`, the fstab entry `mindos /home/<user>/mindos
+virtiofs`, `[mindos]` in `/etc/pacman.conf` pointing at
+`~/mindos/build/repo` first and the ISO's copy second, and
+`CARGO_TARGET_DIR=~/build/cargo` in `/etc/profile.d` so guest builds never
+collide with host builds in the shared tree.
+
+The install takes a few minutes (pacstrap pulls the Arch packages from a
+mirror; the MindOS packages come from the ISO). The installed system boots
+straight into the compositor as the configured user, with mindd running.
+
+## Everyday commands
+
+```sh
+scripts/vm/mindos-vm.sh start | stop | kill | state | console
+scripts/vm/mindos-vm.sh snapshot NAME [description] | revert NAME | snapshots
+scripts/vm/mindos-vm.sh shot out.png            # screenshot of the VM display
+scripts/vm/vdrive.py exec 'systemctl status mindd'   # run in the guest (guest agent)
+scripts/vm/vdrive.py keys meta_l-ret            # send a key combo
+scripts/vm/vdrive.py type 'echo hello'          # type text (throttled for the PS/2 keyboard)
+```
+
+virt-manager does the same from its GUI: the console tab is the VM's display,
+View > Snapshots takes and reverts snapshots, and the toolbar sends
+Ctrl+Alt+F2 for the root console. Internal snapshots work with the UEFI
+firmware on libvirt 12.7.
+
+## Development loops
+
+**Compositor, daemon, CLI (Rust).** Edit on the host or in the VM, they are
+the same files. Build in the VM:
+
+```sh
+cd ~/mindos/mindwm && cargo build --release          # lands in ~/build/cargo/release
+sudo install ~/build/cargo/release/mindwm /usr/bin/mindwm.new \
+  && sudo mv -f /usr/bin/mindwm.new /usr/bin/mindwm
+sudo rm -f /run/greetd.run && sudo systemctl restart greetd   # new session with the new binary
+```
+
+(`rustup default stable` once in a fresh VM; the mindos-dev package ships
+rustup, clang, lld and the rest of the toolchain.)
+
+**Packages.** Build on the host in the build box, publish to the shared repo,
+update the VM:
+
+```sh
+make packages && make repo          # host
+sudo pacman -Syu                    # VM: picks up build/repo from the share
+```
+
+**Kernel.** `make kernel && make repo` on the host, then in the VM
+`sudo pacman -Syu linux-mindos` and reboot. Take a snapshot first
+(`make vm-snapshot NAME=before-kernel`); `scripts/vm/mindos-vm.sh revert
+before-kernel` brings the VM back if it does not boot.
+
+**Installer and ISO.** `make iso`, then either `scripts/vm/mindos-vm.sh
+destroy` and `make vm` again for a from-scratch install, or attach the new
+ISO in virt-manager and boot from it.
+
+## What the VM cannot do
+
+* No GPU: the compositor uses Mesa's software renderer, so it is fine for
+  window management, the Mind bar and Wayland/XWayland clients, not for
+  measuring frame rates or NVIDIA driver work.
+* The gaming stack is skipped by default for the same reason.
+* Keys typed by scripts go through an emulated PS/2 keyboard that drops
+  keys sent too fast; `vdrive.py type` throttles accordingly.

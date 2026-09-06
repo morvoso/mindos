@@ -1,0 +1,12 @@
+# /etc/mindos/greetd.toml — MindOS login manager configuration.
+# The installer appends an [initial_session] block for autologin, e.g.:
+#   [initial_session]
+#   command = "mindos-session"
+#   user = "alice"
+
+[terminal]
+vt = 1
+
+[default_session]
+command = "agreety --cmd mindos-session"
+user = "greeter"

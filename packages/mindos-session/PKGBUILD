@@ -1,0 +1,29 @@
+# Maintainer: MindOS <build@mindos.local>
+pkgname=mindos-session
+pkgver=0.1.0
+pkgrel=5
+pkgdesc="MindOS session: greetd configuration, session launcher and compositor defaults"
+arch=(any)
+url="https://mindos.local"
+license=(MIT)
+depends=(mindwm mindos-mind greetd greetd-agreety seatd dbus xorg-xwayland foot polkit
+         xdg-user-dirs
+         ttf-jetbrains-mono noto-fonts noto-fonts-emoji inter-font
+         wl-clipboard grim slurp pipewire wireplumber pipewire-pulse pipewire-alsa pipewire-jack
+         pamixer brightnessctl util-linux)
+optdepends=('xdg-desktop-portal: desktop portal framework (screen sharing not yet supported by mindwm)'
+            'xdg-desktop-portal-gtk: file chooser and settings portal backend')
+backup=(etc/mindos/greetd.toml etc/mindos/mindwm.toml etc/mindos/xdg/foot/foot.ini)
+source=(mindos-session session-startup greetd.toml greetd-mindos.conf mindwm.toml mindos.desktop foot.ini)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+
+package() {
+  install -Dm755 mindos-session   "$pkgdir/usr/bin/mindos-session"
+  install -Dm755 session-startup  "$pkgdir/usr/lib/mindos/session-startup"
+  install -Dm644 greetd.toml      "$pkgdir/etc/mindos/greetd.toml"
+  install -Dm644 greetd-mindos.conf "$pkgdir/usr/lib/systemd/system/greetd.service.d/mindos.conf"
+  install -Dm644 mindwm.toml      "$pkgdir/etc/mindos/mindwm.toml"
+  install -Dm644 mindos.desktop   "$pkgdir/usr/share/wayland-sessions/mindos.desktop"
+  install -Dm644 foot.ini         "$pkgdir/etc/mindos/xdg/foot/foot.ini"
+  install -dm755 "$pkgdir/etc/xdg/mindos/autostart"
+}

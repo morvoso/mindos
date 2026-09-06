@@ -1,0 +1,31 @@
+#!/bin/bash
+# mindos-session: set up the environment for Wayland-native applications and
+# start the MindOS compositor on the current seat. Started by greetd.
+
+export XDG_SESSION_TYPE=wayland
+# MindOS application defaults (foot.ini, ...) come first; /etc/xdg stays as the fallback
+export XDG_CONFIG_DIRS="/etc/mindos/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
+export XDG_CURRENT_DESKTOP=MindOS
+export XDG_SESSION_DESKTOP=mindos
+export MOZ_ENABLE_WAYLAND=1
+export QT_QPA_PLATFORM="wayland;xcb"
+export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+export SDL_VIDEODRIVER="wayland,x11"
+export GDK_BACKEND="wayland,x11"
+export _JAVA_AWT_WM_NONREPARENTING=1
+export CLUTTER_BACKEND=wayland
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
+export XCURSOR_THEME="${XCURSOR_THEME:-Adwaita}"
+
+# Site and user overrides (plain "export KEY=value" lines).
+for f in /etc/mindos/session-env "${XDG_CONFIG_HOME:-$HOME/.config}/mindos/session-env"; do
+  # shellcheck disable=SC1090
+  [[ -r $f ]] && . "$f"
+done
+
+# Compositor output goes to the journal: journalctl -t mindwm
+if command -v systemd-cat >/dev/null 2>&1; then
+  exec systemd-cat -t mindwm mindwm --tty-udev
+fi
+exec mindwm --tty-udev

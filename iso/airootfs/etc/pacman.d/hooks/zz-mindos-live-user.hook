@@ -1,0 +1,14 @@
+# remove from airootfs!
+# Put the live user "mind" into the groups that exist once everything is installed.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = mindos-session
+
+[Action]
+Description = Adding the live user to seat/input/mindos groups...
+When = PostTransaction
+Depends = shadow
+Depends = sh
+Exec = /bin/sh -c 'mkdir -p /home/mind; chown 1000:1000 /home/mind; for g in wheel video input audio storage seat mindos; do getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" mind; done; true'

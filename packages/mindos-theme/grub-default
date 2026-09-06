@@ -1,0 +1,15 @@
+# /etc/default/grub — MindOS defaults (installed by mindos-install).
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=3
+GRUB_DISTRIBUTOR="MindOS"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 amd_pstate=active zswap.enabled=0 preempt=full"
+GRUB_CMDLINE_LINUX=""
+GRUB_PRELOAD_MODULES="part_gpt part_msdos"
+GRUB_TIMEOUT_STYLE=menu
+GRUB_TERMINAL_INPUT=console
+GRUB_GFXMODE=auto
+GRUB_GFXPAYLOAD_LINUX=keep
+GRUB_DISABLE_RECOVERY=true
+GRUB_DISABLE_OS_PROBER=false
+GRUB_COLOR_NORMAL="white/black"
+GRUB_COLOR_HIGHLIGHT="red/white"

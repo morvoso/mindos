@@ -1,0 +1,36 @@
+# Maintainer: MindOS <build@mindos.local>
+# The MindOS compositor (Smithay based, Wayland + XWayland on DRM/KMS), built from ../../mindwm.
+pkgname=mindwm
+pkgver=0.1.0
+pkgrel=4
+pkgdesc="MindOS compositor: game-mode Wayland/XWayland compositor with the Mind bar"
+arch=(x86_64)
+url="https://mindos.local"
+license=(MIT)
+depends=(glibc gcc-libs wayland libinput libxkbcommon mesa libglvnd libdrm pixman seatd
+         systemd-libs xorg-xwayland glib2 libevdev libgudev)
+makedepends=(rust clang lld rsync wayland-protocols pkgconf)
+options=(!lto !debug)
+
+_srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export CARGO_HOME="${CARGO_HOME:-$_srcroot/build/cargo-home}"
+
+prepare() {
+  rm -rf "$srcdir/mindwm"
+  rsync -a --exclude target --exclude .git -- "$_srcroot/mindwm/" "$srcdir/mindwm/"
+  cd "$srcdir/mindwm"
+  cargo fetch
+}
+
+build() {
+  cd "$srcdir/mindwm"
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=x86-64-v3"
+  cargo build --release --target-dir "$srcdir/target"
+}
+
+package() {
+  install -Dm755 "$srcdir/target/release/mindwm" "$pkgdir/usr/bin/mindwm"
+  if [[ -f "$srcdir/mindwm/README.md" ]]; then
+    install -Dm644 "$srcdir/mindwm/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+  fi
+}

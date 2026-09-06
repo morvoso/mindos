@@ -1,0 +1,12 @@
+#!/bin/bash
+# console-theme: white text on MindOS red for the virtual consoles. The
+# linux-mindos kernel already boots this way; this is the fallback for other
+# kernels and keeps the palette entry exact.
+for n in 1 2 3 4 5 6; do
+  tty=/dev/tty$n
+  [[ -w $tty ]] || continue
+  # palette slot 4 (blue) becomes MindOS red, 7/15 are pure white
+  printf '\e]P48c1010\e]P7ffffff\e]PFffffff' > "$tty" 2>/dev/null || true
+  setterm --term linux --background blue --foreground white --store > "$tty" 2>/dev/null || true
+done
+exit 0

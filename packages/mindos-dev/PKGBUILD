@@ -1,0 +1,21 @@
+# Maintainer: MindOS <build@mindos.local>
+# Meta package: the MindOS development toolchain.
+pkgname=mindos-dev
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="MindOS development stack: compilers, Rust, Node, Python, Docker, editors and CLI tools"
+arch=(any)
+url="https://mindos.local"
+license=(MIT)
+depends=(base-devel git git-lfs github-cli rustup clang llvm lld cmake ninja
+         python python-pip nodejs npm docker docker-compose
+         neovim code kitty zsh fish tmux ripgrep fd bat eza fzf jq btop nvtop htop)
+
+package() {
+  install -dm755 "$pkgdir/usr/share/doc/$pkgname"
+  cat > "$pkgdir/usr/share/doc/$pkgname/README" <<'DOC'
+mindos-dev pulls in the MindOS development toolchain. Rust is managed with
+rustup: run `rustup default stable` once. Docker: `sudo systemctl enable --now docker`
+and add yourself to the docker group.
+DOC
+}

@@ -1,0 +1,28 @@
+# Maintainer: MindOS <build@mindos.local>
+pkgname=mindos-theme
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="MindOS look: white-on-red GRUB, Plymouth and console theme, wallpaper and icon"
+arch=(any)
+url="https://mindos.local"
+license=(MIT)
+depends=(plymouth grub util-linux)
+source=(05_mindos grub-default
+        mindos.plymouth mindos.script logo.png bar.png
+        wallpaper.png mindos.png splash.png console-theme mindos-console-theme.service)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+
+package() {
+  install -Dm755 05_mindos      "$pkgdir/etc/grub.d/05_mindos"
+  install -Dm644 grub-default   "$pkgdir/usr/share/mindos/grub-default"
+  local t="$pkgdir/usr/share/plymouth/themes/mindos"
+  install -Dm644 mindos.plymouth "$t/mindos.plymouth"
+  install -Dm644 mindos.script   "$t/mindos.script"
+  install -Dm644 logo.png        "$t/logo.png"
+  install -Dm644 bar.png         "$t/bar.png"
+  install -Dm644 wallpaper.png   "$pkgdir/usr/share/mindos/wallpaper.png"
+  install -Dm644 splash.png      "$pkgdir/usr/share/mindos/splash.png"
+  install -Dm644 mindos.png      "$pkgdir/usr/share/pixmaps/mindos.png"
+  install -Dm755 console-theme   "$pkgdir/usr/lib/mindos/console-theme"
+  install -Dm644 mindos-console-theme.service "$pkgdir/usr/lib/systemd/system/mindos-console-theme.service"
+}

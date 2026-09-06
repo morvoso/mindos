@@ -1,0 +1,28 @@
+#!/bin/bash
+# apply-branding: put MindOS branding on top of the Arch base. Idempotent; run
+# from the 90-mindos-branding pacman hook and by the installer.
+set -u
+src=/usr/share/mindos/os-release
+if [[ -f $src ]] && ! cmp -s "$src" /usr/lib/os-release; then
+  install -m644 "$src" /usr/lib/os-release
+fi
+if [[ ! -L /etc/os-release ]]; then
+  ln -sf ../usr/lib/os-release /etc/os-release
+fi
+if command -v plymouth-set-default-theme >/dev/null 2>&1 && [[ -d /usr/share/plymouth/themes/mindos ]]; then
+  cur=$(plymouth-set-default-theme 2>/dev/null || true)
+  if [[ $cur != mindos ]]; then
+    plymouth-set-default-theme mindos >/dev/null 2>&1 || true
+  fi
+fi
+getent group mindos >/dev/null 2>&1 || groupadd -r mindos 2>/dev/null || true
+
+# --- issue ---
+# agetty understands \S{PRETTY_NAME}, agreety (greetd's fallback greeter) does not:
+# ship a plain issue file so the tty banner reads "MindOS <kernel> (ttyN)" everywhere.
+issue='MindOS \r (\l)'
+if [ "$(head -n1 /etc/issue 2>/dev/null)" != "$issue" ]; then
+  printf '%s\n\n' "$issue" > /etc/issue
+fi
+
+exit 0

@@ -1,0 +1,7 @@
+
+  MindOS live session.  User "mind" (sudo without password).
+
+    sudo mindos-install      guided installer (needs internet for the Arch repos)
+    mind chat                talk to the Mind
+    Ctrl+Alt+F2              root console
+

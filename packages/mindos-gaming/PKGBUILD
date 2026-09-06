@@ -1,0 +1,23 @@
+# Maintainer: MindOS <build@mindos.local>
+# Meta package: the MindOS gaming stack (Steam/Proton, gamescope, GameMode, MangoHud, Lutris/Wine).
+pkgname=mindos-gaming
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="MindOS gaming stack: Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime"
+arch=(any)
+url="https://mindos.local"
+license=(MIT)
+# lib32-openal is not in the official repos (it is pulled in by steam's runtime instead).
+depends=(steam gamescope gamemode lib32-gamemode mangohud lib32-mangohud
+         lutris wine-staging winetricks protontricks
+         vulkan-icd-loader lib32-vulkan-icd-loader
+         lib32-pipewire lib32-libpulse lib32-alsa-plugins lib32-gnutls
+         sdl2-compat discord obs-studio)
+backup=(etc/gamemode.ini)
+source=(gamemode.ini 60-mindos-gaming.conf)
+sha256sums=(SKIP SKIP)
+
+package() {
+  install -Dm644 gamemode.ini "$pkgdir/etc/gamemode.ini"
+  install -Dm644 60-mindos-gaming.conf "$pkgdir/etc/security/limits.d/60-mindos-gaming.conf"
+}

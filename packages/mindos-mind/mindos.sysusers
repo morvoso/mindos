@@ -1,0 +1,2 @@
+# Members of "mindos" may talk to the Mind daemon over /run/mindos/mind.sock.
+g mindos -

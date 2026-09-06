@@ -1,0 +1,11 @@
+NAME="MindOS"
+PRETTY_NAME="MindOS"
+ID=mindos
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="1;37;41"
+HOME_URL="https://mindos.local/"
+DOCUMENTATION_URL="https://mindos.local/docs"
+SUPPORT_URL="https://mindos.local/support"
+BUG_REPORT_URL="https://mindos.local/bugs"
+LOGO=mindos

@@ -1,0 +1,45 @@
+# Maintainer: MindOS <build@mindos.local>
+# The Mind: mindd (local-LLM system daemon) and the `mind` CLI, built from ../../mindd.
+pkgname=mindos-mind
+pkgver=0.1.0
+pkgrel=2
+pkgdesc="MindOS Mind: local LLM system daemon (mindd) and its CLI (mind)"
+arch=(x86_64)
+url="https://mindos.local"
+license=(MIT)
+depends=(glibc gcc-libs llama-cpp ggml-vulkan pacman systemd pciutils coreutils util-linux)
+# ggml-cuda pulls the full CUDA toolkit (~4 GB); mindos-install adds it on NVIDIA systems.
+optdepends=('ggml-cuda: CUDA backend for llama-server on NVIDIA GPUs (faster than Vulkan)')
+makedepends=(rust clang lld rsync)
+backup=(etc/mindos/mind.toml)
+install=mindos-mind.install
+options=(!lto !debug)
+source=(mind.toml mindd.service mindos.sysusers mindos.tmpfiles)
+sha256sums=(SKIP SKIP SKIP SKIP)
+
+_srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export CARGO_HOME="${CARGO_HOME:-$_srcroot/build/cargo-home}"
+
+prepare() {
+  rm -rf "$srcdir/mindd"
+  rsync -a --exclude target --exclude .git -- "$_srcroot/mindd/" "$srcdir/mindd/"
+  cd "$srcdir/mindd"
+  cargo fetch --locked
+}
+
+build() {
+  cd "$srcdir/mindd"
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=x86-64-v3"
+  cargo build --release --locked --target-dir "$srcdir/target"
+}
+
+package() {
+  install -Dm755 "$srcdir/target/release/mindd" "$pkgdir/usr/bin/mindd"
+  install -Dm755 "$srcdir/target/release/mind"  "$pkgdir/usr/bin/mind"
+  install -Dm644 "$srcdir/mindd.service"  "$pkgdir/usr/lib/systemd/system/mindd.service"
+  install -Dm644 "$srcdir/mindos.sysusers" "$pkgdir/usr/lib/sysusers.d/mindos.conf"
+  install -Dm644 "$srcdir/mindos.tmpfiles" "$pkgdir/usr/lib/tmpfiles.d/mindos.conf"
+  install -Dm644 "$srcdir/mind.toml" "$pkgdir/etc/mindos/mind.toml"
+  install -dm755 "$pkgdir/var/lib/mindos/models"
+  install -Dm644 "$srcdir/mindd/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md" 2>/dev/null || true
+}

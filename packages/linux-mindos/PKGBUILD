@@ -1,0 +1,167 @@
+# Maintainer: MindOS <build@mindos.local>
+# The MindOS gaming kernel: vanilla kernel.org stable + BORE + MindOS patches,
+# compiled with Clang ThinLTO for the machine it is built on.
+#
+#   MINDOS_CPU=generic makepkg   portable x86-64 instead of -march=native
+#   MINDOS_LTO=none makepkg      plain (faster) build without LTO
+
+pkgbase=linux-mindos
+pkgver=7.2.3
+pkgrel=1
+pkgdesc='MindOS gaming kernel (BORE, 1000 Hz, full preemption, sched_ext, ThinLTO)'
+url='https://github.com/mindos/mindos'
+arch=(x86_64)
+license=(GPL-2.0-only)
+makedepends=(bc cpio gettext libelf pahole perl python tar xz zstd clang llvm lld)
+options=(!debug !strip !lto)
+_srcname=linux-$pkgver
+source=(
+  "https://cdn.kernel.org/pub/linux/kernel/v7.x/$_srcname.tar.xz"
+  0001-bore.patch
+  0002-mindos-vt-console-theme.patch
+  0003-dkms-clang.patch
+  config
+  mindos-config.sh
+)
+sha256sums=(
+  '8ba259e8e7b13ec6ef0941c8a39ad90b24bd4a4d6c0010ba6bafb794550ecd03'
+  SKIP
+  SKIP
+  SKIP
+  SKIP
+  SKIP
+)
+
+: "${MINDOS_CPU:=native}"
+: "${MINDOS_LTO:=thin}"
+export MINDOS_CPU MINDOS_LTO
+export KBUILD_BUILD_HOST=mindos
+export KBUILD_BUILD_USER=$pkgbase
+export KBUILD_BUILD_TIMESTAMP="$(date -Ru${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH})"
+_make_flags=(CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1)
+
+prepare() {
+  cd $_srcname
+
+  echo "Setting version..."
+  echo "-$pkgrel" > localversion.10-pkgrel
+  echo "${pkgbase#linux}" > localversion.20-pkgname
+
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    [[ $src = *.patch ]] || continue
+    echo "Applying patch $src..."
+    patch -Np1 < "../$src"
+  done
+
+  echo "Setting config..."
+  cp ../config .config
+  bash ../mindos-config.sh
+  make "${_make_flags[@]}" olddefconfig
+  diff -u ../config .config | grep -E '^[-+]CONFIG_' > ../config.diff || true
+  echo "Config changed in $(wc -l < ../config.diff) lines (see config.diff)"
+
+  make -s "${_make_flags[@]}" kernelrelease > version
+  echo "Prepared $pkgbase version $(<version)"
+}
+
+build() {
+  cd $_srcname
+  make "${_make_flags[@]}" all
+}
+
+_package() {
+  pkgdesc="The $pkgdesc kernel and modules"
+  depends=(coreutils kmod initramfs)
+  optdepends=('wireless-regdb: to set the correct wireless channels of your country'
+              'linux-firmware: firmware images needed for some devices'
+              'scx-scheds: sched_ext schedulers (scx_lavd) tuned for gaming')
+  provides=(KSMBD-MODULE VIRTUALBOX-GUEST-MODULES WIREGUARD-MODULE)
+
+  cd $_srcname
+  local modulesdir="$pkgdir/usr/lib/modules/$(<version)"
+
+  echo "Installing boot image..."
+  install -Dm644 "$(make -s "${_make_flags[@]}" image_name)" "$modulesdir/vmlinuz"
+  echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
+
+  echo "Installing modules..."
+  ZSTD_CLEVEL=19 make "${_make_flags[@]}" INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+    DEPMOD=/doesnt/exist modules_install
+  rm "$modulesdir"/build
+}
+
+_package-headers() {
+  pkgdesc="Headers and scripts for building modules for the $pkgdesc kernel"
+  depends=(pahole clang llvm lld)
+
+  cd $_srcname
+  local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
+
+  echo "Installing build files..."
+  install -Dt "$builddir" -m644 .config Makefile Module.symvers System.map localversion.* version vmlinux
+  install -Dt "$builddir/kernel" -m644 kernel/Makefile
+  install -Dt "$builddir/arch/x86" -m644 arch/x86/Makefile
+  cp -t "$builddir" -a scripts
+  ln -srt "$builddir" "$builddir/scripts/gdb/vmlinux-gdb.py"
+  install -Dt "$builddir/tools/objtool" tools/objtool/objtool
+  install -Dt "$builddir/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
+
+  echo "Installing headers..."
+  cp -t "$builddir" -a include
+  cp -t "$builddir/arch/x86" -a arch/x86/include
+  install -Dt "$builddir/arch/x86/kernel" -m644 arch/x86/kernel/asm-offsets.s
+  install -Dt "$builddir/drivers/md" -m644 drivers/md/*.h
+  install -Dt "$builddir/net/mac80211" -m644 net/mac80211/*.h
+  install -Dt "$builddir/drivers/media/i2c" -m644 drivers/media/i2c/msp3400-driver.h
+  install -Dt "$builddir/drivers/media/usb/dvb-usb" -m644 drivers/media/usb/dvb-usb/*.h
+  install -Dt "$builddir/drivers/media/dvb-frontends" -m644 drivers/media/dvb-frontends/*.h
+  install -Dt "$builddir/drivers/media/tuners" -m644 drivers/media/tuners/*.h
+  install -Dt "$builddir/drivers/iio/common/hid-sensors" -m644 drivers/iio/common/hid-sensors/*.h
+
+  echo "Installing KConfig files..."
+  find . -name 'Kconfig*' -exec install -Dm644 {} "$builddir/{}" \;
+
+  echo "Removing unneeded architectures..."
+  local arch
+  for arch in "$builddir"/arch/*/; do
+    [[ $arch = */x86/ ]] && continue
+    rm -r "$arch"
+  done
+
+  echo "Removing documentation and loose objects..."
+  rm -r "$builddir/Documentation"
+  find -L "$builddir" -type l -delete
+  find "$builddir" -type f -name '*.o' -delete
+
+  echo "Stripping build tools..."
+  local file
+  while read -rd '' file; do
+    case "$(file -Sib "$file")" in
+      application/x-sharedlib\;*)      llvm-strip $STRIP_SHARED "$file" ;;
+      application/x-archive\;*)        llvm-strip $STRIP_STATIC "$file" ;;
+      application/x-executable\;*)     llvm-strip $STRIP_BINARIES "$file" ;;
+      application/x-pie-executable\;*) llvm-strip $STRIP_SHARED "$file" ;;
+    esac
+  done < <(find "$builddir" -type f -perm -u+x ! -name vmlinux -print0)
+
+  echo "Stripping vmlinux..."
+  llvm-strip $STRIP_STATIC "$builddir/vmlinux"
+
+  echo "Adding symlink..."
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}
+
+pkgname=(
+  "$pkgbase"
+  "$pkgbase-headers"
+)
+for _p in "${pkgname[@]}"; do
+  eval "package_$_p() {
+    $(declare -f "_package${_p#$pkgbase}")
+    _package${_p#$pkgbase}
+  }"
+done

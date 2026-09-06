@@ -1,0 +1,4 @@
+d /run/mindos 0750 root mindos -
+d /var/lib/mindos 0755 root root -
+d /var/lib/mindos/models 0755 root root -
+d /var/log/mindos 0750 root mindos -

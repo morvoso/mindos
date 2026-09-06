@@ -1,0 +1,33 @@
+[package]
+name = "mindos-mind"
+version = "0.1.0"
+edition = "2021"
+description = "MindOS mind: the LLM daemon (mindd) and the mind CLI"
+license = "MIT"
+default-run = "mind"
+
+[[bin]]
+name = "mindd"
+path = "src/bin/mindd.rs"
+
+[[bin]]
+name = "mind"
+path = "src/bin/mind.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+toml = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

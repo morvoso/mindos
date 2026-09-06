@@ -1,0 +1,16 @@
+post_install() {
+  systemd-sysusers mindos.conf >/dev/null 2>&1 || true
+  systemd-tmpfiles --create mindos.conf >/dev/null 2>&1 || true
+  cat <<'MSG'
+==> MindOS Mind installed.
+    * Put a GGUF model in /var/lib/mindos/models/ (default.gguf wins, else the
+      largest one that fits the GPU) and: systemctl enable --now mindd
+    * Users who may talk to the Mind must be in group "mindos":
+        usermod -aG mindos <user>
+    * Then: mind chat | mind update | mind doctor
+MSG
+}
+post_upgrade() {
+  systemd-sysusers mindos.conf >/dev/null 2>&1 || true
+  systemd-tmpfiles --create mindos.conf >/dev/null 2>&1 || true
+}

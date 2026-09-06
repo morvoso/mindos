@@ -1,0 +1,20 @@
+[Unit]
+Description=MindOS Mind (local LLM system daemon)
+Documentation=https://mindos.local/docs/mind
+After=network.target systemd-tmpfiles-setup.service systemd-modules-load.service
+Wants=systemd-tmpfiles-setup.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mindd -c /etc/mindos/mind.toml
+Restart=on-failure
+RestartSec=3
+Environment=HOME=/root
+Environment=LC_ALL=C.UTF-8
+# Inference yields to games and interactive work.
+Nice=10
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

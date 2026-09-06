@@ -1,0 +1,11 @@
+# MindOS live ISO: log the live user straight into the MindOS session.
+[terminal]
+vt = 1
+
+[default_session]
+command = "agreety --cmd mindos-session"
+user = "greeter"
+
+[initial_session]
+command = "mindos-session"
+user = "mind"

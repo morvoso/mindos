@@ -1,0 +1,209 @@
+#!/bin/bash
+# mindos-install — guided MindOS installer. Run as root from the live ISO.
+#
+# Interactive by default. Non-interactive with MINDOS_AUTO=1 and:
+#   MINDOS_DISK=/dev/nvme0n1  MINDOS_HOSTNAME=mindos  MINDOS_USER=alice
+#   MINDOS_PASSWORD=secret    MINDOS_TZ=America/Chicago
+#   MINDOS_INSTALL_GAMING=1   MINDOS_INSTALL_DEV=1
+#
+# Layout: GPT — 1 MiB BIOS boot, 1 GiB EFI (/boot), rest btrfs (@ @home @log @pkg @snapshots).
+set -euo pipefail
+trap 'rc=$?; echo; echo "mindos-install: FAILED at line $LINENO: $BASH_COMMAND (exit $rc)" >&2; exit $rc' ERR
+
+BOLD=$'\e[1m'; RED=$'\e[1;37;41m'; NC=$'\e[0m'
+say()  { printf '%s\n' "${BOLD}==>${NC} $*"; }
+ask()  { local var=$1 prompt=$2 def=${3:-}; local v; read -rp "$prompt${def:+ [$def]}: " v; printf -v "$var" '%s' "${v:-$def}"; }
+die()  { printf 'mindos-install: %s\n' "$*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || die "run as root: sudo mindos-install"
+[[ -r /etc/mindos/pacman-install.conf ]] || die "/etc/mindos/pacman-install.conf missing"
+TARGET=/mnt
+AUTO=${MINDOS_AUTO:-0}
+UEFI=0; [[ -d /sys/firmware/efi/efivars ]] && UEFI=1
+
+# ---- live medium (never offered as a target) ---------------------------------
+live_src=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
+live_disk=""
+if [[ -n $live_src ]]; then
+  live_disk=$(lsblk -no PKNAME "$live_src" 2>/dev/null | head -1 || true)
+  [[ -n $live_disk ]] && live_disk="/dev/$live_disk" || live_disk="$live_src"
+fi
+list_disks() {
+  lsblk -dpno NAME,SIZE,MODEL,TYPE | awk -v live="$live_disk" '$NF=="disk" && $1!=live {print}'
+}
+
+# ---- inputs -----------------------------------------------------------------
+echo "${RED} MindOS installer ${NC}"
+echo "Firmware: $([[ $UEFI == 1 ]] && echo UEFI || echo BIOS)   live medium: ${live_disk:-unknown}"
+echo
+if [[ $AUTO == 1 ]]; then
+  DISK=${MINDOS_DISK:?MINDOS_DISK required}
+  HOSTNAME_=${MINDOS_HOSTNAME:-mindos}
+  USERNAME=${MINDOS_USER:?MINDOS_USER required}
+  PASSWORD=${MINDOS_PASSWORD:?MINDOS_PASSWORD required}
+  TZ_=${MINDOS_TZ:-America/Chicago}
+  GAMING=${MINDOS_INSTALL_GAMING:-1}
+  DEV=${MINDOS_INSTALL_DEV:-1}
+else
+  say "Disks:"; list_disks | sed 's/^/    /'; echo
+  ask DISK "Install to (whole disk, will be ERASED)"
+  [[ -b $DISK ]] || die "$DISK is not a block device"
+  [[ $DISK != "$live_disk" ]] || die "$DISK is the live medium"
+  read -rp "Type the disk name again to confirm erasing it ($DISK): " confirm
+  [[ $confirm == "$DISK" ]] || die "confirmation mismatch"
+  ask HOSTNAME_ "Hostname" mindos
+  ask USERNAME "Username"
+  [[ $USERNAME =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid username"
+  while :; do
+    read -rsp "Password for $USERNAME: " PASSWORD; echo
+    read -rsp "Repeat password: " p2; echo
+    [[ $PASSWORD == "$p2" && -n $PASSWORD ]] && break
+    echo "passwords differ or empty, try again"
+  done
+  deftz=$(timedatectl show -p Timezone --value 2>/dev/null || true)
+  ask TZ_ "Timezone" "${deftz:-America/Chicago}"
+  ask g "Install the gaming stack (Steam, gamescope, Lutris, Wine)? [Y/n]" Y
+  GAMING=$([[ $g =~ ^[Nn] ]] && echo 0 || echo 1)
+  ask d "Install the development stack (Rust, Node, Docker, editors)? [Y/n]" Y
+  DEV=$([[ $d =~ ^[Nn] ]] && echo 0 || echo 1)
+fi
+[[ -b $DISK ]] || die "$DISK is not a block device"
+[[ -f /usr/share/zoneinfo/$TZ_ ]] || die "unknown timezone $TZ_"
+LOCALE=en_US.UTF-8
+KEYMAP=us
+NVIDIA=0; lspci -d 10de: 2>/dev/null | grep -qiE "vga|3d|display" && NVIDIA=1
+AMDGPU=0; lspci -d 1002: 2>/dev/null | grep -qiE "vga|3d|display" && AMDGPU=1
+
+PKGS=(base base-devel linux-firmware mindos-base mindos-session mindos-mind mindwm mindos-theme)
+[[ $NVIDIA == 1 ]] && PKGS+=(ggml-cuda)
+[[ $GAMING == 1 ]] && PKGS+=(mindos-gaming)
+[[ $DEV == 1 ]] && PKGS+=(mindos-dev)
+
+echo
+say "Plan"
+cat <<PLAN
+    disk      $DISK  (GPT: BIOS boot 1M, EFI 1G, btrfs rest)
+    hostname  $HOSTNAME_      user  $USERNAME      timezone  $TZ_
+    gpu       nvidia=$NVIDIA amdgpu=$AMDGPU
+    packages  ${PKGS[*]}
+PLAN
+[[ $AUTO == 1 ]] || { read -rp "Proceed? [y/N] " ok; [[ $ok =~ ^[Yy] ]] || die "aborted"; }
+
+# ---- partition + format -----------------------------------------------------
+say "Partitioning $DISK"
+umount -R "$TARGET" 2>/dev/null || true
+swapoff -a 2>/dev/null || true
+sgdisk --zap-all "$DISK" >/dev/null
+sgdisk --clear \
+  -n 1:0:+1M   -t 1:ef02 -c 1:"BIOS boot" \
+  -n 2:0:+1G   -t 2:ef00 -c 2:"MINDOS_EFI" \
+  -n 3:0:0     -t 3:8300 -c 3:"mindos" "$DISK" >/dev/null
+partprobe "$DISK" 2>/dev/null || true
+udevadm settle
+part() { lsblk -pnro NAME,PARTN "$DISK" | awk -v n="$1" '$2==n {print $1}'; }
+EFI=$(part 2); ROOT=$(part 3)
+[[ -b $EFI && -b $ROOT ]] || die "partitions not found on $DISK"
+
+say "Formatting"
+mkfs.fat -F32 -n MINDOS_EFI "$EFI" >/dev/null
+mkfs.btrfs -f -L mindos "$ROOT" >/dev/null
+mount "$ROOT" "$TARGET"
+for sv in @ @home @log @pkg @snapshots; do btrfs subvolume create "$TARGET/$sv" >/dev/null; done
+umount "$TARGET"
+opts="compress=zstd:1,noatime,ssd,space_cache=v2,discard=async"
+mount -o "$opts,subvol=@" "$ROOT" "$TARGET"
+mkdir -p "$TARGET"/{boot,home,var/log,var/cache/pacman/pkg,.snapshots}
+mount -o "$opts,subvol=@home" "$ROOT" "$TARGET/home"
+mount -o "$opts,subvol=@log" "$ROOT" "$TARGET/var/log"
+mount -o "$opts,subvol=@pkg" "$ROOT" "$TARGET/var/cache/pacman/pkg"
+mount -o "$opts,subvol=@snapshots" "$ROOT" "$TARGET/.snapshots"
+mount "$EFI" "$TARGET/boot"
+
+# ---- mirrors + local MindOS repo -------------------------------------------
+say "Package repositories"
+if ! grep -q '^Server' /etc/pacman.d/mirrorlist 2>/dev/null; then
+  sed -E -i 's/^#(Server = https:)/\1/' /etc/pacman.d/mirrorlist
+fi
+if [[ -d /var/lib/mindos/repo ]]; then
+  mkdir -p "$TARGET/var/lib/mindos"
+  cp -a /var/lib/mindos/repo "$TARGET/var/lib/mindos/"
+fi
+pacman -Sy --config /etc/mindos/pacman-install.conf >/dev/null
+
+# ---- install ----------------------------------------------------------------
+say "Installing packages (this needs internet for the Arch repositories)"
+pacstrap -C /etc/mindos/pacman-install.conf "$TARGET" "${PKGS[@]}"
+genfstab -U "$TARGET" >> "$TARGET/etc/fstab"
+install -Dm644 /etc/mindos/pacman-install.conf "$TARGET/etc/pacman.conf"
+cp /etc/pacman.d/mirrorlist "$TARGET/etc/pacman.d/mirrorlist"
+if [[ -d /var/lib/mindos/models ]]; then
+  mkdir -p "$TARGET/var/lib/mindos/models"
+  cp -a /var/lib/mindos/models/. "$TARGET/var/lib/mindos/models/"
+fi
+
+# ---- configure --------------------------------------------------------------
+say "Configuring the system"
+# mkinitcpio: MindOS hooks, modules trimmed to the GPUs present
+mods=()
+[[ $NVIDIA == 1 ]] && mods+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
+[[ $AMDGPU == 1 ]] && mods+=(amdgpu)
+mkdir -p "$TARGET/etc/mkinitcpio.conf.d"
+sed "s/^MODULES=.*/MODULES=(${mods[*]})/" /usr/share/mindos/mkinitcpio-mindos.conf \
+  > "$TARGET/etc/mkinitcpio.conf.d/mindos.conf"
+install -Dm644 /usr/share/mindos/grub-default "$TARGET/etc/default/grub"
+if [[ $NVIDIA == 0 ]]; then
+  sed -i 's/ nvidia_drm.modeset=1 nvidia_drm.fbdev=1//' "$TARGET/etc/default/grub"
+fi
+cat >> "$TARGET/etc/mindos/greetd.toml" <<GREETD
+
+[initial_session]
+command = "mindos-session"
+user = "$USERNAME"
+GREETD
+install -Dm440 /dev/stdin "$TARGET/etc/sudoers.d/10-wheel" <<<'%wheel ALL=(ALL:ALL) ALL'
+
+cat > "$TARGET/root/mindos-configure.sh" <<CHROOT
+#!/bin/bash
+set -euo pipefail
+ln -sf /usr/share/zoneinfo/$TZ_ /etc/localtime
+hwclock --systohc || true
+sed -i 's/^#$LOCALE/$LOCALE/' /etc/locale.gen
+locale-gen >/dev/null
+echo "LANG=$LOCALE" > /etc/locale.conf
+echo "KEYMAP=$KEYMAP" > /etc/vconsole.conf
+echo "$HOSTNAME_" > /etc/hostname
+printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" > /etc/hosts
+systemd-sysusers >/dev/null 2>&1 || true
+groups=""
+for g in wheel mindos video input audio storage seat docker; do
+  getent group "\$g" >/dev/null && groups="\$groups,\$g"
+done
+useradd -m -s /bin/bash -G "\${groups#,}" "$USERNAME"
+printf '%s:%s\n' "$USERNAME" '$(printf %s "$PASSWORD" | sed "s/'/'\\\\''/g")' | chpasswd
+/usr/lib/mindos/apply-branding || true
+if [[ $UEFI == 1 ]]; then
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=MindOS --recheck
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=MindOS --removable || true
+fi
+grub-install --target=i386-pc --recheck "$DISK" || true
+grub-mkconfig -o /boot/grub/grub.cfg
+plymouth-set-default-theme -R mindos
+for u in greetd mindd NetworkManager bluetooth fstrim.timer systemd-timesyncd mindos-console-theme; do
+  systemctl enable "\$u" >/dev/null 2>&1 || echo "  (could not enable \$u)"
+done
+if [[ $DEV == 1 ]] && systemctl list-unit-files docker.service >/dev/null 2>&1; then
+  systemctl enable docker >/dev/null 2>&1 || true
+fi
+CHROOT
+chmod 700 "$TARGET/root/mindos-configure.sh"
+arch-chroot "$TARGET" /root/mindos-configure.sh
+rm -f "$TARGET/root/mindos-configure.sh"
+
+say "Done"
+cat <<SUMMARY
+    MindOS is installed on $DISK.
+      hostname $HOSTNAME_   user $USERNAME (wheel, mindos)   autologin into the MindOS session
+      kernel   linux-mindos   bootloader GRUB ($([[ $UEFI == 1 ]] && echo UEFI || echo BIOS))
+      Mind     mindd enabled; models in /var/lib/mindos/models
+    Remove the install medium and reboot:  reboot
+SUMMARY

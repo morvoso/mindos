@@ -1,0 +1,12 @@
+[Unit]
+Description=MindOS console colors (white on red)
+After=systemd-vconsole-setup.service
+ConditionPathExists=/dev/tty1
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/mindos/console-theme
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
