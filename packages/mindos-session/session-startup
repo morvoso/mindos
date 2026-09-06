@@ -1,9 +1,9 @@
 #!/bin/bash
-# session-startup: run by mindwm once its Wayland socket is up (WAYLAND_DISPLAY
-# and DISPLAY are set). Publishes the display to systemd --user / D-Bus and
-# launches autostart entries.
+# session-startup: run by mindwm once its Wayland socket is up (WAYLAND_DISPLAY,
+# DISPLAY and MINDWM_SOCKET, the shell IPC socket, are set). Publishes them to
+# systemd --user / D-Bus and launches autostart entries.
 
-systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP \
+systemctl --user import-environment WAYLAND_DISPLAY DISPLAY MINDWM_SOCKET XDG_CURRENT_DESKTOP \
   XDG_SESSION_TYPE XDG_SESSION_DESKTOP 2>/dev/null
 dbus-update-activation-environment --systemd --all 2>/dev/null
 # xdg-desktop-portal-wlr is not started: it needs wlr_screencopy/ext_image_copy_capture,

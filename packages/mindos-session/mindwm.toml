@@ -13,5 +13,10 @@ terminal = "foot"
 socket = "/run/mindos/mind.sock"
 
 [theme]
-background = "#8c1010"
-foreground = "#ffffff"
+# MindOS dark HUD: the void background, off-white text, one electric-cyan accent.
+# Red is reserved for the kernel/boot stages and never appears here.
+background = "#05070a"
+foreground = "#e6edf3"
+accent = "#19e3ff"
+# Draw the MINDOS wordmark + shortcut hints on the empty desktop.
+show_wordmark = true

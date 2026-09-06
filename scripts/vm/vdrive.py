@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Drive a libvirt VM: vdrive.py [--dom NAME] shot out.png | keys combo... | type "text" | exec "cmd" | state
-Key names follow qemu-drive.py (meta_l-spc, ctrl-alt-f2, ret, esc, spc, ...), mapped to linux keycodes."""
+                                  | move x y | click x y [left|right|middle] | rclick x y | dblclick x y | drag x1 y1 x2 y2
+                                  | press [btn] | release [btn]
+Key names follow qemu-drive.py (meta_l-spc, ctrl-alt-f2, ret, esc, spc, ...), mapped to linux keycodes.
+Pointer coordinates are screen pixels (VDRIVE_SCREEN=WxH, default 1920x1080) sent as absolute USB-tablet events."""
 import os, subprocess, sys, time, zlib, struct
 DOM = os.environ.get("VDOM", "mindos-dev")
 URI = "qemu:///system"
@@ -58,6 +61,35 @@ def ppm_to_png(ppm, png):
     open(png, 'wb').write(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
     return w, h
 
+SCREEN = tuple(int(v) for v in os.environ.get("VDRIVE_SCREEN", "1920x1080").split("x"))
+
+def qmp(obj):
+    import json
+    r = subprocess.run(['virsh', '-c', URI, 'qemu-monitor-command', DOM, json.dumps(obj)], capture_output=True, text=True)
+    if r.returncode: raise SystemExit('qmp: ' + r.stderr.strip())
+    return r.stdout
+
+def pointer(events):
+    qmp({'execute': 'input-send-event', 'arguments': {'events': events}})
+
+def abs_xy(x, y):
+    return [{'type': 'abs', 'data': {'axis': 'x', 'value': int(int(x) * 32767 / max(SCREEN[0] - 1, 1))}},
+            {'type': 'abs', 'data': {'axis': 'y', 'value': int(int(y) * 32767 / max(SCREEN[1] - 1, 1))}}]
+
+def button(name, down):
+    return {'type': 'btn', 'data': {'down': down, 'button': name}}
+
+def click(x, y, btn='left', times=1):
+    pointer(abs_xy(x, y)); time.sleep(0.08)
+    for _ in range(times):
+        pointer([button(btn, True)]); time.sleep(0.05); pointer([button(btn, False)]); time.sleep(0.05)
+
+def drag(x1, y1, x2, y2, steps=12):
+    pointer(abs_xy(x1, y1)); time.sleep(0.08); pointer([button('left', True)]); time.sleep(0.12)
+    for i in range(1, steps + 1):
+        pointer(abs_xy(x1 + (int(x2) - int(x1)) * i / steps, y1 + (int(y2) - int(y1)) * i / steps)); time.sleep(0.03)
+    time.sleep(0.12); pointer([button('left', False)])
+
 def guest_exec(cmd, timeout=120):
     """Run a shell command in the guest through the QEMU guest agent; returns (rc, stdout, stderr)."""
     import json, base64
@@ -84,6 +116,13 @@ if __name__ == '__main__':
     elif a[0] == 'keys': send_keys(a[1:])
     elif a[0] == 'type': type_text(a[1])
     elif a[0] == 'state': print(virsh([f'domstate {DOM}']).stdout.strip())
+    elif a[0] == 'move': pointer(abs_xy(a[1], a[2]))
+    elif a[0] == 'click': click(a[1], a[2], a[3] if len(a) > 3 else 'left')
+    elif a[0] == 'rclick': click(a[1], a[2], 'right')
+    elif a[0] == 'dblclick': click(a[1], a[2], 'left', 2)
+    elif a[0] == 'drag': drag(a[1], a[2], a[3], a[4])
+    elif a[0] == 'press': pointer([button(a[1] if len(a) > 1 else 'left', True)])
+    elif a[0] == 'release': pointer([button(a[1] if len(a) > 1 else 'left', False)])
     elif a[0] == 'exec':
         rc, out, err = guest_exec(a[1]); sys.stdout.write(out); sys.stderr.write(err); sys.exit(rc)
     else: print(__doc__)

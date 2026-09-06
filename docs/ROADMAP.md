@@ -9,11 +9,13 @@
 - [x] `mindos-base`, `mindos-session`, `mindos-theme`, `mindos-gaming`, `mindos-dev`, `mindos-install` packages
 - [x] `[mindos]` repository and archiso profile produce an ISO with the bundled model
 - [x] ISO boots in QEMU into mindwm with mindd answering (software rendering in the VM)
-- [x] Screenshot proof: red/white boot, red desktop, Mind bar answering a question (`docs/img/`)
+- [x] Screenshot proof: red/white boot, dark Plymouth splash, dark compositor, Mind bar answering a question (`docs/img/`)
 
 ## Milestone 2 — installable gaming system
 - [x] `mindos-install` exercised end to end under UEFI in the libvirt dev VM (`docs/DEV-VM.md`); installed system boots into the session with mindd running
 - [x] `mindos-pkg`: one install path across the MindOS/Arch repositories, Flathub and the AUR, driven by the Mind (`docs/PACKAGES.md`); "install octopi" from the Mind bar builds it from the AUR in the dev VM
+- [x] Theme split: red only for GRUB/syslinux/kernel console; dark cyan HUD look for Plymouth, the compositor and the Mind bar
+- [x] `mindshell`: web-rendered desktop shell (Rust host + WebKitGTK + TypeScript UI) with bottom launcher panel, top bar (tray, clock), desktop widgets and KDE-style edit mode; compositor IPC for window lists, focus and minimize
 - [ ] `mindos-install` under BIOS firmware
 - [ ] `linux-mindos-nvidia-open` prebuilt modules (no DKMS build on first boot), `mind doctor` GPU checks
 - [ ] In-tree modules load with `module verification failed` (signature missing) on the current kernel build: keep module signatures intact or turn `MODULE_SIG` off

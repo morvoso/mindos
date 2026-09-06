@@ -9,9 +9,10 @@
    (updating, installing drivers, changing settings, diagnosing problems) is
    performed by the model through audited tools, with the user confirming
    anything destructive.
-3. Boot straight into the MindOS compositor. No display-manager screen, no
-   desktop environment: the compositor *is* the desktop, and its built-in
-   Mind bar is the launcher, the terminal and the chat.
+3. Boot straight into the MindOS compositor. No display-manager screen. The
+   compositor owns windows and input and carries the always-available Mind
+   bar; `mindshell`, a lean web-rendered shell, adds panels, launcher, tray
+   and widgets on top and can be rearranged live in an edit mode.
 4. Do not redo the ecosystem. Reuse the Linux kernel, systemd, pacman and the
    Arch repositories; ship the MindOS-specific pieces as packages in a MindOS
    repository.
@@ -38,7 +39,8 @@ Vanilla kernel.org stable (7.2.y) plus a small, reviewable patch set:
   game responsiveness (`kernel.sched_bore=1`).
 * **MindOS console theme**: the VT default attribute is white on red and the
   palette's red is MindOS red (`#8c1010`), so every boot message from the
-  kernel onwards is white text on a red background.
+  kernel onwards is white text on a red background. Red is reserved for this
+  boot stage; the loading screen, compositor and shell are dark.
 * A DKMS/Clang compatibility patch so out-of-tree modules build with the same
   toolchain as the kernel.
 * Config: `-mindos` local version, Clang + LLD with ThinLTO, `X86_NATIVE_CPU`
@@ -83,9 +85,27 @@ and the config schema are in `COMPOSITOR.md`.
   calls that need confirmation show as Y/N prompts; the model can launch apps
   and run commands in a terminal through client tools the compositor
   registers with mindd.
-* Empty desktop: MindOS red with the wordmark and the three key hints.
+* Empty desktop: void black with the cyan-glowing wordmark and the key hints
+  (only visible when the shell is not running).
 * Talks to mindd over `/run/mindos/mind.sock`; reconnects when the daemon
   restarts.
+* Exposes a small IPC socket (`MINDWM_SOCKET`, newline-delimited JSON) with
+  the window list, focus/close/minimize requests, outputs and shortcuts, used
+  by mindshell (`docs/SHELL.md`).
+
+### mindshell (mindshell/)
+
+The desktop environment. One Rust process opens wlr-layer-shell windows on
+the compositor (desktop background, panels, popups) and renders each with
+WebKitGTK 6 (GPU compositing, one shared web process); the interface is
+HTML/CSS/TypeScript with no framework. Panels and widgets are data
+(`layout.json`); the KDE-style edit mode adds panels on any edge, adds,
+reorders and configures widgets, and places widgets on the desktop. The
+default layout is a bottom launcher panel (start button, pinned and running
+apps) and a top bar (Mind status, system tray, audio, network, battery,
+clock). The host provides the system side: desktop entries and icon themes,
+the StatusNotifier tray, power, audio, network, battery and stats, and the
+compositor IPC. Details in `SHELL.md`.
 
 ### mindd and mind (mindd/)
 
@@ -140,8 +160,8 @@ stays available on tty2 on the live ISO.
   game-controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset and
   the pacman hook that re-applies branding after updates. Depends on
   `linux-mindos`, `linux-mindos-headers`, the NVIDIA and Mesa stacks.
-* **theme**: GRUB colours, Plymouth `mindos` theme, console theme service,
-  wallpaper, icon.
+* **theme**: GRUB colours and the console theme service (red boot stage), the
+  dark animated Plymouth `mindos` theme, the MindOS fonts, wallpaper, icon.
 * **gaming**: Steam, gamescope, GameMode (with `gamemode.ini`), MangoHud,
   Lutris, Wine and the lib32 runtime.
 * **dev**: base-devel, git, Rust, Clang/LLVM, CMake, Node, Python, Docker,
@@ -178,8 +198,8 @@ into `build/iso-profile`), `iso` (`mkarchiso` into `build/out`), `qemu` /
 
 ```
 firmware → GRUB or syslinux (white on red)
-  → linux-mindos (white-on-red VT, plymouth "mindos")
+  → linux-mindos (white-on-red VT) → plymouth "mindos" (dark, cyan)
   → systemd → mindd (llama-server loads the model) · greetd on VT 1
-  → mindos-session → mindwm (DRM/KMS) → session-startup → autostart
-  → Mind bar (Super+Space): "What should we do?"
+  → mindos-session → mindwm (DRM/KMS) → session-startup → mindos-shell.service
+  → panels, launcher, tray · Mind bar (Super+Space): "What should we do?"
 ```

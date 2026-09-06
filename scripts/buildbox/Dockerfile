@@ -18,6 +18,7 @@ RUN pacman -Syu --noconfirm --needed \
       wayland wayland-protocols libinput libxkbcommon mesa libdrm libdisplay-info seatd \
       systemd-libs pixman libglvnd \
       plymouth \
+      gtk4 webkitgtk-6.0 gtk4-layer-shell esbuild typescript python-pillow python-fonttools \
  && pacman -Scc --noconfirm
 
 RUN useradd -m -u 1000 -s /bin/bash builder \

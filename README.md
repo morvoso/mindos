@@ -10,8 +10,9 @@ configuration are conversations, not man pages.
 MindOS is built the way Arch, CachyOS and SteamOS are built: on top of the
 Linux kernel and the Arch package ecosystem, with its own kernel package, its
 own packages, its own repository and its own image. Nothing in the Linux
-driver ecosystem has to be redone. The whole boot, from GRUB through the
-kernel console to the desktop, is white text on MindOS red (`#8c1010`).
+driver ecosystem has to be redone. The boot loader and the kernel console are
+white text on MindOS red (`#8c1010`); from the loading screen onwards MindOS is
+dark, minimal and futuristic: void black, electric cyan, chamfered HUD panels.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -20,6 +21,8 @@ kernel console to the desktop, is white text on MindOS red (`#8c1010`).
 │  │ Mind bar   │ │ Steam    │ │ Gamescope│ │ any Linux app      │   │
 │  │ (LLM chat) │ │ (X11)    │ │ (nested) │ │ (Wayland / X11)    │   │
 │  └─────┬──────┘ └──────────┘ └──────────┘ └────────────────────┘   │
+│  mindshell ── panels, launcher, tray, widgets: WebKit + TypeScript,  │
+│               KDE-style edit mode, driven over the compositor IPC    │
 ├────────┼────────────────────────────────────────────────────────────┤
 │  mindd ── LLM daemon: llama.cpp, tools, policy, audit log            │
 │  mind  ── CLI: `mind update`, `mind "install steam"`, `mind doctor`  │
@@ -39,10 +42,11 @@ kernel console to the desktop, is white text on MindOS red (`#8c1010`).
 | `mindwm` | `mindwm/`, `packages/mindwm/` | The compositor (Rust, Smithay). Game mode by default: every window opens maximized, `Super+F` fullscreens, `Super+Space` opens the **Mind bar** (launcher, shell and LLM chat in one field). Wayland and XWayland. See `docs/COMPOSITOR.md`. |
 * [docs/PACKAGES.md](docs/PACKAGES.md) — package sources: MindOS/Arch repositories, Flathub and the AUR through `mindos-pkg`, and how the Mind installs software
 * [docs/DEV-VM.md](docs/DEV-VM.md) — persistent development VM on libvirt/virt-manager: shared source tree, snapshots, dev loops
+| `mindshell` | `mindshell/`, `packages/mindshell/` | The desktop shell: a lean Rust host that opens layer-shell windows and renders them with WebKitGTK; the UI is HTML/CSS/TypeScript. Bottom launcher panel (start button, pins, running apps), top bar (Mind status, tray, audio, network, battery, clock), desktop widgets, and a KDE-like **edit mode** to add panels and widgets. See `docs/SHELL.md`. |
 | `mindd` / `mind` | `mindd/`, `packages/mindos-mind/` | The mind: a system daemon that runs `llama-server` on a local GGUF model, exposes typed tools (packages, updates, services, journal, files, commands, kernel parameters, game library) behind an observe/change/forbidden policy, logs everything to `/var/log/mindos/mind.jsonl`, and speaks newline-delimited JSON on `/run/mindos/mind.sock`. `mind` is the CLI. |
 | `mindos-base` | `packages/mindos-base/` | Identity and tuning: `os-release`, kernel command line, sysctl (`vm.max_map_count`, BBR, split-lock mitigation off), zram, I/O scheduler and controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset. |
 | `mindos-session` | `packages/mindos-session/` | greetd config (`/etc/mindos/greetd.toml`), the `mindos-session` launcher, `session-startup`, the compositor defaults (`/etc/mindos/mindwm.toml`). |
-| `mindos-theme` | `packages/mindos-theme/` | White-on-red GRUB, Plymouth theme, console theme service, wallpaper and icon. |
+| `mindos-theme` | `packages/mindos-theme/` | White-on-red GRUB and console theme service (the boot stage), the dark animated Plymouth theme, the display fonts (Orbitron, Share Tech Mono), the system font rendering defaults for fontconfig, wallpaper and icon. |
 | `mindos-gaming` | `packages/mindos-gaming/` | Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime, plus gaming sysctl and `gamemode.ini`. |
 | `mindos-dev` | `packages/mindos-dev/` | Compilers, Rust, Node, Python, Docker, editors, CLI tools. |
 | `mindos-install` | `packages/mindos-install/` | Guided installer run from the live ISO (GPT, btrfs subvolumes, user, timezone, optional gaming/dev stacks). |
@@ -64,7 +68,10 @@ make qemu-bios                     # boot the ISO in QEMU (KVM, virtio-gpu, BIOS
 make screenshot                    # build/qemu/screen.png via the QEMU monitor
 ```
 
-Developing the compositor does not need the container:
+Developing the compositor does not need the container; the shell UI only needs
+Node (`cd mindshell/ui && npm install && npm run build && npm run shot` renders
+preview screenshots with headless Chromium), and the shell host builds in the
+container (`scripts/buildbox.sh bash -c 'cd mindshell && cargo build --release'`):
 
 ```sh
 cd mindwm && cargo build --release
@@ -85,6 +92,7 @@ runs in active mode, the NVIDIA open kernel modules are built by DKMS against
 
 * `docs/ARCHITECTURE.md` — how the pieces fit together.
 * `docs/COMPOSITOR.md` — mindwm features, keybindings, the Mind bar, configuration.
-* `docs/THEME.md` — the white-on-red boot theme, stage by stage.
+* `docs/SHELL.md` — mindshell: the web-rendered desktop shell, widgets, edit mode, the bridge and the compositor IPC.
+* `docs/THEME.md` — the theme, stage by stage: red boot loader and console, dark cyan loading screen, compositor and shell.
 * `docs/PACKAGES.md` — where packages come from and how `mindos-pkg` and the Mind install them.
 * `docs/ROADMAP.md` — what is done and what is next.

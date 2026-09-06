@@ -1,0 +1,13 @@
+#!/bin/bash
+# greetd-vt: runs as root right before greetd starts (ExecStartPre of greetd.service).
+#
+# greetd puts its VT back into text mode and clears it before every session it
+# starts, so between the Plymouth splash and the compositor's first frame tty1
+# is an empty text console. Make that console the MindOS void instead of the
+# boot red: palette entry 0 becomes #05070a and the stored default attribute
+# is white on it. tty2-6 keep the red kernel/boot console theme.
+tty=/dev/tty1
+[[ -w $tty ]] || exit 0
+printf '\e]P005070a' > "$tty" 2>/dev/null
+setterm --term linux --background black --foreground white --store > "$tty" 2>/dev/null
+exit 0
