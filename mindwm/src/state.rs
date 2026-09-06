@@ -98,14 +98,22 @@ use smithay::{
 
 #[cfg(feature = "xwayland")]
 use crate::cursor::Cursor;
+use crate::ipc::{prefs_event, ModeInfo, OutputChange};
+use crate::layout::{LayoutMode, LayoutState};
+use crate::prefs::{mode_key, Prefs};
 use crate::{
     config::Config,
     focus::{KeyboardFocusTarget, PointerFocusTarget},
+    ipc::{IpcServer, OutputInfo, WindowInfo, WindowsSnapshot},
     launcher,
     mind::{Event as MindDaemonEvent, MindClient, MindEvent},
     mindbar::{BarAction, MindBar},
-    shell::WindowElement,
+    shell::{FullscreenSurface, WindowElement},
     text::TextRenderer,
+};
+use smithay::{
+    reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
+    wayland::shell::xdg::XdgToplevelSurfaceData,
 };
 use serde_json::{json, Value};
 use smithay::reexports::calloop::channel;
@@ -192,6 +200,26 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub mind: MindClient,
     pub startup_done: bool,
     pub xwayland_ready: bool,
+    /// Shell IPC (docs/SHELL.md): socket, clients, last snapshots sent.
+    pub ipc: IpcServer,
+    /// Windows hidden by the shell; they leave the space and come back where they were.
+    pub minimized: Vec<Minimized>,
+    /// Super went down and nothing else has been pressed since (a release is a "tap").
+    pub super_tap_armed: bool,
+    /// Set inside the key filter when a tap completed; consumed by `keyboard_key_to_action`.
+    pub super_tap_fired: bool,
+    /// Window layout mode (floating / dwindle / columns) and its tiling state.
+    pub layout: LayoutState,
+    /// Preferences kept between sessions (layout mode, Mind bar, displays).
+    pub prefs: Prefs,
+}
+
+/// A minimised window: unmapped from the space, restored at `location`.
+#[derive(Debug, Clone)]
+pub struct Minimized {
+    pub window: WindowElement,
+    pub location: Point<i32, Logical>,
+    pub output: Option<String>,
 }
 
 #[derive(Debug)]
@@ -453,11 +481,13 @@ impl<BackendData: Backend> XdgActivationHandler for AnvilState<BackendData> {
 delegate_xdg_activation!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 impl<BackendData: Backend> XdgDecorationHandler for AnvilState<BackendData> {
+    // MindOS draws the title bars (shell/ssd.rs): every window that talks
+    // xdg-decoration gets server-side decorations unless it insists on
+    // drawing its own.
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         use xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-        // Set the default to client side
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(Mode::ClientSide);
+            state.decoration_mode = Some(Mode::ServerSide);
         });
     }
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
@@ -465,24 +495,26 @@ impl<BackendData: Backend> XdgDecorationHandler for AnvilState<BackendData> {
 
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(match mode {
-                DecorationMode::ServerSide => Mode::ServerSide,
-                _ => Mode::ClientSide,
+                DecorationMode::ClientSide => Mode::ClientSide,
+                _ => Mode::ServerSide,
             });
         });
 
         if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }
+        self.layout.dirty = true;
     }
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         use xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(Mode::ClientSide);
+            state.decoration_mode = Some(Mode::ServerSide);
         });
 
         if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }
+        self.layout.dirty = true;
     }
 }
 delegate_xdg_decoration!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
@@ -612,7 +644,20 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             })
             .expect("Failed to insert the Mind channel into the event loop");
         let mind = MindClient::start(std::path::PathBuf::from(&config.mind.socket), mind_tx);
-        let mindbar = MindBar::new(TextRenderer::new(), launcher::load_apps(), config.foreground());
+        let mut mindbar = MindBar::new(
+            TextRenderer::new(),
+            launcher::load_apps(),
+            config.foreground(),
+            config.accent(),
+        );
+        let prefs = Prefs::load();
+        mindbar.set_show_tools(prefs.mind_show_tools.unwrap_or(config.mind.show_tools));
+        let layout_mode = prefs
+            .layout_mode
+            .or_else(|| LayoutMode::parse(&config.layout.mode))
+            .unwrap_or_default();
+        info!(mode = layout_mode.name(), "layout mode");
+        let layout = LayoutState::new(layout_mode, &config.layout);
 
         // init wayland clients
         let socket_name = if listen_on_socket {
@@ -701,7 +746,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         #[cfg(feature = "xwayland")]
         XWaylandKeyboardGrabState::new::<Self>(&dh.clone());
 
-        AnvilState {
+        let mut state = AnvilState {
             backend_data,
             display_handle: dh,
             socket_name,
@@ -750,7 +795,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             mind,
             startup_done: false,
             xwayland_ready: false,
-        }
+            ipc: IpcServer::default(),
+            minimized: Vec::new(),
+            super_tap_armed: false,
+            super_tap_fired: false,
+            layout,
+            prefs,
+        };
+        state.start_ipc();
+        state
     }
 
     #[cfg(feature = "xwayland")]
@@ -1169,6 +1222,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         if let Some(display) = self.xdisplay {
             env.push(("DISPLAY".into(), format!(":{display}")));
         }
+        if let Some(path) = self.ipc.path() {
+            env.push(("MINDWM_SOCKET".into(), path.to_string_lossy().into_owned()));
+        }
         env
     }
 
@@ -1234,7 +1290,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             Some(KeyboardFocusTarget::Window(window)) => {
                 window.alive() && self.space.elements().any(|e| e.0 == window)
             }
-            // popups, layer surfaces, grabs: leave them alone
+            // a panel or popup that is gone must not keep the keyboard
+            Some(KeyboardFocusTarget::LayerSurface(layer)) => layer.alive(),
+            // xdg popups, grabs: leave them alone
             Some(_) => true,
         };
         if focus_ok {
@@ -1329,6 +1387,412 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             BarAction::Cancel => self.mind.cancel(),
         }
     }
+
+    // ---------------------------------------------------------------------
+    // Shell-facing window management (docs/SHELL.md)
+    // ---------------------------------------------------------------------
+
+    /// A mapped or minimised window by its IPC id.
+    pub fn window_by_id(&self, id: u64) -> Option<WindowElement> {
+        self.space
+            .elements()
+            .find(|w| w.id() == id)
+            .cloned()
+            .or_else(|| self.minimized.iter().find(|m| m.window.id() == id).map(|m| m.window.clone()))
+    }
+
+    pub fn is_minimized(&self, window: &WindowElement) -> bool {
+        self.minimized.iter().any(|m| &m.window == window)
+    }
+
+    /// Raise a window to the top of the stack and give it the keyboard.
+    pub fn activate_window(&mut self, window: &WindowElement) {
+        if self.is_minimized(window) {
+            return;
+        }
+        self.space.raise_element(window, true);
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = window.0.x11_surface() {
+            if let Some(xwm) = self.xwm.as_mut() {
+                let _ = xwm.raise_window(surface);
+            }
+        }
+        self.focus_window(window);
+    }
+
+    /// Hide a window: it leaves the space (no rendering, no input, no frame
+    /// callbacks) and the top-most remaining window takes the keyboard.
+    pub fn minimize_window(&mut self, window: &WindowElement) {
+        if self.is_minimized(window) {
+            return;
+        }
+        let Some(location) = self.space.element_location(window) else {
+            return;
+        };
+        let output = self.space.outputs_for_element(window).first().map(|o| o.name());
+        // A fullscreen window owns its output's scanout slot; give it back while hidden.
+        for o in self.space.outputs() {
+            if let Some(fullscreen) = o.user_data().get::<FullscreenSurface>() {
+                if fullscreen.get().as_ref() == Some(window) {
+                    fullscreen.clear();
+                    self.backend_data.reset_buffers(o);
+                }
+            }
+        }
+        self.space.unmap_elem(window);
+        self.minimized.push(Minimized {
+            window: window.clone(),
+            location,
+            output,
+        });
+        self.refresh_focus();
+    }
+
+    /// Bring a minimised window back where it was, on top and focused.
+    pub fn unminimize_window(&mut self, window: &WindowElement) {
+        let Some(pos) = self.minimized.iter().position(|m| &m.window == window) else {
+            return;
+        };
+        let minimized = self.minimized.remove(pos);
+        if !minimized.window.alive() {
+            return;
+        }
+        self.space.map_element(minimized.window.clone(), minimized.location, true);
+        if window_is_fullscreen(&minimized.window) {
+            if let Some(output) = self.space.outputs_for_element(&minimized.window).first() {
+                output.user_data().insert_if_missing(FullscreenSurface::default);
+                output
+                    .user_data()
+                    .get::<FullscreenSurface>()
+                    .unwrap()
+                    .set(minimized.window.clone());
+            }
+        }
+        self.activate_window(&minimized.window);
+    }
+
+    /// Everything the shell needs to draw a taskbar, in creation order.
+    pub fn windows_snapshot(&self) -> WindowsSnapshot {
+        let focused = self.focused_window();
+        let mut windows: Vec<WindowInfo> = self
+            .space
+            .elements()
+            .filter_map(|w| {
+                let output = self.space.outputs_for_element(w).first().map(|o| o.name());
+                window_info(w, focused.as_ref() == Some(w), false, output)
+            })
+            .collect();
+        windows.extend(
+            self.minimized
+                .iter()
+                .filter_map(|m| window_info(&m.window, false, true, m.output.clone())),
+        );
+        windows.sort_by_key(|w| w.id);
+        WindowsSnapshot {
+            focused: focused.map(|w| w.id()),
+            windows,
+        }
+    }
+
+    pub fn outputs_snapshot(&self) -> Vec<OutputInfo> {
+        let primary = self.primary_output_name();
+        let mut outputs: Vec<OutputInfo> = self
+            .space
+            .outputs()
+            .map(|o| {
+                let geo = self
+                    .space
+                    .output_geometry(o)
+                    .unwrap_or_else(|| Rectangle::from_size((0, 0).into()));
+                let props = o.physical_properties();
+                let current = o.current_mode();
+                let preferred = o.preferred_mode();
+                let (vrr_supported, vrr) = self.backend_data.output_vrr(o);
+                let name = o.name();
+                OutputInfo {
+                    primary: primary.as_deref() == Some(name.as_str()),
+                    name,
+                    make: props.make,
+                    model: props.model,
+                    x: geo.loc.x,
+                    y: geo.loc.y,
+                    width: geo.size.w,
+                    height: geo.size.h,
+                    scale: o.current_scale().fractional_scale(),
+                    refresh: current.map(|m| m.refresh as f64 / 1000.0).unwrap_or(0.0),
+                    transform: transform_name(o.current_transform()).into(),
+                    modes: o
+                        .modes()
+                        .iter()
+                        .map(|m| ModeInfo {
+                            width: m.size.w,
+                            height: m.size.h,
+                            refresh: m.refresh,
+                            preferred: Some(*m) == preferred,
+                            current: Some(*m) == current,
+                        })
+                        .collect(),
+                    enabled: true,
+                    vrr,
+                    vrr_supported,
+                    mm_width: props.size.w,
+                    mm_height: props.size.h,
+                }
+            })
+            .collect();
+        outputs.extend(self.backend_data.disabled_outputs());
+        outputs
+    }
+
+    /// The output the shell puts its main panels on: the user's choice when
+    /// it is connected, else the first output.
+    pub fn primary_output_name(&self) -> Option<String> {
+        self.prefs
+            .primary_output
+            .clone()
+            .filter(|name| self.space.outputs().any(|o| o.name() == *name))
+            .or_else(|| self.space.outputs().next().map(|o| o.name()))
+    }
+
+    /// Keep every server-side title bar in step with its window (title,
+    /// focus, maximised state); called once per event-loop turn.
+    pub fn refresh_decorations(&mut self) {
+        let focused = self.focused_window();
+        for window in self.space.elements() {
+            let mut state = window.decoration_state();
+            if !state.is_ssd {
+                continue;
+            }
+            state.header_bar.set_title(&window.title());
+            state.header_bar.set_focused(focused.as_ref() == Some(window));
+            state.header_bar.set_maximized(window.is_maximized());
+            state.header_bar.set_tiled(self.layout.mode.is_tiling() && window.tileable());
+        }
+    }
+
+    /// Save the preferences and tell the shell.
+    pub fn prefs_changed(&mut self) {
+        self.prefs.save();
+        let line = prefs_event(&self.prefs);
+        self.ipc_broadcast(&line);
+    }
+
+    /// The shell's `set_prefs`: any subset of the preference keys.
+    pub fn apply_prefs(&mut self, value: Value) -> Result<(), String> {
+        let object = value.as_object().ok_or("prefs must be an object")?;
+        if let Some(mode) = object.get("layout_mode") {
+            let name = mode.as_str().ok_or("layout_mode must be a string")?;
+            let mode = LayoutMode::parse(name).ok_or_else(|| format!("unknown layout mode: {name}"))?;
+            self.set_layout_mode(mode);
+        }
+        if let Some(show) = object.get("mind_show_tools") {
+            let show = show.as_bool().ok_or("mind_show_tools must be true or false")?;
+            self.prefs.mind_show_tools = Some(show);
+            self.mindbar.set_show_tools(show);
+        }
+        if let Some(primary) = object.get("primary_output") {
+            self.prefs.primary_output = match primary {
+                Value::Null => None,
+                Value::String(name) => Some(name.clone()),
+                _ => return Err("primary_output must be a string or null".into()),
+            };
+        }
+        self.prefs_changed();
+        Ok(())
+    }
+
+    /// The Displays settings: apply a change to one output and remember it.
+    pub fn set_output_config(&mut self, name: &str, change: &OutputChange) -> Result<(), String> {
+        if let Some(enabled) = change.enabled {
+            let was_on = self.space.outputs().any(|o| o.name() == name);
+            if enabled != was_on {
+                BackendData::set_output_enabled(self, name, enabled)?;
+            }
+            self.prefs.output_mut(name).enabled = Some(enabled);
+            if !enabled {
+                self.prefs_changed();
+                self.after_output_change(None);
+                return Ok(());
+            }
+        }
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == name)
+            .cloned()
+            .ok_or_else(|| format!("no such output: {name}"))?;
+        if let Some(mode) = &change.mode {
+            let wl_mode = smithay::output::Mode {
+                size: (mode.width, mode.height).into(),
+                refresh: mode.refresh,
+            };
+            if !output.modes().contains(&wl_mode) {
+                return Err(format!(
+                    "{name} has no {}x{} @ {:.3} Hz mode",
+                    mode.width,
+                    mode.height,
+                    mode.refresh as f64 / 1000.0
+                ));
+            }
+            if output.current_mode() != Some(wl_mode) {
+                self.backend_data.set_output_mode(&output, wl_mode)?;
+                output.change_current_state(Some(wl_mode), None, None, None);
+            }
+            self.prefs.output_mut(name).mode = Some(mode_key(mode.width, mode.height, mode.refresh));
+        }
+        if let Some(scale) = change.scale {
+            if !(0.5..=4.0).contains(&scale) {
+                return Err("scale must be between 0.5 and 4".into());
+            }
+            output.change_current_state(None, None, Some(smithay::output::Scale::Fractional(scale)), None);
+            self.prefs.output_mut(name).scale = Some(scale);
+        }
+        if let Some(transform) = &change.transform {
+            let t = parse_transform(transform).ok_or_else(|| format!("unknown transform: {transform}"))?;
+            output.change_current_state(None, Some(t), None, None);
+            self.prefs.output_mut(name).transform = Some(transform_name(t).into());
+        }
+        if let Some(position) = change.position {
+            self.prefs.output_mut(name).position = Some(position);
+        }
+        if let Some(vrr) = change.vrr {
+            self.backend_data.set_output_vrr(&output, vrr)?;
+            self.prefs.output_mut(name).vrr = Some(vrr);
+        }
+        if change.primary == Some(true) {
+            self.prefs.primary_output = Some(name.to_string());
+        }
+        self.prefs_changed();
+        self.after_output_change(Some(&output));
+        Ok(())
+    }
+
+    /// Place outputs and windows again after a display change and keep the
+    /// pointer on a screen.
+    fn after_output_change(&mut self, output: Option<&Output>) {
+        crate::shell::fixup_positions(
+            &mut self.space,
+            self.pointer.current_location(),
+            &self.prefs.pinned_positions(),
+        );
+        self.layout.dirty = true;
+        let current = self.pointer.current_location();
+        let location = if self.space.output_under(current).next().is_some() {
+            current
+        } else {
+            self.space
+                .outputs()
+                .next()
+                .and_then(|o| self.space.output_geometry(o))
+                .map(|g| {
+                    (
+                        g.loc.x as f64 + g.size.w as f64 / 2.0,
+                        g.loc.y as f64 + g.size.h as f64 / 2.0,
+                    )
+                        .into()
+                })
+                .unwrap_or(current)
+        };
+        let pointer = self.pointer.clone();
+        let under = self.surface_under(location);
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                time: self.clock.now().as_millis(),
+            },
+        );
+        pointer.frame(self);
+        if let Some(output) = output {
+            self.backend_data.reset_buffers(output);
+        }
+    }
+
+    /// A tap on Super alone opens the Mind bar: Mind is the launcher.
+    pub fn launcher_shortcut(&mut self) {
+        if !self.mindbar.open {
+            self.mindbar.open();
+        }
+    }
+
+    /// Super+W: the shell's overview, or the built-in window preview.
+    pub fn overview_shortcut(&mut self) {
+        if !self.ipc_shortcut("overview") {
+            self.show_window_preview = !self.show_window_preview;
+        }
+    }
+}
+
+fn window_is_fullscreen(window: &WindowElement) -> bool {
+    if let Some(toplevel) = window.0.toplevel() {
+        return toplevel
+            .current_state()
+            .states
+            .contains(xdg_toplevel::State::Fullscreen);
+    }
+    #[cfg(feature = "xwayland")]
+    if let Some(surface) = window.0.x11_surface() {
+        return surface.is_fullscreen();
+    }
+    false
+}
+
+/// The IPC view of one window; `None` for windows the shell should not list
+/// (override-redirect X11 windows, toplevels that have not drawn yet).
+fn window_info(window: &WindowElement, focused: bool, minimized: bool, output: Option<String>) -> Option<WindowInfo> {
+    let (title, app_id, fullscreen, maximized, x11) = if let Some(toplevel) = window.0.toplevel() {
+        let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
+            let data = states.data_map.get::<XdgToplevelSurfaceData>()?.lock().ok()?;
+            Some((data.title.clone().unwrap_or_default(), data.app_id.clone().unwrap_or_default()))
+        })
+        .unwrap_or_default();
+        let states = toplevel.current_state().states;
+        (
+            title,
+            app_id,
+            states.contains(xdg_toplevel::State::Fullscreen),
+            states.contains(xdg_toplevel::State::Maximized),
+            false,
+        )
+    } else {
+        #[cfg(feature = "xwayland")]
+        {
+            let surface = window.0.x11_surface()?;
+            if surface.is_override_redirect() {
+                return None;
+            }
+            (
+                surface.title(),
+                surface.class(),
+                surface.is_fullscreen(),
+                surface.is_maximized(),
+                true,
+            )
+        }
+        #[cfg(not(feature = "xwayland"))]
+        {
+            return None;
+        }
+    };
+    if !minimized {
+        let size = window.0.geometry().size;
+        if size.w <= 0 || size.h <= 0 {
+            return None;
+        }
+    }
+    Some(WindowInfo {
+        id: window.id(),
+        title,
+        app_id,
+        focused,
+        fullscreen,
+        maximized,
+        minimized,
+        x11,
+        output,
+    })
 }
 
 pub trait Backend {
@@ -1338,4 +1802,62 @@ pub trait Backend {
     fn reset_buffers(&mut self, output: &Output);
     fn early_import(&mut self, surface: &WlSurface);
     fn update_led_state(&mut self, led_state: LedState);
+
+    /// Switch an output to one of its advertised modes.
+    fn set_output_mode(&mut self, _output: &Output, _mode: smithay::output::Mode) -> Result<(), String> {
+        Err("this backend cannot change video modes".into())
+    }
+
+    /// Turn variable refresh rate on or off.
+    fn set_output_vrr(&mut self, _output: &Output, _enabled: bool) -> Result<(), String> {
+        Err("this backend has no variable refresh rate".into())
+    }
+
+    /// `(supported, enabled)` for variable refresh rate.
+    fn output_vrr(&self, _output: &Output) -> (bool, bool) {
+        (false, false)
+    }
+
+    /// Connected outputs that are switched off.
+    fn disabled_outputs(&self) -> Vec<OutputInfo> {
+        Vec::new()
+    }
+
+    /// Switch a connected output on or off.
+    fn set_output_enabled(_state: &mut AnvilState<Self>, _name: &str, _enabled: bool) -> Result<(), String>
+    where
+        Self: Sized + 'static,
+    {
+        Err("this backend cannot switch outputs off".into())
+    }
+}
+
+/// Parse a transform the way the preferences and the shell name it.
+pub fn parse_transform(name: &str) -> Option<smithay::utils::Transform> {
+    use smithay::utils::Transform;
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "normal" | "0" => Transform::Normal,
+        "90" => Transform::_90,
+        "180" => Transform::_180,
+        "270" => Transform::_270,
+        "flipped" => Transform::Flipped,
+        "flipped-90" | "flipped90" => Transform::Flipped90,
+        "flipped-180" | "flipped180" => Transform::Flipped180,
+        "flipped-270" | "flipped270" => Transform::Flipped270,
+        _ => return None,
+    })
+}
+
+pub fn transform_name(transform: smithay::utils::Transform) -> &'static str {
+    use smithay::utils::Transform;
+    match transform {
+        Transform::Normal => "normal",
+        Transform::_90 => "90",
+        Transform::_180 => "180",
+        Transform::_270 => "270",
+        Transform::Flipped => "flipped",
+        Transform::Flipped90 => "flipped-90",
+        Transform::Flipped180 => "flipped-180",
+        Transform::Flipped270 => "flipped-270",
+    }
 }

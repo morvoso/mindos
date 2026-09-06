@@ -3,7 +3,7 @@ use std::{cell::RefCell, os::unix::io::OwnedFd};
 use smithay::{
     desktop::{space::SpaceElement, Window},
     input::pointer::Focus,
-    utils::{Logical, Rectangle, SERIAL_COUNTER},
+    utils::{Logical, Point, Rectangle, Size, SERIAL_COUNTER},
     wayland::{
         compositor::with_states,
         selection::{
@@ -62,23 +62,34 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         window.set_mapped(true).unwrap();
         let elem = WindowElement(Window::new_x11_window(window.clone()));
+        elem.id(); // ids follow creation order
+        // Windows that ask to be undecorated (Steam, games, Wine with its own
+        // frames) get no bar; everything else gets the MindOS title bar.
+        elem.set_ssd(!window.is_decorated());
+        let header = elem.header_height();
         let area = crate::shell::pointer_output_area(&self.space, self.pointer.current_location());
         let dialog_like = window.is_popup()
             || window.is_transient_for().is_some()
             || !matches!(window.window_type(), None | Some(WmWindowType::Normal));
-        if dialog_like {
+        if dialog_like || !self.layout.open_maximized() {
             let size = window.geometry().size;
-            let loc = crate::shell::centered(area, size);
+            let mut size = Size::from((size.w.min(area.size.w).max(1), size.h.min(area.size.h - header).max(1)));
+            if size.w < 100 || size.h < 60 {
+                // no usable size hint: something reasonable
+                size = Size::from((area.size.w * 3 / 5, (area.size.h - header) * 3 / 5));
+            }
+            let loc = crate::shell::centered(area, (size.w, size.h + header).into());
             self.space.map_element(elem.clone(), loc, true);
-            let _ = window.configure(Rectangle::new(loc, size));
+            let _ = window.configure(Rectangle::new(loc + Point::from((0, header)), size));
         } else {
-            // Game mode: X11 windows (Steam, Proton games, Wine) fill the output.
             let _ = window.set_maximized(true);
-            let _ = window.configure(area);
+            let client = crate::shell::client_rect(area, header);
+            let _ = window.configure(client);
             self.space.map_element(elem.clone(), area.loc, true);
         }
-        elem.set_ssd(false);
+        let previous = self.focused_window();
         self.focus_window(&elem);
+        self.layout.window_opened(&elem, previous);
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -96,13 +107,20 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         if let Some(elem) = maybe {
             self.space.unmap_elem(&elem)
         }
+        self.layout.dirty = true;
+        // A minimised window that its client unmaps is gone for the shell too.
+        self.minimized
+            .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
         if !window.is_override_redirect() {
             window.set_mapped(false).unwrap();
         }
         self.refresh_focus();
     }
 
-    fn destroyed_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.minimized
+            .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
+    }
 
     fn configure_request(
         &mut self,
@@ -140,7 +158,10 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         else {
             return;
         };
-        self.space.map_element(elem, geometry.loc, false);
+        let loc = geometry.loc - Point::from((0, elem.header_height()));
+        if self.space.element_location(&elem) != Some(loc) {
+            self.space.map_element(elem, loc, false);
+        }
         // TODO: We don't properly handle the order of override-redirect windows here,
         //       they are always mapped top and then never reordered.
     }
@@ -165,9 +186,13 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
             .get::<OldGeometry>()
             .and_then(|data| data.restore())
         {
-            window.configure(old_geo).unwrap();
+            let header = elem.header_height();
+            window
+                .configure(Rectangle::new(old_geo.loc + Point::from((0, header)), old_geo.size))
+                .unwrap();
             self.space.map_element(elem, old_geo.loc, false);
         }
+        self.layout.dirty = true;
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -186,7 +211,6 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
             let geometry = self.space.output_geometry(output).unwrap();
 
             window.set_fullscreen(true).unwrap();
-            elem.set_ssd(false);
             window.configure(geometry).unwrap();
             output.user_data().insert_if_missing(FullscreenSurface::default);
             output
@@ -206,6 +230,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         {
             window.set_fullscreen(false).unwrap();
             elem.set_ssd(!window.is_decorated());
+            self.layout.dirty = true;
             if let Some(output) = self.space.outputs().find(|o| {
                 o.user_data()
                     .get::<FullscreenSurface>()
@@ -215,7 +240,10 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
             }) {
                 trace!("Unfullscreening: {:?}", elem);
                 output.user_data().get::<FullscreenSurface>().unwrap().clear();
-                window.configure(self.space.element_bbox(elem)).unwrap();
+                let mut rect = self.space.element_bbox(elem).unwrap_or_default();
+                rect.loc.y += elem.header_height();
+                rect.size.h = (rect.size.h - elem.header_height()).max(1);
+                window.configure(rect).unwrap();
                 self.backend_data.reset_buffers(output);
             }
         }
@@ -232,6 +260,10 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         else {
             return;
         };
+        // Tiles get their size from the layout.
+        if self.layout.is_tiled(element) && !window.is_maximized() {
+            return;
+        }
 
         let geometry = element.geometry();
         let loc = self.space.element_location(element).unwrap();
@@ -339,21 +371,27 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             return;
         };
 
-        let old_geo = self.space.element_bbox(&elem).unwrap();
-        let outputs_for_window = self.space.outputs_for_element(&elem);
-        let output = outputs_for_window
-            .first()
-            // The window hasn't been mapped yet, use the primary output instead
-            .or_else(|| self.space.outputs().next())
-            // Assumes that at least one output exists
-            .expect("No outputs found");
-        let geometry = self.space.output_geometry(output).unwrap();
+        let Some(old_geo) = self.space.element_bbox(&elem) else {
+            return;
+        };
+        // Fill the usable area (output minus layer-shell exclusive zones).
+        let Some(geometry) = crate::shell::window_output_area(&self.space, &elem) else {
+            return;
+        };
 
+        let header = elem.header_height();
         window.set_maximized(true).unwrap();
-        window.configure(geometry).unwrap();
+        window
+            .configure(crate::shell::client_rect(geometry, header))
+            .unwrap();
         window.user_data().insert_if_missing(OldGeometry::default);
-        window.user_data().get::<OldGeometry>().unwrap().save(old_geo);
+        // The element rectangle (bar included), restored by unmaximize.
+        window.user_data().get::<OldGeometry>().unwrap().save(Rectangle::new(
+            old_geo.loc,
+            (old_geo.size.w, old_geo.size.h - header).into(),
+        ));
         self.space.map_element(elem, geometry.loc, false);
+        self.layout.dirty = true;
     }
 
     pub fn move_request_x11(&mut self, window: &X11Surface) {
@@ -377,12 +415,19 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                             .get::<OldGeometry>()
                             .and_then(|data| data.restore())
                         {
+                            let header = element.header_height();
                             window
-                                .configure(Rectangle::new(initial_window_location, old_geo.size))
+                                .configure(Rectangle::new(
+                                    initial_window_location + Point::from((0, header)),
+                                    old_geo.size,
+                                ))
                                 .unwrap();
                         }
                     }
 
+                    if self.layout.is_tiled(element) {
+                        self.layout.dragging = Some(element.clone());
+                    }
                     let grab = TouchMoveSurfaceGrab {
                         start_data,
                         window: element.clone(),
@@ -420,12 +465,19 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 .get::<OldGeometry>()
                 .and_then(|data| data.restore())
             {
+                let header = element.header_height();
                 window
-                    .configure(Rectangle::new(initial_window_location, old_geo.size))
+                    .configure(Rectangle::new(
+                        initial_window_location + Point::from((0, header)),
+                        old_geo.size,
+                    ))
                     .unwrap();
             }
         }
 
+        if self.layout.is_tiled(element) {
+            self.layout.dragging = Some(element.clone());
+        }
         let grab = PointerMoveSurfaceGrab {
             start_data,
             window: element.clone(),

@@ -25,12 +25,12 @@ use smithay::{
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Desktop background, MindOS red by default; see `config::Theme`.
+/// Desktop background, the MindOS void (#05070a) by default; see `config::Theme`.
 static BACKGROUND: [AtomicU32; 4] = [
-    AtomicU32::new(0x3f0c_8b44), // 0.549
-    AtomicU32::new(0x3d80_8000), // 0.0627
-    AtomicU32::new(0x3d80_8000),
-    AtomicU32::new(0x3f80_0000), // 1.0
+    AtomicU32::new(crate::config::VOID[0].to_bits()),
+    AtomicU32::new(crate::config::VOID[1].to_bits()),
+    AtomicU32::new(crate::config::VOID[2].to_bits()),
+    AtomicU32::new(crate::config::VOID[3].to_bits()),
 ];
 
 pub fn set_background(color: [f32; 4]) {
@@ -47,7 +47,7 @@ pub fn background() -> Color32F {
     Color32F::new(c[0], c[1], c[2], c[3])
 }
 
-pub static CLEAR_COLOR: Color32F = Color32F::new(0.549, 0.0627, 0.0627, 1.0);
+pub static CLEAR_COLOR: Color32F = Color32F::new(0.0196, 0.0275, 0.0392, 1.0);
 pub static CLEAR_COLOR_FULLSCREEN: Color32F = Color32F::new(0.0, 0.0, 0.0, 0.0);
 
 pub struct PointerElement {

@@ -9,13 +9,13 @@ use smithay::{
     input::{pointer::Focus, Seat},
     output::Output,
     reexports::{
-        wayland_protocols::xdg::{decoration as xdg_decoration, shell::server::xdg_toplevel},
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
             protocol::{wl_output, wl_seat, wl_surface::WlSurface},
             Resource,
         },
     },
-    utils::{Logical, Point, Serial},
+    utils::{Logical, Point, Rectangle, Serial, Size},
     wayland::{
         compositor::{self, with_states},
         seat::WaylandFocus,
@@ -48,9 +48,13 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         // of a xdg_surface has to be sent during the commit if
         // the surface is not already configured
         let window = WindowElement(Window::new_wayland_window(surface.clone()));
+        window.id(); // ids follow creation order
         place_new_window(&mut self.space, self.pointer.current_location(), &window, true);
-        // Game mode: a new window gets the keyboard right away, no click needed.
+        // A new window gets the keyboard right away, no click needed; the
+        // layout puts it next to the window that had the focus.
+        let previous = self.focused_window();
         self.focus_window(&window);
+        self.layout.window_opened(&window, previous);
 
         compositor::add_post_commit_hook(surface.wl_surface(), |state: &mut Self, _, surface| {
             handle_toplevel_commit(&mut state.space, surface);
@@ -92,6 +96,13 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         edges: xdg_toplevel::ResizeEdge,
     ) {
         let seat: Seat<AnvilState<BackendData>> = Seat::from_resource(&seat).unwrap();
+
+        // Tiles get their size from the layout.
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            if self.layout.is_tiled(&window) && !window.pending_maximized() {
+                return;
+            }
+        }
 
         if let Some(touch) = seat.get_touch() {
             if touch.has_grab(serial) {
@@ -254,12 +265,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
                 .elements()
                 .find(|element| element.wl_surface().as_deref() == Some(&surface));
             if let Some(window) = window {
-                use xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-                let is_ssd = configure
-                    .state
-                    .decoration_mode
-                    .map(|mode| mode == Mode::ServerSide)
-                    .unwrap_or(false);
+                let is_ssd = crate::shell::ssd::wants_ssd(configure.state.decoration_mode, &window.app_id());
                 window.set_ssd(is_ssd);
             }
         }
@@ -347,28 +353,29 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        // NOTE: This should use layer-shell when it is implemented to
-        // get the correct maximum size
+        // Maximised means "fill the usable area": the output minus the
+        // exclusive zones of layer-shell panels.
         if surface
             .current_state()
             .capabilities
             .contains(xdg_toplevel::WmCapabilities::Maximize)
         {
-            let window = self.window_for_surface(surface.wl_surface()).unwrap();
-            let outputs_for_window = self.space.outputs_for_element(&window);
-            let output = outputs_for_window
-                .first()
-                // The window hasn't been mapped yet, use the primary output instead
-                .or_else(|| self.space.outputs().next())
-                // Assumes that at least one output exists
-                .expect("No outputs found");
-            let geometry = self.space.output_geometry(output).unwrap();
-
+            let Some(window) = self.window_for_surface(surface.wl_surface()) else {
+                return;
+            };
+            let Some(area) = crate::shell::window_output_area(&self.space, &window) else {
+                return;
+            };
+            if !window.pending_maximized() {
+                *window.tile().saved.borrow_mut() = self.space.element_geometry(&window);
+            }
+            let header = window.pending_header_height();
             surface.with_pending_state(|state| {
                 state.states.set(xdg_toplevel::State::Maximized);
-                state.size = Some(geometry.size);
+                state.size = Some(crate::shell::client_rect(area, header).size);
             });
-            self.space.map_element(window, geometry.loc, true);
+            self.space.map_element(window, area.loc, true);
+            self.layout.dirty = true;
         }
 
         // The protocol demands us to always reply with a configure,
@@ -393,6 +400,26 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
             state.states.unset(xdg_toplevel::State::Maximized);
             state.size = None;
         });
+        // A floating window goes back to where it was; a tile gets its slot
+        // from the layout on the next turn.
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            if !self.layout.is_tiled(&window) {
+                let saved = window.tile().saved.borrow_mut().take();
+                let on_screen = |r: &Rectangle<i32, Logical>| {
+                    self.space
+                        .outputs()
+                        .any(|o| self.space.output_geometry(o).map(|g| g.overlaps(*r)).unwrap_or(false))
+                };
+                if let Some(saved) = saved.filter(on_screen) {
+                    let header = window.pending_header_height();
+                    surface.with_pending_state(|state| {
+                        state.size = Some((saved.size.w.max(1), (saved.size.h - header).max(1)).into());
+                    });
+                    self.space.map_element(window, saved.loc, false);
+                }
+            }
+        }
+        self.layout.dirty = true;
         surface.send_pending_configure();
     }
 
@@ -473,25 +500,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 // If surface is maximized then unmaximize it
                 let current_state = surface.current_state();
                 if current_state.states.contains(xdg_toplevel::State::Maximized) {
-                    surface.with_pending_state(|state| {
-                        state.states.unset(xdg_toplevel::State::Maximized);
-                        state.size = None;
-                    });
-
-                    surface.send_configure();
-
-                    // NOTE: In real compositor mouse location should be mapped to a new window size
-                    // For example, you could:
-                    // 1) transform mouse pointer position from compositor space to window space (location relative)
-                    // 2) divide the x coordinate by width of the window to get the percentage
-                    //   - 0.0 would be on the far left of the window
-                    //   - 0.5 would be in middle of the window
-                    //   - 1.0 would be on the far right of the window
-                    // 3) multiply the percentage by new window width
-                    // 4) by doing that, drag will look a lot more natural
-                    //
-                    // but for anvil needs setting location to pointer location is fine
-                    initial_window_location = start_data.location.to_i32_round();
+                    initial_window_location = self.unmaximize_for_drag(surface, &window, start_data.location);
+                }
+                if self.layout.is_tiled(&window) {
+                    self.layout.dragging = Some(window.clone());
                 }
 
                 let grab = TouchMoveSurfaceGrab {
@@ -537,26 +549,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         // If surface is maximized then unmaximize it
         let current_state = surface.current_state();
         if current_state.states.contains(xdg_toplevel::State::Maximized) {
-            surface.with_pending_state(|state| {
-                state.states.unset(xdg_toplevel::State::Maximized);
-                state.size = None;
-            });
-
-            surface.send_configure();
-
-            // NOTE: In real compositor mouse location should be mapped to a new window size
-            // For example, you could:
-            // 1) transform mouse pointer position from compositor space to window space (location relative)
-            // 2) divide the x coordinate by width of the window to get the percentage
-            //   - 0.0 would be on the far left of the window
-            //   - 0.5 would be in middle of the window
-            //   - 1.0 would be on the far right of the window
-            // 3) multiply the percentage by new window width
-            // 4) by doing that, drag will look a lot more natural
-            //
-            // but for anvil needs setting location to pointer location is fine
-            let pos = pointer.current_location();
-            initial_window_location = (pos.x as i32, pos.y as i32).into();
+            initial_window_location = self.unmaximize_for_drag(surface, &window, pointer.current_location());
+        }
+        if self.layout.is_tiled(&window) {
+            self.layout.dragging = Some(window.clone());
         }
 
         let grab = PointerMoveSurfaceGrab {
@@ -566,6 +562,29 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         };
 
         pointer.set_grab(self, grab, serial, Focus::Clear);
+    }
+
+    /// Unmaximise a window at the start of a drag: it takes its saved size
+    /// (or lets the client pick one) and hangs from the pointer by its title
+    /// bar. Returns where the window's element starts.
+    fn unmaximize_for_drag(
+        &mut self,
+        surface: &ToplevelSurface,
+        window: &WindowElement,
+        pointer: Point<f64, Logical>,
+    ) -> Point<i32, Logical> {
+        let saved = window.tile().saved.borrow_mut().take();
+        let header = window.pending_header_height();
+        let size: Option<Size<i32, Logical>> =
+            saved.map(|r| (r.size.w.max(1), (r.size.h - header).max(1)).into());
+        surface.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Maximized);
+            state.size = size;
+        });
+        surface.send_configure();
+        self.layout.dirty = true;
+        let w = size.map(|s| s.w).unwrap_or(0);
+        (pointer.x as i32 - w / 2, pointer.y as i32 - header / 2).into()
     }
 
     fn unconstrain_popup(&self, popup: &PopupSurface) {
@@ -630,7 +649,10 @@ fn handle_toplevel_commit(space: &mut Space<WindowElement>, surface: &WlSurface)
                 });
             let area = parent_geo.or_else(|| crate::shell::window_output_area(space, &window));
             if let Some(area) = area {
-                let loc = crate::shell::centered(area, geometry.size);
+                let mut loc = crate::shell::centered(area, geometry.size);
+                if parent_geo.is_none() {
+                    loc = crate::shell::cascade(space, area, loc, geometry.size, &window);
+                }
                 space.map_element(window, loc, false);
                 return Some(());
             }

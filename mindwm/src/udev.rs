@@ -9,6 +9,7 @@ use std::{
 
 use crate::{
     drawing::*,
+    ipc::{ModeInfo, OutputInfo},
     render::*,
     shell::WindowElement,
     state::{take_presentation_feedback, update_primary_scanout_output, AnvilState, Backend},
@@ -33,6 +34,7 @@ use smithay::{
         },
         drm::{
             compositor::{DrmCompositor, FrameFlags},
+            VrrSupport,
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
             CreateDrmNodeError, DrmAccessError, DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmEventMetadata,
@@ -71,7 +73,7 @@ use smithay::{
             EventLoop, RegistrationToken,
         },
         drm::{
-            control::{connector, crtc, Device, ModeTypeFlags},
+            control::{connector, crtc, Device, Mode as DrmMode, ModeTypeFlags},
             Device as _,
         },
         input::{DeviceCapability, Libinput},
@@ -120,7 +122,7 @@ type UdevRenderer<'a> = MultiRenderer<
     GbmGlesBackend<GlesRenderer, DrmDeviceFd>,
 >;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct UdevOutputId {
     device_id: DrmNode,
     crtc: crtc::Handle,
@@ -210,6 +212,186 @@ impl Backend for UdevData {
     fn update_led_state(&mut self, led_state: LedState) {
         for keyboard in self.keyboards.iter_mut() {
             keyboard.led_update(led_state.into());
+        }
+    }
+
+    fn set_output_mode(&mut self, output: &Output, mode: WlMode) -> Result<(), String> {
+        let id = *output
+            .user_data()
+            .get::<UdevOutputId>()
+            .ok_or("not a DRM output")?;
+        let UdevData {
+            backends,
+            gpus,
+            primary_gpu,
+            ..
+        } = self;
+        let device = backends.get_mut(&id.device_id).ok_or("the GPU is gone")?;
+        let render_node = device.render_node.unwrap_or(*primary_gpu);
+        let surface = device.surfaces.get_mut(&id.crtc).ok_or("the output is off")?;
+        let drm_mode = surface
+            .modes
+            .iter()
+            .copied()
+            .find(|m| WlMode::from(*m) == mode)
+            .ok_or_else(|| {
+                format!(
+                    "{} has no {}x{} @ {:.3} Hz mode",
+                    output.name(),
+                    mode.size.w,
+                    mode.size.h,
+                    mode.refresh as f64 / 1000.0
+                )
+            })?;
+        let mut renderer = gpus.single_renderer(&render_node).map_err(|err| err.to_string())?;
+        surface
+            .drm_output
+            .use_mode::<_, OutputRenderElements<UdevRenderer<'_>, WindowRenderElement<UdevRenderer<'_>>>>(
+                drm_mode,
+                &mut renderer,
+                &DrmOutputRenderElements::default(),
+            )
+            .map_err(|err| err.to_string())?;
+        info!(output = output.name(), width = mode.size.w, height = mode.size.h, refresh = mode.refresh, "mode set");
+        Ok(())
+    }
+
+    fn set_output_vrr(&mut self, output: &Output, enabled: bool) -> Result<(), String> {
+        let id = *output
+            .user_data()
+            .get::<UdevOutputId>()
+            .ok_or("not a DRM output")?;
+        let surface = self
+            .backends
+            .get_mut(&id.device_id)
+            .and_then(|d| d.surfaces.get_mut(&id.crtc))
+            .ok_or("the output is off")?;
+        if !surface.vrr_supported {
+            return Err(format!("{} does not support variable refresh rate", output.name()));
+        }
+        surface
+            .drm_output
+            .with_compositor(|compositor| compositor.use_vrr(enabled))
+            .map_err(|err| err.to_string())
+    }
+
+    fn output_vrr(&self, output: &Output) -> (bool, bool) {
+        let Some(id) = output.user_data().get::<UdevOutputId>() else {
+            return (false, false);
+        };
+        let Some(surface) = self
+            .backends
+            .get(&id.device_id)
+            .and_then(|d| d.surfaces.get(&id.crtc))
+        else {
+            return (false, false);
+        };
+        (
+            surface.vrr_supported,
+            surface.drm_output.with_compositor(|compositor| compositor.vrr_enabled()),
+        )
+    }
+
+    fn disabled_outputs(&self) -> Vec<OutputInfo> {
+        self.backends
+            .values()
+            .flat_map(|device| device.disabled.iter())
+            .map(|d| {
+                let (mm_w, mm_h) = d.connector.size().unwrap_or((0, 0));
+                OutputInfo {
+                    name: d.name.clone(),
+                    make: d.make.clone(),
+                    model: d.model.clone(),
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                    scale: 1.0,
+                    refresh: 0.0,
+                    transform: "normal".into(),
+                    modes: d
+                        .connector
+                        .modes()
+                        .iter()
+                        .map(|m| {
+                            let wl = WlMode::from(*m);
+                            ModeInfo {
+                                width: wl.size.w,
+                                height: wl.size.h,
+                                refresh: wl.refresh,
+                                preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+                                current: false,
+                            }
+                        })
+                        .collect(),
+                    enabled: false,
+                    vrr: false,
+                    vrr_supported: false,
+                    primary: false,
+                    mm_width: mm_w as i32,
+                    mm_height: mm_h as i32,
+                }
+            })
+            .collect()
+    }
+
+    fn set_output_enabled(state: &mut AnvilState<Self>, name: &str, enabled: bool) -> Result<(), String> {
+        if enabled {
+            let found = state.backend_data.backends.iter_mut().find_map(|(node, device)| {
+                device
+                    .disabled
+                    .iter()
+                    .position(|d| d.name == name)
+                    .map(|i| (*node, device.disabled.remove(i)))
+            });
+            let (node, disabled) = found.ok_or_else(|| format!("{name} is not a switched-off output"))?;
+            state.prefs.output_mut(name).enabled = Some(true);
+            state.connector_connected(node, disabled.connector, disabled.crtc);
+            if !state.space.outputs().any(|o| o.name() == name) {
+                return Err(format!("{name} could not be switched on"));
+            }
+            Ok(())
+        } else {
+            if state.space.outputs().count() <= 1 {
+                return Err("the last display cannot be switched off".into());
+            }
+            let output = state
+                .space
+                .outputs()
+                .find(|o| o.name() == name)
+                .cloned()
+                .ok_or_else(|| format!("no such output: {name}"))?;
+            let id = *output
+                .user_data()
+                .get::<UdevOutputId>()
+                .ok_or("not a DRM output")?;
+            let device = state
+                .backend_data
+                .backends
+                .get_mut(&id.device_id)
+                .ok_or("the GPU is gone")?;
+            let handle = device
+                .surfaces
+                .get(&id.crtc)
+                .map(|s| s.connector)
+                .ok_or("the output is off")?;
+            let info = device
+                .drm_output_manager
+                .device()
+                .get_connector(handle, false)
+                .map_err(|err| err.to_string())?;
+            let props = output.physical_properties();
+            state.connector_disconnected(id.device_id, info.clone(), id.crtc);
+            if let Some(device) = state.backend_data.backends.get_mut(&id.device_id) {
+                device.disabled.push(DisabledConnector {
+                    connector: info,
+                    crtc: id.crtc,
+                    name: name.to_string(),
+                    make: props.make,
+                    model: props.model,
+                });
+            }
+            Ok(())
         }
     }
 }
@@ -560,6 +742,9 @@ pub fn run_udev() {
         } else {
             state.space.refresh();
             state.refresh_focus();
+            state.layout_refresh();
+            state.refresh_decorations();
+            state.ipc_refresh();
             state.popups.cleanup();
             display_handle.flush_clients().unwrap();
         }
@@ -666,6 +851,10 @@ struct SurfaceData {
         DrmDeviceFd,
     >,
     disable_direct_scanout: bool,
+    connector: connector::Handle,
+    /// Every mode the connector advertises (for the Displays settings).
+    modes: Vec<DrmMode>,
+    vrr_supported: bool,
     #[cfg(feature = "debug")]
     fps: fps_ticker::Fps,
     #[cfg(feature = "debug")]
@@ -683,9 +872,20 @@ impl Drop for SurfaceData {
     }
 }
 
+/// A connector switched off in the Displays settings (or by the preferences
+/// file at start-up), kept so it can be switched back on.
+struct DisabledConnector {
+    connector: connector::Info,
+    crtc: crtc::Handle,
+    name: String,
+    make: String,
+    model: String,
+}
+
 struct BackendData {
     surfaces: HashMap<crtc::Handle, SurfaceData>,
     non_desktop_connectors: Vec<(connector::Handle, crtc::Handle)>,
+    disabled: Vec<DisabledConnector>,
     leasing_global: Option<DrmLeaseState>,
     active_leases: Vec<DrmLease>,
     drm_output_manager: DrmOutputManager<
@@ -917,6 +1117,7 @@ impl AnvilState<UdevData> {
                 drm_output_manager,
                 drm_scanner: DrmScanner::new(),
                 non_desktop_connectors: Vec::new(),
+                disabled: Vec::new(),
                 render_node,
                 surfaces: HashMap::new(),
                 leasing_global: DrmLeaseState::new::<AnvilState<UdevData>>(&self.display_handle, &node)
@@ -988,13 +1189,37 @@ impl AnvilState<UdevData> {
                 );
             }
         } else {
-            let mode_id = connector
-                .modes()
+            let prefs = self.prefs.outputs.get(&output_name).cloned().unwrap_or_default();
+            if prefs.enabled == Some(false) {
+                info!("Connector {} is switched off by the user", output_name);
+                device.disabled.push(DisabledConnector {
+                    connector: connector.clone(),
+                    crtc,
+                    name: output_name,
+                    make,
+                    model,
+                });
+                return;
+            }
+
+            let modes: Vec<DrmMode> = connector.modes().to_vec();
+            let preferred_id = modes
                 .iter()
                 .position(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
                 .unwrap_or(0);
+            let mode_id = prefs
+                .mode
+                .as_deref()
+                .and_then(crate::prefs::parse_mode_key)
+                .and_then(|(w, h, refresh)| {
+                    modes.iter().position(|m| {
+                        let wl = WlMode::from(*m);
+                        wl.size.w == w && wl.size.h == h && wl.refresh == refresh
+                    })
+                })
+                .unwrap_or(preferred_id);
 
-            let drm_mode = connector.modes()[mode_id];
+            let drm_mode = modes[mode_id];
             let wl_mode = WlMode::from(drm_mode);
 
             let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
@@ -1013,10 +1238,18 @@ impl AnvilState<UdevData> {
                 .space
                 .outputs()
                 .fold(0, |acc, o| acc + self.space.output_geometry(o).unwrap().size.w);
-            let position = (x, 0).into();
+            let position: Point<i32, Logical> = prefs
+                .position
+                .map(|[x, y]| (x, y).into())
+                .unwrap_or_else(|| (x, 0).into());
+            let scale = prefs.scale.filter(|s| (0.5..=4.0).contains(s)).map(smithay::output::Scale::Fractional);
+            let transform = prefs.transform.as_deref().and_then(crate::state::parse_transform);
 
-            output.set_preferred(wl_mode);
-            output.change_current_state(Some(wl_mode), None, None, Some(position));
+            for mode in &modes {
+                output.add_mode(WlMode::from(*mode));
+            }
+            output.set_preferred(WlMode::from(modes[preferred_id]));
+            output.change_current_state(Some(wl_mode), transform, scale, Some(position));
             self.space.map_output(&output, position);
 
             output.user_data().insert_if_missing(|| UdevOutputId {
@@ -1074,6 +1307,22 @@ impl AnvilState<UdevData> {
 
             let disable_direct_scanout = std::env::var("ANVIL_DISABLE_DIRECT_SCANOUT").is_ok();
 
+            let vrr_supported = drm_output.with_compositor(|compositor| {
+                matches!(
+                    compositor.vrr_supported(connector.handle()),
+                    Ok(VrrSupport::Supported) | Ok(VrrSupport::RequiresModeset)
+                )
+            });
+            if let Some(vrr) = prefs.vrr {
+                if vrr_supported {
+                    if let Err(err) = drm_output.with_compositor(|compositor| compositor.use_vrr(vrr)) {
+                        warn!(output = output.name(), %err, "cannot apply the VRR preference");
+                    }
+                } else if vrr {
+                    info!(output = output.name(), "VRR preference ignored: not supported");
+                }
+            }
+
             let dmabuf_feedback = drm_output.with_compositor(|compositor| {
                 compositor.set_debug_flags(self.backend_data.debug_flags);
 
@@ -1093,6 +1342,9 @@ impl AnvilState<UdevData> {
                 global: Some(global),
                 drm_output,
                 disable_direct_scanout,
+                connector: connector.handle(),
+                modes,
+                vrr_supported,
                 #[cfg(feature = "debug")]
                 fps: fps_ticker::Fps::default(),
                 #[cfg(feature = "debug")]
@@ -1117,6 +1369,7 @@ impl AnvilState<UdevData> {
         } else {
             return;
         };
+        device.disabled.retain(|d| d.connector.handle() != connector.handle());
 
         if let Some(pos) = device
             .non_desktop_connectors
@@ -1196,7 +1449,8 @@ impl AnvilState<UdevData> {
         }
 
         // fixup window coordinates
-        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location(), &self.prefs.pinned_positions());
+        self.relayout_all_outputs();
     }
 
     fn device_removed(&mut self, node: DrmNode) {
@@ -1233,7 +1487,8 @@ impl AnvilState<UdevData> {
             debug!("Dropping device");
         }
 
-        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location(), &self.prefs.pinned_positions());
+        self.relayout_all_outputs();
     }
 
     fn frame_finish(&mut self, dev_id: DrmNode, crtc: crtc::Handle, metadata: &mut Option<DrmEventMetadata>) {

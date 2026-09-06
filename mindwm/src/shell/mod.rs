@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 
 #[cfg(feature = "xwayland")]
 use smithay::xwayland::XWaylandClientData;
@@ -7,7 +8,7 @@ use smithay::xwayland::XWaylandClientData;
 use smithay::wayland::drm_syncobj::DrmSyncobjCachedState;
 
 use smithay::{
-    backend::renderer::utils::on_commit_buffer_handler,
+    backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state},
     desktop::{
         layer_map_for_output, space::SpaceElement, LayerSurface, PopupKind, PopupManager, Space,
         WindowSurfaceType,
@@ -33,8 +34,8 @@ use smithay::{
         dmabuf::get_dmabuf,
         shell::{
             wlr_layer::{
-                Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
-                WlrLayerShellState,
+                KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState,
+                LayerSurfaceData, WlrLayerShellHandler, WlrLayerShellState,
             },
             xdg::{ToplevelSurface, XdgToplevelSurfaceData},
         },
@@ -42,6 +43,7 @@ use smithay::{
 };
 
 use crate::{
+    focus::KeyboardFocusTarget,
     state::{AnvilState, Backend},
     ClientState,
 };
@@ -55,6 +57,7 @@ mod xdg;
 
 pub use self::element::*;
 pub use self::grabs::*;
+pub use crate::layout::client_rect;
 
 fn fullscreen_output_geometry(
     wl_surface: &WlSurface,
@@ -239,7 +242,55 @@ impl<BackendData: Backend> CompositorHandler for AnvilState<BackendData> {
             });
         }
 
-        ensure_initial_configure(surface, &self.space, &mut self.popups)
+        let open_maximized = self.layout.open_maximized();
+        if let Some(output) = ensure_initial_configure(surface, &self.space, &mut self.popups, open_maximized) {
+            // A panel changed its exclusive zone: maximised windows follow the usable area.
+            self.relayout_output(&output);
+        }
+        self.focus_new_layer(surface);
+    }
+}
+
+/// Set once an on-demand layer surface has been handed the keyboard on map.
+struct LayerFocusGiven(Cell<bool>);
+
+impl<BackendData: Backend> AnvilState<BackendData> {
+    /// A panel or popup that asked for on-demand keyboard interactivity gets
+    /// the keyboard when it appears (sway does the same): a context menu or
+    /// the layout picker can then be dismissed with Escape without a click
+    /// into it first. Exclusive layers are handled per key press in the input
+    /// handler; `none` layers never get the keyboard.
+    fn focus_new_layer(&mut self, surface: &WlSurface) {
+        let layer = self.space.outputs().find_map(|o| {
+            layer_map_for_output(o)
+                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                .cloned()
+        });
+        let Some(layer) = layer else { return };
+        let (interactivity, wlr_layer) = with_states(surface, |states| {
+            let current = *states.cached_state.get::<LayerSurfaceCachedState>().current();
+            (current.keyboard_interactivity, current.layer)
+        });
+        if interactivity != KeyboardInteractivity::OnDemand || !matches!(wlr_layer, Layer::Top | Layer::Overlay) {
+            return;
+        }
+        let mapped = with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
+        if !mapped {
+            return;
+        }
+        let first = with_states(surface, |states| {
+            states.data_map.insert_if_missing(|| LayerFocusGiven(Cell::new(false)));
+            !states.data_map.get::<LayerFocusGiven>().unwrap().0.replace(true)
+        });
+        if !first {
+            return;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else { return };
+        if keyboard.is_grabbed() {
+            return;
+        }
+        let serial = crate::input_handler::next_serial();
+        keyboard.set_focus(self, Some(KeyboardFocusTarget::LayerSurface(layer)), serial);
     }
 }
 
@@ -264,16 +315,28 @@ impl<BackendData: Backend> WlrLayerShellHandler for AnvilState<BackendData> {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        if let Some((mut map, layer)) = self.space.outputs().find_map(|o| {
-            let map = layer_map_for_output(o);
+        let mut changed = None;
+        for output in self.space.outputs() {
+            let mut map = layer_map_for_output(output);
             let layer = map
                 .layers()
                 .find(|&layer| layer.layer_surface() == &surface)
                 .cloned();
-            layer.map(|layer| (map, layer))
-        }) {
-            map.unmap_layer(&layer);
+            if let Some(layer) = layer {
+                let before = map.non_exclusive_zone();
+                map.unmap_layer(&layer);
+                map.arrange();
+                if map.non_exclusive_zone() != before {
+                    changed = Some(output.clone());
+                }
+                break;
+            }
         }
+        if let Some(output) = changed {
+            self.relayout_output(&output);
+        }
+        // A popup that held the keyboard went away: type into the top window again.
+        self.refresh_focus();
     }
 }
 
@@ -292,7 +355,14 @@ pub struct SurfaceData {
     pub resize_state: ResizeState,
 }
 
-fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, popups: &mut PopupManager) {
+/// Returns the output whose usable area changed because a layer surface
+/// (re)arranged itself on this commit.
+fn ensure_initial_configure(
+    surface: &WlSurface,
+    space: &Space<WindowElement>,
+    popups: &mut PopupManager,
+    open_maximized: bool,
+) -> Option<Output> {
     with_surface_tree_upward(
         surface,
         (),
@@ -323,7 +393,7 @@ fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, p
                     .initial_configure_sent
             });
             if !initial_configure_sent {
-                game_mode_initial_state(space, &window, toplevel);
+                initial_state(space, &window, toplevel, open_maximized);
                 toplevel.send_configure();
             }
         }
@@ -341,7 +411,7 @@ fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, p
             }
         });
 
-        return;
+        return None;
     }
 
     if let Some(popup) = popups.find_popup(surface) {
@@ -349,7 +419,7 @@ fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, p
             PopupKind::Xdg(ref popup) => popup,
             // Doesn't require configure
             PopupKind::InputMethod(ref _input_popup) => {
-                return;
+                return None;
             }
         };
 
@@ -359,7 +429,7 @@ fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, p
             popup.send_configure().expect("initial configure failed");
         }
 
-        return;
+        return None;
     };
 
     if let Some(output) = space.outputs().find(|o| {
@@ -381,7 +451,9 @@ fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, p
 
         // arrange the layers before sending the initial configure
         // to respect any size the client may have sent
+        let zone_before = map.non_exclusive_zone();
         map.arrange();
+        let zone_changed = map.non_exclusive_zone() != zone_before;
         // send the initial configure if relevant
         if !initial_configure_sent {
             let layer = map
@@ -390,7 +462,11 @@ fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, p
 
             layer.layer_surface().send_configure();
         }
+        if zone_changed {
+            return Some(output.clone());
+        }
     };
+    None
 }
 
 /// Marker: centre this window on its parent/output as soon as its size is known.
@@ -435,25 +511,65 @@ pub fn centered(area: Rectangle<i32, Logical>, size: Size<i32, Logical>) -> Poin
         .into()
 }
 
-/// MindOS game mode: a new toplevel fills the output it opens on; dialogs
-/// (toplevels with a parent) keep their own size and get centred.
-fn game_mode_initial_state(space: &Space<WindowElement>, window: &WindowElement, toplevel: &ToplevelSurface) {
+/// KDE-style cascade for a new floating window: when another window already
+/// sits where this one would go, step it down and right so both stay
+/// visible, as long as it still fits inside `area`.
+pub fn cascade(
+    space: &Space<WindowElement>,
+    area: Rectangle<i32, Logical>,
+    mut loc: Point<i32, Logical>,
+    size: Size<i32, Logical>,
+    except: &WindowElement,
+) -> Point<i32, Logical> {
+    const STEP: i32 = 40;
+    let taken: Vec<Point<i32, Logical>> = space
+        .elements()
+        .filter(|w| *w != except)
+        .filter_map(|w| space.element_location(w))
+        .collect();
+    for _ in 0..16 {
+        let clash = taken
+            .iter()
+            .any(|p| (p.x - loc.x).abs() < STEP && (p.y - loc.y).abs() < STEP);
+        if !clash {
+            break;
+        }
+        let next = loc + Point::from((STEP, STEP));
+        if next.x + size.w > area.loc.x + area.size.w || next.y + size.h > area.loc.y + area.size.h {
+            break;
+        }
+        loc = next;
+    }
+    loc
+}
+
+/// The first configure of a toplevel. A tile already has its size from the
+/// layout; a dialog, or any window in floating mode, keeps its own size and
+/// is centred on its first commit; with `open_maximized` (the old "game
+/// mode") a new window fills the usable area of its output.
+fn initial_state(space: &Space<WindowElement>, window: &WindowElement, toplevel: &ToplevelSurface, open_maximized: bool) {
     let Some(area) = window_output_area(space, window) else {
         return;
     };
-    let wants_fullscreen = toplevel.with_pending_state(|state| state.states.contains(xdg_toplevel::State::Fullscreen));
-    if wants_fullscreen {
+    let (wants_fullscreen, sized) = toplevel.with_pending_state(|state| {
+        (
+            state.states.contains(xdg_toplevel::State::Fullscreen),
+            state.size.is_some(),
+        )
+    });
+    if wants_fullscreen || sized {
         return;
     }
-    if toplevel.parent().is_some() {
+    if toplevel.parent().is_some() || !open_maximized {
         window
             .user_data()
             .insert_if_missing(|| CenterOnFirstCommit(Cell::new(true)));
         return;
     }
+    let header = window.pending_header_height();
     toplevel.with_pending_state(|state| {
         state.states.set(xdg_toplevel::State::Maximized);
-        state.size = Some(area.size);
+        state.size = Some(client_rect(area, header).size);
     });
 }
 
@@ -473,22 +589,35 @@ fn place_new_window(
         });
     }
 
-    // Game mode: windows start at the origin of the usable area; the initial
-    // configure (see `game_mode_initial_state`) asks them to fill it.
+    // Windows start at the origin of the usable area; the initial configure
+    // (see `initial_state`) and the layout decide where they end up.
     space.map_element(window.clone(), area.loc, activate);
 }
 
-pub fn fixup_positions(space: &mut Space<WindowElement>, pointer_location: Point<f64, Logical>) {
+/// Place the outputs (left to right, unless the user pinned a position in the
+/// Displays settings) and bring back windows that ended up off-screen.
+pub fn fixup_positions(
+    space: &mut Space<WindowElement>,
+    pointer_location: Point<f64, Logical>,
+    pinned: &BTreeMap<String, [i32; 2]>,
+) {
     // fixup outputs
-    let mut offset = Point::<i32, Logical>::from((0, 0));
+    let mut offset = 0;
     for output in space.outputs().cloned().collect::<Vec<_>>().into_iter() {
         let size = space
             .output_geometry(&output)
             .map(|geo| geo.size)
             .unwrap_or_else(|| Size::from((0, 0)));
-        space.map_output(&output, offset);
+        let location: Point<i32, Logical> = match pinned.get(&output.name()) {
+            Some([x, y]) => (*x, *y).into(),
+            None => (offset, 0).into(),
+        };
+        if output.current_location() != location {
+            output.change_current_state(None, None, None, Some(location));
+        }
+        space.map_output(&output, location);
         layer_map_for_output(&output).arrange();
-        offset.x += size.w;
+        offset = offset.max(location.x + size.w);
     }
 
     // fixup windows
@@ -519,12 +648,35 @@ pub fn fixup_positions(space: &mut Space<WindowElement>, pointer_location: Point
 }
 
 impl<BackendData: Backend> AnvilState<BackendData> {
+    /// The usable area of `output` changed (a shell panel appeared or went
+    /// away): every window on it is placed again on the next turn.
+    pub fn relayout_output(&mut self, _output: &Output) {
+        self.layout.dirty = true;
+    }
+
+    pub fn relayout_all_outputs(&mut self) {
+        self.layout.dirty = true;
+    }
+
     /// Super+F: toggle fullscreen on the focused window.
     pub fn toggle_fullscreen_focused(&mut self) {
+        if let Some(window) = self.focused_window() {
+            self.toggle_fullscreen_window(&window);
+        }
+    }
+
+    /// Super+M: toggle maximize on the focused window.
+    pub fn toggle_maximize_focused(&mut self) {
+        if let Some(window) = self.focused_window() {
+            self.toggle_maximize_window(&window);
+        }
+    }
+
+    pub fn toggle_fullscreen_window(&mut self, window: &WindowElement) {
         use smithay::wayland::shell::xdg::XdgShellHandler;
-        let Some(window) = self.focused_window() else {
+        if !self.space.elements().any(|w| w == window) {
             return;
-        };
+        }
         if let Some(toplevel) = window.0.toplevel().cloned() {
             if toplevel
                 .current_state()
@@ -551,12 +703,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         }
     }
 
-    /// Super+M: toggle maximize on the focused window.
-    pub fn toggle_maximize_focused(&mut self) {
+    pub fn toggle_maximize_window(&mut self, window: &WindowElement) {
         use smithay::wayland::shell::xdg::XdgShellHandler;
-        let Some(window) = self.focused_window() else {
+        if !self.space.elements().any(|w| w == window) {
             return;
-        };
+        }
         if let Some(toplevel) = window.0.toplevel().cloned() {
             if toplevel
                 .current_state()

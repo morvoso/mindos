@@ -82,7 +82,7 @@ pub fn space_preview_elements<'a, R, C>(
 ) -> impl Iterator<Item = C> + 'a
 where
     R: Renderer + ImportAll + ImportMem,
-    R::TextureId: Clone + 'static,
+    R::TextureId: Clone + Send + 'static,
     C: From<CropRenderElement<RelocateRenderElement<RescaleRenderElement<WindowRenderElement<R>>>>> + 'a,
 {
     let constrain_behavior = ConstrainBehavior {
@@ -149,7 +149,7 @@ pub fn output_elements<R>(
 ) -> (Vec<OutputRenderElements<R, WindowRenderElement<R>>>, Color32F)
 where
     R: Renderer + ImportAll + ImportMem,
-    R::TextureId: Clone + 'static,
+    R::TextureId: Clone + Send + 'static,
 {
     if let Some(window) = output
         .user_data()
@@ -210,7 +210,7 @@ pub fn render_output<'a, 'd, R>(
 ) -> Result<RenderOutputResult<'d>, OutputDamageTrackerError<R::Error>>
 where
     R: Renderer + ImportAll + ImportMem,
-    R::TextureId: Clone + 'static,
+    R::TextureId: Clone + Send + 'static,
 {
     let (elements, clear_color) =
         output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop);

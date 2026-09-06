@@ -225,7 +225,8 @@ pub fn run_winit() {
                 };
                 output.change_current_state(Some(mode), None, None, None);
                 output.set_preferred(mode);
-                crate::shell::fixup_positions(&mut state.space, state.pointer.current_location());
+                crate::shell::fixup_positions(&mut state.space, state.pointer.current_location(), &state.prefs.pinned_positions());
+                state.relayout_all_outputs();
             }
             WinitEvent::Input(event) => state.process_input_event_windowed(event, OUTPUT_NAME),
             _ => (),
@@ -459,6 +460,9 @@ pub fn run_winit() {
         } else {
             state.space.refresh();
             state.refresh_focus();
+            state.layout_refresh();
+            state.refresh_decorations();
+            state.ipc_refresh();
             state.popups.cleanup();
             display_handle.flush_clients().unwrap();
         }

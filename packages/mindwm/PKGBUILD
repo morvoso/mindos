@@ -2,11 +2,11 @@
 # The MindOS compositor (Smithay based, Wayland + XWayland on DRM/KMS), built from ../../mindwm.
 pkgname=mindwm
 pkgver=0.1.0
-pkgrel=4
+pkgrel=8
 pkgdesc="MindOS compositor: game-mode Wayland/XWayland compositor with the Mind bar"
 arch=(x86_64)
 url="https://mindos.local"
-license=(MIT)
+license=(MIT OFL-1.1 Bitstream-Vera)
 depends=(glibc gcc-libs wayland libinput libxkbcommon mesa libglvnd libdrm pixman seatd
          systemd-libs xorg-xwayland glib2 libevdev libgudev)
 makedepends=(rust clang lld rsync wayland-protocols pkgconf)
@@ -33,4 +33,9 @@ package() {
   if [[ -f "$srcdir/mindwm/README.md" ]]; then
     install -Dm644 "$srcdir/mindwm/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
   fi
+  # Inter, JetBrains Mono, Orbitron (SIL OFL) and DejaVu Sans (Bitstream Vera)
+  # are compiled into the binary by src/text.rs, so their licences ship with it.
+  install -dm755 "$pkgdir/usr/share/licenses/$pkgname"
+  install -m644 "$srcdir/mindwm/resources"/OFL-*.txt "$srcdir/mindwm/resources"/LICENSE-*.txt \
+    "$pkgdir/usr/share/licenses/$pkgname/"
 }

@@ -102,6 +102,8 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             }
 
             KeyAction::ToggleMindBar => self.mindbar.toggle(),
+            KeyAction::Launcher => self.launcher_shortcut(),
+            KeyAction::Overview => self.overview_shortcut(),
             KeyAction::Terminal => self.spawn_terminal(),
             KeyAction::CloseWindow => {
                 if let Some(window) = self.focused_window() {
@@ -111,6 +113,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             KeyAction::ToggleFullscreen => self.toggle_fullscreen_focused(),
             KeyAction::ToggleMaximize => self.toggle_maximize_focused(),
             KeyAction::CycleWindow => self.cycle_windows(),
+            KeyAction::CycleLayout => self.cycle_layout_mode(),
+            KeyAction::ToggleFloating => self.toggle_floating_focused(),
+            KeyAction::FocusDir(dir) => self.focus_direction(dir),
+            KeyAction::MoveDir(dir) => self.move_direction(dir),
+            KeyAction::CycleColumnWidth => self.cycle_column_width(),
             KeyAction::Bar(action) => self.handle_bar_action(action),
 
             KeyAction::ToggleDecorations => {
@@ -170,10 +177,19 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 });
                 if let Some(surface) = surface {
                     keyboard.set_focus(self, Some(surface.into()), serial);
-                    keyboard.input::<(), _>(self, keycode, state, serial, time, |_, _, _| {
+                    keyboard.input::<(), _>(self, keycode, state, serial, time, |data, _, handle| {
+                        // Everything is forwarded to the exclusive layer, but a Super
+                        // tap still reaches the shell (so it can close its launcher).
+                        if data.track_super_tap(handle.modified_sym(), state) {
+                            data.super_tap_fired = true;
+                        }
                         FilterResult::Forward
                     });
-                    return KeyAction::None;
+                    return if std::mem::take(&mut self.super_tap_fired) {
+                        KeyAction::Launcher
+                    } else {
+                        KeyAction::None
+                    };
                 };
             }
         }
@@ -198,6 +214,12 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     keysym = ::xkbcommon::xkb::keysym_get_name(keysym),
                     "keysym"
                 );
+
+                if data.track_super_tap(keysym, state) {
+                    // Super pressed and released on its own: forward the release
+                    // (the press already went out) and open the launcher.
+                    data.super_tap_fired = true;
+                }
 
                 // If the key is pressed and triggered a action
                 // we will not forward the key to the client.
@@ -237,18 +259,51 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             .unwrap_or(KeyAction::None);
 
         self.suppressed_keys = suppressed_keys;
+        if std::mem::take(&mut self.super_tap_fired) {
+            return KeyAction::Launcher;
+        }
         action
+    }
+
+    /// Track "Super pressed and released with nothing in between". Returns
+    /// `true` on the release that completes such a tap.
+    pub fn track_super_tap(&mut self, keysym: Keysym, state: KeyState) -> bool {
+        let is_super = matches!(
+            keysym,
+            Keysym::Super_L | Keysym::Super_R | Keysym::Meta_L | Keysym::Meta_R
+        );
+        match state {
+            KeyState::Pressed => {
+                self.super_tap_armed = is_super;
+                false
+            }
+            KeyState::Released => {
+                let tapped = is_super && self.super_tap_armed;
+                self.super_tap_armed = false;
+                tapped
+            }
+        }
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, evt: B::PointerButtonEvent) {
         let serial = SCOUNTER.next_serial();
-        // A click anywhere dismisses the Mind bar.
-        if self.mindbar.open && evt.state() == smithay::backend::input::ButtonState::Pressed {
-            self.mindbar.close();
+        if evt.state() == smithay::backend::input::ButtonState::Pressed {
+            // A click anywhere dismisses the Mind bar, and Super+click is not a tap.
+            if self.mindbar.open {
+                self.mindbar.close();
+            }
+            self.super_tap_armed = false;
         }
         let button = evt.button_code();
 
         let state = wl_pointer::ButtonState::from(evt.state());
+        tracing::debug!(
+            button,
+            ?state,
+            grabbed = self.pointer.is_grabbed(),
+            focus = ?self.pointer.current_focus().map(|f| format!("{f:?}").chars().take(60).collect::<String>()),
+            "pointer button"
+        );
 
         if wl_pointer::ButtonState::Pressed == state {
             self.update_keyboard_focus(self.pointer.current_location(), serial);
@@ -308,16 +363,19 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     .layer_under(WlrLayer::Overlay, location - output_geo.loc.to_f64())
                     .or_else(|| layers.layer_under(WlrLayer::Top, location - output_geo.loc.to_f64()))
                 {
-                    if layer.can_receive_keyboard_focus() {
-                        if let Some((_, _)) = layer.surface_under(
-                            location
-                                - output_geo.loc.to_f64()
-                                - layers.layer_geometry(layer).unwrap().loc.to_f64(),
-                            WindowSurfaceType::ALL,
-                        ) {
+                    if let Some((_, _)) = layer.surface_under(
+                        location
+                            - output_geo.loc.to_f64()
+                            - layers.layer_geometry(layer).unwrap().loc.to_f64(),
+                        WindowSurfaceType::ALL,
+                    ) {
+                        // A panel that wants the keyboard (exclusive / on-demand) gets
+                        // it; one that does not (`none`) leaves the focus where it is
+                        // rather than handing it to whatever window sits underneath.
+                        if layer.can_receive_keyboard_focus() {
                             keyboard.set_focus(self, Some(layer.clone().into()), serial);
-                            return;
                         }
+                        return;
                     }
                 }
             }
@@ -479,7 +537,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     let new_scale = current_scale + 0.25;
                     output.change_current_state(None, None, Some(Scale::Fractional(new_scale)), None);
 
-                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location(), &self.prefs.pinned_positions());
                     self.backend_data.reset_buffers(&output);
                 }
 
@@ -495,7 +553,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     let new_scale = f64::max(1.0, current_scale - 0.25);
                     output.change_current_state(None, None, Some(Scale::Fractional(new_scale)), None);
 
-                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location(), &self.prefs.pinned_positions());
                     self.backend_data.reset_buffers(&output);
                 }
 
@@ -520,23 +578,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     };
                     tracing::info!(?current_transform, ?new_transform, output = ?output.name(), "changing output transform");
                     output.change_current_state(None, Some(new_transform), None, None);
-                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location(), &self.prefs.pinned_positions());
                     self.backend_data.reset_buffers(&output);
                 }
 
-                action => match action {
-                    KeyAction::None
-                    | KeyAction::Quit
-                    | KeyAction::Run(_)
-                    | KeyAction::TogglePreview
-                    | KeyAction::ToggleDecorations => self.process_common_key_action(action),
-
-                    _ => tracing::warn!(
-                        ?action,
-                        output_name,
-                        "Key action unsupported on on output backend.",
-                    ),
-                },
+                action => self.process_common_key_action(action),
             },
 
             InputEvent::PointerMotionAbsolute { event } => {
@@ -653,7 +699,7 @@ impl AnvilState<UdevData> {
                         pointer_output_location.y *= rescale;
                         let pointer_location = output_location + pointer_output_location;
 
-                        crate::shell::fixup_positions(&mut self.space, pointer_location);
+                        crate::shell::fixup_positions(&mut self.space, pointer_location, &self.prefs.pinned_positions());
                         let pointer = self.pointer.clone();
                         let under = self.surface_under(pointer_location);
                         pointer.motion(
@@ -692,7 +738,7 @@ impl AnvilState<UdevData> {
                         pointer_output_location.y *= rescale;
                         let pointer_location = output_location + pointer_output_location;
 
-                        crate::shell::fixup_positions(&mut self.space, pointer_location);
+                        crate::shell::fixup_positions(&mut self.space, pointer_location, &self.prefs.pinned_positions());
                         let pointer = self.pointer.clone();
                         let under = self.surface_under(pointer_location);
                         pointer.motion(
@@ -729,7 +775,7 @@ impl AnvilState<UdevData> {
                             Transform::Flipped270 => Transform::Normal,
                         };
                         output.change_current_state(None, Some(new_transform), None, None);
-                        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+                        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location(), &self.prefs.pinned_positions());
                         self.backend_data.reset_buffers(&output);
                     }
                 }
@@ -1310,12 +1356,26 @@ enum KeyAction {
     ToggleDecorations,
     /// Open/close the Mind bar (launcher + conversation)
     ToggleMindBar,
+    /// A tap on Super alone: the shell's launcher (or the Mind bar without a shell)
+    Launcher,
+    /// Super+W: the shell's overview (or the built-in window preview)
+    Overview,
     /// Open the configured terminal
     Terminal,
     CloseWindow,
     ToggleFullscreen,
     ToggleMaximize,
     CycleWindow,
+    /// Super+T: floating -> tiles -> columns
+    CycleLayout,
+    /// Super+Shift+F: take the focused window out of the tiling, or put it back
+    ToggleFloating,
+    /// Super+arrows: focus the nearest window in that direction
+    FocusDir(crate::layout::Direction),
+    /// Super+Shift+arrows: swap the focused tile with its neighbour
+    MoveDir(crate::layout::Direction),
+    /// Super+R: the next width preset for the focused column
+    CycleColumnWidth,
     /// A key handled by the Mind bar produced this
     Bar(crate::mindbar::BarAction),
     /// Do nothing more
@@ -1349,8 +1409,29 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
         Some(KeyAction::ToggleFullscreen)
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::m {
         Some(KeyAction::ToggleMaximize)
+    } else if modifiers.logo && !modifiers.shift && keysym == Keysym::w {
+        Some(KeyAction::Overview)
     } else if (modifiers.logo || modifiers.alt) && (keysym == Keysym::Tab || keysym == Keysym::ISO_Left_Tab) {
         Some(KeyAction::CycleWindow)
+    } else if modifiers.logo && !modifiers.shift && keysym == Keysym::t {
+        Some(KeyAction::CycleLayout)
+    } else if modifiers.logo && modifiers.shift && keysym == Keysym::F {
+        Some(KeyAction::ToggleFloating)
+    } else if modifiers.logo && !modifiers.shift && keysym == Keysym::r {
+        Some(KeyAction::CycleColumnWidth)
+    } else if modifiers.logo && matches!(keysym, Keysym::Left | Keysym::Right | Keysym::Up | Keysym::Down) {
+        use crate::layout::Direction;
+        let dir = match keysym {
+            Keysym::Left => Direction::Left,
+            Keysym::Right => Direction::Right,
+            Keysym::Up => Direction::Up,
+            _ => Direction::Down,
+        };
+        Some(if modifiers.shift {
+            KeyAction::MoveDir(dir)
+        } else {
+            KeyAction::FocusDir(dir)
+        })
     } else if modifiers.logo && (xkb::KEY_1..=xkb::KEY_9).contains(&keysym.raw()) {
         Some(KeyAction::Screen((keysym.raw() - xkb::KEY_1) as usize))
     } else if modifiers.logo && modifiers.shift && keysym == Keysym::M {

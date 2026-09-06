@@ -8,8 +8,13 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use smithay::backend::renderer::Color32F;
 
-/// MindOS red (#8c1010), the same colour the kernel console and GRUB use.
-pub const MINDOS_RED: [f32; 4] = [0.549, 0.0627, 0.0627, 1.0];
+/// The MindOS void (#05070a): the desktop clear colour. Red is reserved for
+/// the kernel and boot stages; the compositor is dark with a cyan accent.
+pub const VOID: [f32; 4] = [0.0196, 0.0275, 0.0392, 1.0];
+/// Default text colour (#e6edf3).
+pub const FOREGROUND: [f32; 4] = [0.902, 0.933, 0.953, 1.0];
+/// Electric cyan (#19e3ff), the single accent colour of the MindOS look.
+pub const ACCENT: [f32; 4] = [0.098, 0.890, 1.0, 1.0];
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -18,6 +23,7 @@ pub struct Config {
     pub apps: Apps,
     pub mind: Mind,
     pub theme: Theme,
+    pub layout: LayoutConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -47,6 +53,9 @@ pub struct Mind {
     pub socket: String,
     /// Let Mind apply changes without asking (the daemon's policy still applies).
     pub autopilot: bool,
+    /// Show Mind's tool activity (commands it runs) in the bar. Most people
+    /// only want the answer; the Settings app toggles this per user.
+    pub show_tools: bool,
 }
 
 impl Default for Mind {
@@ -54,6 +63,33 @@ impl Default for Mind {
         Mind {
             socket: "/run/mindos/mind.sock".into(),
             autopilot: false,
+            show_tools: false,
+        }
+    }
+}
+
+/// Window layout defaults; the user's choice (Settings, Super+T) is kept in
+/// the preferences file and wins over these.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    /// `floating` (KDE-like), `dwindle` (Hyprland-like) or `columns` (Niri-like).
+    pub mode: String,
+    /// Pixels between tiles.
+    pub gap: i32,
+    /// Pixels between the tiles and the edge of the usable area.
+    pub outer_gap: i32,
+    /// Floating mode: open every new window maximised (the old "game mode").
+    pub open_maximized: bool,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        LayoutConfig {
+            mode: "floating".into(),
+            gap: 8,
+            outer_gap: 8,
+            open_maximized: false,
         }
     }
 }
@@ -63,15 +99,18 @@ impl Default for Mind {
 pub struct Theme {
     pub background: String,
     pub foreground: String,
-    /// Draw the "MindOS" wordmark and key hints when no window is open.
+    /// The accent colour (Mind bar lines, selection, wordmark glow).
+    pub accent: String,
+    /// Draw the "MINDOS" wordmark and key hints when no window is open.
     pub show_wordmark: bool,
 }
 
 impl Default for Theme {
     fn default() -> Self {
         Theme {
-            background: "#8c1010".into(),
-            foreground: "#ffffff".into(),
+            background: "#05070a".into(),
+            foreground: "#e6edf3".into(),
+            accent: "#19e3ff".into(),
             show_wordmark: true,
         }
     }
@@ -114,11 +153,15 @@ impl Config {
     }
 
     pub fn background(&self) -> [f32; 4] {
-        parse_color(&self.theme.background).unwrap_or(MINDOS_RED)
+        parse_color(&self.theme.background).unwrap_or(VOID)
     }
 
     pub fn foreground(&self) -> [f32; 4] {
-        parse_color(&self.theme.foreground).unwrap_or([1.0, 1.0, 1.0, 1.0])
+        parse_color(&self.theme.foreground).unwrap_or(FOREGROUND)
+    }
+
+    pub fn accent(&self) -> [f32; 4] {
+        parse_color(&self.theme.accent).unwrap_or(ACCENT)
     }
 }
 

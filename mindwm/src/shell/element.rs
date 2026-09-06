@@ -1,8 +1,14 @@
-use std::{borrow::Cow, time::Duration};
+use std::{
+    borrow::Cow,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use smithay::{
     backend::renderer::{
-        element::{solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement, AsRenderElements},
+        element::{
+            memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, AsRenderElements,
+        },
         ImportAll, ImportMem, Renderer, Texture,
     },
     desktop::{
@@ -27,27 +33,39 @@ use smithay::{
     wayland::{compositor::SurfaceData as WlSurfaceData, dmabuf::DmabufFeedback, seat::WaylandFocus},
 };
 
-use super::ssd::HEADER_BAR_HEIGHT;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+
 use crate::{focus::PointerFocusTarget, state::Backend, AnvilState};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowElement(pub Window);
 
+/// The id a window has on the shell IPC, stable for the window's life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WindowId(pub u64);
+
+static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
+
 impl WindowElement {
+    /// The window's IPC id, assigned the first time it is asked for.
+    pub fn id(&self) -> u64 {
+        self.0
+            .user_data()
+            .insert_if_missing_threadsafe(|| WindowId(NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed)));
+        self.0.user_data().get::<WindowId>().map(|id| id.0).unwrap_or(0)
+    }
+
     pub fn surface_under(
         &self,
         location: Point<f64, Logical>,
         window_type: WindowSurfaceType,
     ) -> Option<(PointerFocusTarget, Point<i32, Logical>)> {
-        let state = self.decoration_state();
-        if state.is_ssd && location.y < HEADER_BAR_HEIGHT as f64 {
+        let header = self.header_height();
+        if header > 0 && location.y < header as f64 {
             return Some((PointerFocusTarget::SSD(SSD(self.clone())), Point::default()));
         }
-        let offset = if state.is_ssd {
-            Point::from((0, HEADER_BAR_HEIGHT))
-        } else {
-            Point::default()
-        };
+        let offset = Point::from((0, header));
 
         let surface_under = self.0.surface_under(location - offset.to_f64(), window_type);
         let (under, loc) = match self.0.underlying_surface() {
@@ -142,6 +160,103 @@ impl WindowElement {
     pub fn user_data(&self) -> &UserDataMap {
         self.0.user_data()
     }
+
+    /// The window's title as the client last set it.
+    pub fn title(&self) -> String {
+        if let Some(toplevel) = self.0.toplevel() {
+            return with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|d| d.lock().ok().and_then(|d| d.title.clone()))
+            })
+            .unwrap_or_default();
+        }
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = self.0.x11_surface() {
+            return surface.title();
+        }
+        String::new()
+    }
+
+    /// The window's app id (xdg) or class (X11).
+    pub fn app_id(&self) -> String {
+        if let Some(toplevel) = self.0.toplevel() {
+            return with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|d| d.lock().ok().and_then(|d| d.app_id.clone()))
+            })
+            .unwrap_or_default();
+        }
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = self.0.x11_surface() {
+            return surface.class();
+        }
+        String::new()
+    }
+
+    pub fn is_fullscreen(&self) -> bool {
+        if let Some(toplevel) = self.0.toplevel() {
+            return toplevel
+                .current_state()
+                .states
+                .contains(xdg_toplevel::State::Fullscreen);
+        }
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = self.0.x11_surface() {
+            return surface.is_fullscreen();
+        }
+        false
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        if let Some(toplevel) = self.0.toplevel() {
+            return toplevel
+                .current_state()
+                .states
+                .contains(xdg_toplevel::State::Maximized);
+        }
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = self.0.x11_surface() {
+            return surface.is_maximized();
+        }
+        false
+    }
+
+    /// Maximised or fullscreen as far as the *pending* state goes (what the
+    /// next configure will tell the client).
+    pub fn pending_maximized(&self) -> bool {
+        if let Some(toplevel) = self.0.toplevel() {
+            return toplevel.with_pending_state(|s| s.states.contains(xdg_toplevel::State::Maximized));
+        }
+        self.is_maximized()
+    }
+
+    pub fn pending_fullscreen(&self) -> bool {
+        if let Some(toplevel) = self.0.toplevel() {
+            return toplevel.with_pending_state(|s| s.states.contains(xdg_toplevel::State::Fullscreen));
+        }
+        self.is_fullscreen()
+    }
+
+    /// Dialogs, utility windows, transient windows: never tiled, kept
+    /// floating and centred.
+    pub fn is_dialog(&self) -> bool {
+        if let Some(toplevel) = self.0.toplevel() {
+            return toplevel.parent().is_some();
+        }
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = self.0.x11_surface() {
+            use smithay::xwayland::xwm::WmWindowType;
+            return surface.is_popup()
+                || surface.is_override_redirect()
+                || surface.is_transient_for().is_some()
+                || !matches!(surface.window_type(), None | Some(WmWindowType::Normal));
+        }
+        false
+    }
 }
 
 impl IsAlive for WindowElement {
@@ -206,7 +321,10 @@ impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for SSD {
     ) {
         let mut state = self.0.decoration_state();
         if state.is_ssd {
-            state.header_bar.clicked(seat, data, &self.0, event.serial);
+            let pressed = event.state == smithay::backend::input::ButtonState::Pressed;
+            state
+                .header_bar
+                .button(seat, data, &self.0, event.serial, event.button, pressed);
         }
     }
     fn axis(
@@ -366,25 +484,19 @@ impl<BackendData: Backend> TouchTarget<AnvilState<BackendData>> for SSD {
 impl SpaceElement for WindowElement {
     fn geometry(&self) -> Rectangle<i32, Logical> {
         let mut geo = SpaceElement::geometry(&self.0);
-        if self.decoration_state().is_ssd {
-            geo.size.h += HEADER_BAR_HEIGHT;
-        }
+        geo.size.h += self.header_height();
         geo
     }
     fn bbox(&self) -> Rectangle<i32, Logical> {
         let mut bbox = SpaceElement::bbox(&self.0);
-        if self.decoration_state().is_ssd {
-            bbox.size.h += HEADER_BAR_HEIGHT;
-        }
+        bbox.size.h += self.header_height();
         bbox
     }
     fn is_in_input_region(&self, point: &Point<f64, Logical>) -> bool {
-        if self.decoration_state().is_ssd {
-            point.y < HEADER_BAR_HEIGHT as f64
-                || SpaceElement::is_in_input_region(
-                    &self.0,
-                    &(*point - Point::from((0.0, HEADER_BAR_HEIGHT as f64))),
-                )
+        let header = self.header_height();
+        if header > 0 {
+            point.y < header as f64
+                || SpaceElement::is_in_input_region(&self.0, &(*point - Point::from((0.0, header as f64))))
         } else {
             SpaceElement::is_in_input_region(&self.0, point)
         }
@@ -411,7 +523,7 @@ impl SpaceElement for WindowElement {
 render_elements!(
     pub WindowRenderElement<R> where R: ImportAll + ImportMem;
     Window=WaylandSurfaceRenderElement<R>,
-    Decoration=SolidColorRenderElement,
+    Decoration=MemoryRenderBufferRenderElement<R>,
 );
 
 impl<R: Renderer> std::fmt::Debug for WindowRenderElement<R> {
@@ -427,7 +539,7 @@ impl<R: Renderer> std::fmt::Debug for WindowRenderElement<R> {
 impl<R> AsRenderElements<R> for WindowElement
 where
     R: Renderer + ImportAll + ImportMem,
-    R::TextureId: Clone + Texture + 'static,
+    R::TextureId: Clone + Send + Texture + 'static,
 {
     type RenderElement = WindowRenderElement<R>;
 
@@ -439,13 +551,15 @@ where
         alpha: f32,
     ) -> Vec<C> {
         let window_bbox = SpaceElement::bbox(&self.0);
+        let header = self.header_height();
 
-        if self.decoration_state().is_ssd && !window_bbox.is_empty() {
+        if header > 0 && !window_bbox.is_empty() {
             let window_geo = SpaceElement::geometry(&self.0);
 
             let mut state = self.decoration_state();
             let width = window_geo.size.w;
-            state.header_bar.redraw(width as u32);
+            let int_scale = scale.x.ceil().max(1.0) as i32;
+            state.header_bar.redraw(width, int_scale);
             let mut vec = AsRenderElements::<R>::render_elements::<WindowRenderElement<R>>(
                 &state.header_bar,
                 renderer,
@@ -454,7 +568,7 @@ where
                 alpha,
             );
 
-            location.y += (scale.y * HEADER_BAR_HEIGHT as f64) as i32;
+            location.y += (scale.y * header as f64).round() as i32;
 
             let window_elements =
                 AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);

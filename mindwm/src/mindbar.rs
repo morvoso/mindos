@@ -6,7 +6,8 @@
 //! confirmation prompts are rendered inline. `!cmd` runs a shell command.
 //!
 //! Everything is drawn on the CPU into a memory buffer, so the bar renders on
-//! any backend and costs nothing while it is closed.
+//! any backend and costs nothing while it is closed. The look is the MindOS
+//! HUD: a chamfered dark panel, hairlines, one cyan accent, no red.
 
 use serde_json::Value;
 use smithay::backend::allocator::Fourcc;
@@ -18,22 +19,36 @@ use smithay::utils::{Logical, Point, Size, Transform};
 
 use crate::launcher::{self, AppEntry};
 use crate::mind::{Event, MindEvent};
-use crate::text::{Canvas, Rgba, TextRenderer};
+use crate::text::{alpha, hex, Canvas, Face, Rgba, TextRenderer, DIAGONAL};
 
-const PANEL_BG: Rgba = [0.07, 0.015, 0.015, 0.94];
-const PANEL_BORDER: Rgba = [1.0, 1.0, 1.0, 0.22];
-const INPUT_BG: Rgba = [1.0, 1.0, 1.0, 0.08];
-const DIM: Rgba = [1.0, 1.0, 1.0, 0.55];
-const FAINT: Rgba = [1.0, 1.0, 1.0, 0.35];
-const USER: Rgba = [1.0, 0.72, 0.72, 1.0];
-const TOOL: Rgba = [1.0, 0.85, 0.5, 1.0];
-const ERROR: Rgba = [1.0, 0.45, 0.45, 1.0];
-const SELECTED_BG: Rgba = [1.0, 1.0, 1.0, 1.0];
-const SELECTED_FG: Rgba = [0.549, 0.0627, 0.0627, 1.0];
-const CONFIRM_BG: Rgba = [1.0, 0.85, 0.5, 0.18];
+// MindOS design tokens (see docs/SHELL.md); the accent and foreground come
+// from the config and default to these.
+pub const VOID: Rgba = hex(0x05070a);
+pub const BG0: Rgba = hex(0x0a0d12);
+pub const BG1: Rgba = hex(0x10151c);
+pub const HAIRLINE: Rgba = hex(0x223041);
+pub const LINE_STRONG: Rgba = hex(0x2f4257);
+pub const FG_DIM: Rgba = hex(0x8b9bb0);
+pub const FG_FAINT: Rgba = hex(0x55657a);
+pub const MIND: Rgba = hex(0xa78bfa);
+pub const WARN: Rgba = hex(0xffb454);
+pub const DANGER: Rgba = hex(0xff5d8f);
+pub const OK: Rgba = hex(0x3ddc97);
 
-const PAD: i32 = 14;
+const PANEL_BG: Rgba = alpha(BG0, 0.94);
+const INPUT_BG: Rgba = alpha(VOID, 0.85);
+
+const PAD: i32 = 16;
+const HEADER_H: i32 = 26;
+const INPUT_H: i32 = 44;
+const GAP: i32 = 10;
+const ROW_H: i32 = 36;
 const RESULT_ROWS: usize = 8;
+
+/// Height of the whole panel for a body of `body` pixels.
+fn panel_height(body: i32) -> i32 {
+    PAD + HEADER_H + INPUT_H + GAP + body + PAD
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineKind {
@@ -82,6 +97,7 @@ impl std::fmt::Debug for MindBar {
 
 pub struct MindBar {
     pub open: bool,
+    show_tools: bool,
     input: String,
     apps: Vec<AppEntry>,
     results: Vec<usize>,
@@ -93,6 +109,7 @@ pub struct MindBar {
     session: Option<String>,
     pending: Option<(String, String)>,
     connected: bool,
+    ready: bool,
     model: String,
     status: String,
     dirty: bool,
@@ -100,13 +117,15 @@ pub struct MindBar {
     wordmark: Option<Cached>,
     text: TextRenderer,
     foreground: Rgba,
+    accent: Rgba,
 }
 
 impl MindBar {
-    pub fn new(text: TextRenderer, apps: Vec<AppEntry>, foreground: Rgba) -> Self {
+    pub fn new(text: TextRenderer, apps: Vec<AppEntry>, foreground: Rgba, accent: Rgba) -> Self {
         tracing::info!(apps = apps.len(), "application index loaded");
         MindBar {
             open: false,
+            show_tools: false,
             input: String::new(),
             apps,
             results: Vec::new(),
@@ -118,13 +137,15 @@ impl MindBar {
             session: None,
             pending: None,
             connected: false,
+            ready: false,
             model: String::new(),
-            status: "connecting to Mind…".into(),
+            status: "connecting".into(),
             dirty: true,
             panel: None,
             wordmark: None,
             text,
             foreground,
+            accent,
         }
     }
 
@@ -134,6 +155,11 @@ impl MindBar {
 
     pub fn session(&self) -> Option<String> {
         self.session.clone()
+    }
+
+    /// Mind connection state for the shell: (connected, ready, model).
+    pub fn mind_status(&self) -> (bool, bool, String) {
+        (self.connected, self.ready, self.model.clone())
     }
 
     pub fn toggle(&mut self) {
@@ -309,17 +335,20 @@ impl MindBar {
             }
             MindEvent::Disconnected => {
                 self.connected = false;
+                self.ready = false;
                 self.busy = false;
-                self.status = "Mind offline (mindd stopped)".into();
+                self.status = "offline (mindd stopped)".into();
             }
             MindEvent::Unavailable(err) => {
                 self.connected = false;
+                self.ready = false;
                 self.busy = false;
-                self.status = format!("Mind offline ({err})");
+                self.status = format!("offline ({err})");
             }
             MindEvent::Event(ev) => match ev {
                 Event::Welcome { model, ready, .. } => {
                     self.model = model;
+                    self.ready = ready;
                     self.status = if ready {
                         "ready".into()
                     } else {
@@ -330,6 +359,7 @@ impl MindBar {
                     if !model.is_empty() {
                         self.model = model;
                     }
+                    self.ready = ready;
                     self.status = if ready { "ready".into() } else { "model loading…".into() };
                 }
                 Event::Delta { text, kind } => {
@@ -384,32 +414,61 @@ impl MindBar {
         }
     }
 
+    /// Whether tool activity lines (commands Mind runs) are shown.
+    pub fn show_tools(&self) -> bool {
+        self.show_tools
+    }
+
+    pub fn set_show_tools(&mut self, on: bool) {
+        if self.show_tools != on {
+            self.show_tools = on;
+            self.dirty = true;
+        }
+    }
+
     fn body_height(&mut self, width: i32, output_h: i32) -> i32 {
         if !self.results.is_empty() {
-            return self.results.len() as i32 * 36 + PAD;
+            return self.results.len() as i32 * ROW_H + 4;
         }
         if self.lines.is_empty() && self.streaming.is_empty() && self.thinking.is_empty() && self.pending.is_none() {
             return 0;
         }
         let max = (output_h as f32 * 0.55) as i32;
-        let text_w = Some(width - 2 * PAD - 12);
-        let mut needed = PAD;
+        let text_w = Some(width - 2 * PAD - 16);
+        let mut needed = 4;
         if !self.streaming.trim().is_empty() {
-            needed += self.text.measure(&self.streaming, 17.0, text_w, false).1 + 8;
+            needed += self.text.measure(&self.streaming, 17.0, text_w, Face::Body).1 + 8;
         } else if !self.thinking.trim().is_empty() || self.busy {
-            needed += self.text.measure("…", 15.0, text_w, false).1 + 8;
+            needed += self.text.measure("…", 15.0, text_w, Face::Body).1 + 8;
         }
         if let Some((_, desc)) = &self.pending {
-            needed += self.text.measure(desc, 17.0, text_w, false).1 + 16;
+            needed += self.text.measure(desc, 16.0, text_w, Face::Body).1 + 22;
         }
-        for line in self.lines.iter().rev().take(40) {
-            needed += self.text.measure(&line.text, 17.0, text_w, false).1 + 8;
+        let show_tools = self.show_tools;
+        for line in self
+            .lines
+            .iter()
+            .filter(|l| show_tools || l.kind != LineKind::Tool)
+            .rev()
+            .take(40)
+        {
+            needed += self.text.measure(&line.text, 17.0, text_w, Face::Body).1 + 8;
             if needed >= max {
                 break;
             }
         }
-        needed += 12;
-        needed.clamp(80, max)
+        needed += 8;
+        needed.clamp(64, max)
+    }
+
+    fn status_color(&self) -> Rgba {
+        if !self.connected {
+            DANGER
+        } else if self.ready {
+            OK
+        } else {
+            WARN
+        }
     }
 
     fn draw_panel(&mut self, size: Size<i32, Logical>, scale: i32) -> Canvas {
@@ -417,113 +476,139 @@ impl MindBar {
         let w = size.w * s;
         let h = size.h * s;
         let pad = PAD * s;
-        let mut canvas = Canvas::new(w, h);
-        canvas.fill_rounded_rect(0, 0, w, h, 12 * s, PANEL_BG);
-        // 1px border
-        canvas.fill_rect(0, 0, w, s, PANEL_BORDER);
-        canvas.fill_rect(0, h - s, w, s, PANEL_BORDER);
-        canvas.fill_rect(0, 0, s, h, PANEL_BORDER);
-        canvas.fill_rect(w - s, 0, s, h, PANEL_BORDER);
-
+        let cut = 12 * s;
         let fg = self.foreground;
+        let accent = self.accent;
         let font = |px: f32| px * s as f32;
+        let mut canvas = Canvas::new(w, h);
 
-        // status row
-        let status = if self.connected {
-            if self.model.is_empty() {
-                format!("MIND · {}", self.status)
-            } else {
-                format!("MIND · {} · {}", self.model, self.status)
-            }
-        } else {
-            format!("MIND · {}", self.status)
-        };
-        self.text.draw(&mut canvas, pad, pad, Some(w - 2 * pad), &status, font(13.0), DIM, true);
+        // The card: chamfered, hairline border, an accent line along the top.
+        canvas.fill_chamfered_rect(0, 0, w, h, cut, DIAGONAL, PANEL_BG);
+        canvas.stroke_chamfered_rect(0, 0, w, h, cut, DIAGONAL, LINE_STRONG);
+        canvas.hline_glow(cut, 0, w - cut, 2 * s, 4 * s, accent);
+        // a small accent tick on the cut corner
+        canvas.fill_rect(w - 1 - 24 * s, h - 1, 24 * s, 1, alpha(accent, 0.6));
+
+        // Header: ◈ MIND · status dot · status · model            hints
+        let hy = pad;
+        let mut x = pad;
+        self.text
+            .draw(&mut canvas, x, hy - 2 * s, None, "◈", font(14.0), accent, Face::Body);
+        x += 20 * s;
+        x += self
+            .text
+            .draw_spaced(&mut canvas, x, hy, "MIND", font(14.0), accent, Face::LabelBold, 3 * s);
+        x += 16 * s;
+        canvas.fill_circle(x + 3 * s, hy + 8 * s, 3 * s, self.status_color());
+        x += 12 * s;
+        let status = self.status.to_uppercase();
+        x += self
+            .text
+            .draw_spaced(&mut canvas, x, hy, &status, font(13.0), FG_DIM, Face::Label, s);
+        if self.connected && !self.model.is_empty() {
+            x += 10 * s;
+            let model = format!("· {}", self.model);
+            self.text
+                .draw(&mut canvas, x, hy, Some(w / 2), &model, font(13.0), FG_FAINT, Face::Mono);
+        }
         let hint = if self.pending.is_some() {
-            "Y allow · N deny"
+            "Y allow   N deny"
         } else if self.busy {
             "Esc cancel"
         } else if !self.results.is_empty() {
-            "Enter launch · Shift+Enter ask Mind · ↑↓ select · Esc close"
+            "Enter launch   Shift+Enter ask Mind   ↑↓ select   Esc close"
         } else {
-            "Enter ask Mind · !cmd run · Esc close"
+            "Enter ask Mind   !cmd run   Esc close"
         };
-        let (hw, _) = self.text.measure(hint, font(13.0), None, false);
+        let (hw, _) = self.text.measure(hint, font(14.0), None, Face::Label);
         self.text
-            .draw(&mut canvas, w - pad - hw, pad, None, hint, font(13.0), FAINT, false);
+            .draw(&mut canvas, w - pad - hw, hy, None, hint, font(14.0), FG_FAINT, Face::Label);
 
-        // input row
-        let input_y = pad + 24 * s;
-        let input_h = 44 * s;
-        canvas.fill_rounded_rect(pad, input_y, w - 2 * pad, input_h, 8 * s, INPUT_BG);
-        let prompt_x = pad + 12 * s;
-        let text_y = input_y + 10 * s;
+        // Input row: inset box with an accent bar and a caret.
+        let iy = pad + HEADER_H * s;
+        let ih = INPUT_H * s;
+        canvas.fill_rect(pad, iy, w - 2 * pad, ih, INPUT_BG);
+        canvas.stroke_rect(pad, iy, w - 2 * pad, ih, HAIRLINE);
+        canvas.fill_rect(pad, iy, 3 * s, ih, accent);
+        let prompt_x = pad + 16 * s;
         self.text
-            .draw(&mut canvas, prompt_x, text_y, None, "›", font(22.0), fg, true);
+            .draw(&mut canvas, prompt_x, iy + 7 * s, None, "›", font(24.0), accent, Face::BodyBold);
+        let text_x = prompt_x + 20 * s;
         if self.input.is_empty() {
             self.text.draw(
                 &mut canvas,
-                prompt_x + 22 * s,
-                text_y + 2 * s,
-                Some(w - 2 * pad - 40 * s),
-                "Type an app name, or ask Mind anything…",
-                font(19.0),
-                FAINT,
-                false,
+                text_x,
+                iy + 11 * s,
+                Some(w - 2 * pad - 48 * s),
+                "Type an app, or ask Mind…",
+                font(18.0),
+                FG_FAINT,
+                Face::Body,
             );
+            canvas.fill_rect(text_x - 4 * s, iy + 11 * s, 2 * s, 22 * s, accent);
         } else {
-            let (tw, _) = self.text.measure(&self.input, font(21.0), None, false);
+            let (tw, _) = self.text.measure(&self.input, font(20.0), None, Face::Body);
             self.text.draw(
                 &mut canvas,
-                prompt_x + 22 * s,
-                text_y,
+                text_x,
+                iy + 10 * s,
                 None,
                 &self.input,
-                font(21.0),
+                font(20.0),
                 fg,
-                false,
+                Face::Body,
             );
-            canvas.fill_rect(prompt_x + 24 * s + tw, text_y + 2 * s, 2 * s, 24 * s, fg);
+            canvas.fill_rect(text_x + tw + 3 * s, iy + 11 * s, 2 * s, 22 * s, accent);
         }
 
-        let body_y = input_y + input_h + 8 * s;
+        let body_y = iy + ih + GAP * s;
         if !self.results.is_empty() {
-            let row_h = 36 * s;
+            let row_h = ROW_H * s;
             for (i, &idx) in self.results.iter().enumerate() {
                 let y = body_y + i as i32 * row_h;
                 let selected = i == self.selected;
-                let (name_color, exec_color) = if selected {
-                    canvas.fill_rounded_rect(pad, y, w - 2 * pad, row_h - 2 * s, 6 * s, SELECTED_BG);
-                    (SELECTED_FG, [SELECTED_FG[0], SELECTED_FG[1], SELECTED_FG[2], 0.7])
+                let name_color = if selected {
+                    canvas.fill_rect(pad, y, w - 2 * pad, row_h - 2 * s, alpha(accent, 0.10));
+                    canvas.fill_rect(pad, y, 3 * s, row_h - 2 * s, accent);
+                    accent
                 } else {
-                    (fg, DIM)
+                    fg
                 };
                 let app = &self.apps[idx];
                 let name = app.name.clone();
                 let exec = app.exec.clone();
                 self.text.draw(
                     &mut canvas,
-                    pad + 12 * s,
-                    y + 8 * s,
+                    pad + 16 * s,
+                    y + 6 * s,
                     Some(w / 2),
                     &name,
-                    font(18.0),
+                    font(19.0),
                     name_color,
-                    selected,
+                    if selected { Face::LabelBold } else { Face::Label },
                 );
-                let (ew, _) = self.text.measure(&exec, font(13.0), None, false);
+                let (ew, _) = self.text.measure(&exec, font(12.0), None, Face::Mono);
                 let ex = (w - pad - 12 * s - ew).max(w / 2 + pad);
-                self.text
-                    .draw(&mut canvas, ex, y + 11 * s, Some(w / 2 - 2 * pad), &exec, font(13.0), exec_color, false);
+                self.text.draw(
+                    &mut canvas,
+                    ex,
+                    y + 11 * s,
+                    Some(w / 2 - 2 * pad),
+                    &exec,
+                    font(12.0),
+                    if selected { alpha(accent, 0.8) } else { FG_DIM },
+                    Face::Mono,
+                );
             }
             return canvas;
         }
 
-        // conversation
+        // Conversation, newest at the bottom.
         let body_bottom = h - pad;
         let mut entries: Vec<(LineKind, String)> = self
             .lines
             .iter()
+            .filter(|l| self.show_tools || l.kind != LineKind::Tool)
             .map(|l| (l.kind, l.text.clone()))
             .collect();
         if !self.thinking.trim().is_empty() && self.streaming.trim().is_empty() {
@@ -536,16 +621,26 @@ impl MindBar {
             entries.push((LineKind::Thinking, "…".into()));
         }
         if let Some((_, desc)) = &self.pending {
-            entries.push((LineKind::Info, format!("Mind wants to: {desc}   —   press Y to allow, N to deny")));
+            entries.push((LineKind::Info, format!("Mind wants to: {desc}   —   Y allow · N deny")));
         }
+        let max_w = w - 2 * pad - 16 * s;
+        let px_of = |kind: LineKind| match kind {
+            LineKind::Thinking => font(15.0),
+            LineKind::Tool => font(15.0),
+            LineKind::Info => font(16.0),
+            _ => font(17.0),
+        };
+        let face_of = |kind: LineKind| match kind {
+            LineKind::Tool => Face::Mono,
+            _ => Face::Body,
+        };
         // Lay out from the bottom up so the newest entries are always visible.
-        let max_w = w - 2 * pad - 12 * s;
         let mut placed: Vec<(LineKind, String, i32, i32)> = Vec::new();
         let mut y = body_bottom;
         for (kind, text) in entries.into_iter().rev() {
-            let px = if kind == LineKind::Thinking { font(15.0) } else { font(17.0) };
-            let (_, th) = self.text.measure(&text, px, Some(max_w), false);
-            let block = th + 8 * s;
+            let (_, th) = self.text.measure(&text, px_of(kind), Some(max_w), face_of(kind));
+            let confirm = kind == LineKind::Info && self.pending.is_some() && text.starts_with("Mind wants to");
+            let block = th + if confirm { 22 * s } else { 8 * s };
             if y - block < body_y {
                 break;
             }
@@ -553,21 +648,38 @@ impl MindBar {
             placed.push((kind, text, y, th));
         }
         for (kind, text, y, th) in placed.into_iter().rev() {
-            let (color, px, x) = match kind {
-                LineKind::User => (USER, font(17.0), pad + 6 * s),
-                LineKind::Mind => (fg, font(17.0), pad + 6 * s),
-                LineKind::Thinking => (FAINT, font(15.0), pad + 6 * s),
-                LineKind::Tool => (TOOL, font(17.0), pad + 6 * s),
-                LineKind::Info => (DIM, font(17.0), pad + 6 * s),
-                LineKind::Error => (ERROR, font(17.0), pad + 6 * s),
+            let confirm = kind == LineKind::Info && self.pending.is_some() && text.starts_with("Mind wants to");
+            let color = match kind {
+                LineKind::User => fg,
+                LineKind::Mind => fg,
+                LineKind::Thinking => FG_FAINT,
+                LineKind::Tool => WARN,
+                LineKind::Info => {
+                    if confirm {
+                        WARN
+                    } else {
+                        FG_DIM
+                    }
+                }
+                LineKind::Error => DANGER,
             };
-            if kind == LineKind::Info && self.pending.is_some() && text.starts_with("Mind wants to") {
-                canvas.fill_rounded_rect(pad, y - 4 * s, w - 2 * pad, th + 8 * s, 6 * s, CONFIRM_BG);
+            let text_x = pad + 14 * s;
+            if confirm {
+                canvas.fill_rect(pad, y, w - 2 * pad, th + 14 * s, alpha(WARN, 0.10));
+                canvas.stroke_rect(pad, y, w - 2 * pad, th + 14 * s, alpha(WARN, 0.55));
+                canvas.fill_rect(pad, y, 3 * s, th + 14 * s, WARN);
+                self.text
+                    .draw(&mut canvas, text_x, y + 7 * s, Some(max_w), &text, px_of(kind), color, face_of(kind));
+                continue;
             }
-            if kind == LineKind::User {
-                canvas.fill_rect(pad, y, 3 * s, th, USER);
+            match kind {
+                LineKind::User => canvas.fill_rect(pad, y, 3 * s, th, accent),
+                LineKind::Mind => canvas.fill_rect(pad, y, 3 * s, th, MIND),
+                LineKind::Error => canvas.fill_rect(pad, y, 3 * s, th, DANGER),
+                _ => {}
             }
-            self.text.draw(&mut canvas, x + 6 * s, y, Some(max_w), &text, px, color, false);
+            self.text
+                .draw(&mut canvas, text_x, y, Some(max_w), &text, px_of(kind), color, face_of(kind));
         }
         canvas
     }
@@ -589,7 +701,7 @@ impl MindBar {
         let int_scale = scale.ceil().max(1.0) as i32;
         let width = (output_size.w - 80).clamp(320, 980);
         let body = self.body_height(width, output_size.h);
-        let height = PAD + 24 + 44 + 8 + body + PAD;
+        let height = panel_height(body);
         let size = Size::from((width, height.min(output_size.h - 40)));
 
         let stale = match &self.panel {
@@ -631,7 +743,56 @@ impl MindBar {
         .ok()
     }
 
-    /// The "MindOS" wordmark with key hints, drawn behind windows when the
+    /// Draw the wordmark and key hints into a fresh canvas of `size` at `s`.
+    fn draw_backdrop(&mut self, size: Size<i32, Logical>, s: i32) -> Canvas {
+        let mut canvas = Canvas::new(size.w * s, size.h * s);
+        let fg = self.foreground;
+        let accent = self.accent;
+        let font = |px: f32| px * s as f32;
+        let cx = canvas.width / 2;
+
+        let title = "MINDOS";
+        let (tw, th) = self.text.measure(title, font(84.0), None, Face::Display);
+        let tx = cx - tw / 2;
+        self.text.draw_glow(
+            &mut canvas,
+            tx,
+            8 * s,
+            title,
+            font(84.0),
+            alpha(fg, 0.96),
+            alpha(accent, 0.11),
+            6 * s,
+            Face::Display,
+        );
+        let mut y = 8 * s + th + 12 * s;
+        canvas.hline_glow(cx - 120 * s, y, 240 * s, 2 * s, 3 * s, accent);
+        y += 14 * s;
+        let tag = "GAME MODE";
+        let tagw = self.text.measure_spaced(tag, font(13.0), Face::LabelBold, 4 * s);
+        self.text
+            .draw_spaced(&mut canvas, cx - tagw / 2, y, tag, font(13.0), alpha(accent, 0.9), Face::LabelBold, 4 * s);
+        y += 40 * s;
+
+        let hints = [
+            ("Super+Space", "ask Mind or launch an app"),
+            ("Super+Enter", "terminal"),
+            ("Super+Q", "close window"),
+            ("Super+F", "fullscreen"),
+            ("Super+Tab", "next window"),
+        ];
+        for (key, action) in hints {
+            let (kw, _) = self.text.measure(key, font(15.0), None, Face::Mono);
+            self.text
+                .draw(&mut canvas, cx - 12 * s - kw, y + s, None, key, font(15.0), alpha(accent, 0.85), Face::Mono);
+            self.text
+                .draw(&mut canvas, cx + 12 * s, y, None, action, font(17.0), FG_DIM, Face::Label);
+            y += 27 * s;
+        }
+        canvas
+    }
+
+    /// The "MINDOS" wordmark with key hints, drawn behind windows when the
     /// desktop is empty.
     pub fn backdrop_element<R>(
         &mut self,
@@ -649,53 +810,25 @@ impl MindBar {
             return None;
         }
         let int_scale = scale.ceil().max(1.0) as i32;
-        let size = Size::from((output_size.w.min(1200), 260));
+        let size = Size::from((output_size.w.min(1200), 340));
         let stale = match &self.wordmark {
             Some(c) => c.size != size || c.scale != int_scale,
             None => true,
         };
         if stale {
-            let s = int_scale;
-            let mut canvas = Canvas::new(size.w * s, size.h * s);
-            let fg = self.foreground;
-            let title = "MindOS";
-            let (tw, _) = self.text.measure(title, 96.0 * s as f32, None, true);
-            let x = (canvas.width - tw) / 2;
-            self.text
-                .draw(&mut canvas, x, 20 * s, None, title, 96.0 * s as f32, [fg[0], fg[1], fg[2], 0.28], true);
-            let hints = [
-                "Super+Space   ask Mind or launch an app",
-                "Super+Enter   terminal        Super+Q   close window",
-                "Super+F   fullscreen        Super+Tab   next window",
-            ];
-            let mut y = 150 * s;
-            for h in hints {
-                let (hw, hh) = self.text.measure(h, 17.0 * s as f32, None, false);
-                let hx = (canvas.width - hw) / 2;
-                self.text.draw(
-                    &mut canvas,
-                    hx,
-                    y,
-                    None,
-                    h,
-                    17.0 * s as f32,
-                    [fg[0], fg[1], fg[2], 0.45],
-                    false,
-                );
-                y += hh + 6 * s;
-            }
+            let canvas = self.draw_backdrop(size, int_scale);
             let buffer = MemoryRenderBuffer::from_slice(
                 &canvas.data,
                 Fourcc::Argb8888,
                 (canvas.width, canvas.height),
-                s,
+                int_scale,
                 Transform::Normal,
                 None,
             );
             self.wordmark = Some(Cached {
                 buffer,
                 size,
-                scale: s,
+                scale: int_scale,
             });
         }
         let cached = self.wordmark.as_ref()?;
@@ -768,8 +901,8 @@ mod tests {
         use std::io::Write;
         let mut out = std::fs::File::create(path).unwrap();
         write!(out, "P6\n{} {}\n255\n", canvas.width, canvas.height).unwrap();
-        // composite over MindOS red so the preview shows what the user sees
-        let bg = [140u8, 16, 16];
+        // composite over the void so the preview shows what the user sees
+        let bg = [5u8, 7, 10];
         let mut buf = Vec::with_capacity((canvas.width * canvas.height * 3) as usize);
         for px in canvas.data.chunks_exact(4) {
             let a = px[3] as f32 / 255.0;
@@ -787,7 +920,12 @@ mod tests {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
-        let mut bar = MindBar::new(TextRenderer::new(), fake_apps(), [1.0, 1.0, 1.0, 1.0]);
+        let mut bar = MindBar::new(
+            TextRenderer::new(),
+            fake_apps(),
+            crate::config::FOREGROUND,
+            crate::config::ACCENT,
+        );
         bar.open();
         bar.on_mind_event(MindEvent::Connected);
         bar.on_mind_event(MindEvent::Event(Event::Welcome {
@@ -799,7 +937,7 @@ mod tests {
         for c in "st".chars() {
             bar.handle_key(Keysym::a, &c.to_string(), ModifiersState::default());
         }
-        let size = Size::from((900, PAD + 24 + 44 + 8 + bar.body_height(900, 1080) + PAD));
+        let size = Size::from((900, panel_height(bar.body_height(900, 1080))));
         write_ppm(&dir.join("bar-launcher.ppm"), &bar.draw_panel(size, 1));
         // conversation view
         bar.input.clear();
@@ -809,17 +947,34 @@ mod tests {
         bar.push(LineKind::Tool, "✓ run_command: 72C, 98% utilisation, 380W");
         bar.streaming = "Your RTX 4090 is at 72°C under full load, which is normal for this card. Fan curve looks fine; if you want it quieter I can cap the power limit to 320 W.".into();
         bar.pending = Some(("t1".into(), "run: nvidia-smi -pl 320".into()));
-        let size = Size::from((900, PAD + 24 + 44 + 8 + bar.body_height(900, 1080) + PAD));
+        let size = Size::from((900, panel_height(bar.body_height(900, 1080))));
         write_ppm(&dir.join("bar-chat.ppm"), &bar.draw_panel(size, 1));
-        // wordmark
-        let mut canvas = Canvas::new(1200, 260);
-        let title = "MindOS";
-        let (tw, _) = bar.text.measure(title, 96.0, None, true);
-        let x = (canvas.width - tw) / 2;
-        bar.text.draw(&mut canvas, x, 20, None, title, 96.0, [1.0, 1.0, 1.0, 0.28], true);
-        let (hw, _) = bar.text.measure("Super+Space   ask Mind or launch an app", 17.0, None, false);
-        let hx = (canvas.width - hw) / 2;
-        bar.text.draw(&mut canvas, hx, 150, None, "Super+Space   ask Mind or launch an app", 17.0, [1.0, 1.0, 1.0, 0.45], false);
-        write_ppm(&dir.join("wordmark.ppm"), &canvas);
+        // empty conversation (just the input)
+        bar.lines.clear();
+        bar.streaming.clear();
+        bar.pending = None;
+        let size = Size::from((900, panel_height(bar.body_height(900, 1080))));
+        write_ppm(&dir.join("bar-empty.ppm"), &bar.draw_panel(size, 1));
+        // wordmark backdrop, composited onto a full 1920x1080 desktop
+        let backdrop = bar.draw_backdrop(Size::from((1200, 340)), 1);
+        let mut desktop = Canvas::new(1920, 1080);
+        let (ox, oy) = ((1920 - backdrop.width) / 2, (1080 - backdrop.height) / 2);
+        for y in 0..backdrop.height {
+            for x in 0..backdrop.width {
+                let i = ((y * backdrop.width + x) * 4) as usize;
+                let px = &backdrop.data[i..i + 4];
+                if px[3] == 0 {
+                    continue;
+                }
+                let a = px[3] as f32 / 255.0;
+                // un-premultiply for blend()
+                desktop.blend(
+                    ox + x,
+                    oy + y,
+                    [px[2] as f32 / 255.0 / a, px[1] as f32 / 255.0 / a, px[0] as f32 / 255.0 / a, a],
+                );
+            }
+        }
+        write_ppm(&dir.join("desktop.ppm"), &desktop);
     }
 }

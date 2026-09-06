@@ -164,7 +164,9 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerMoveS
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut AnvilState<BackendData>) {}
+    fn unset(&mut self, data: &mut AnvilState<BackendData>) {
+        data.drag_finished(&self.window);
+    }
 }
 
 pub struct TouchMoveSurfaceGrab<BackendData: Backend + 'static> {
@@ -265,7 +267,9 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchMoveSurfa
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut AnvilState<BackendData>) {}
+    fn unset(&mut self, data: &mut AnvilState<BackendData>) {
+        data.drag_finished(&self.window);
+    }
 }
 
 bitflags::bitflags! {
