@@ -1,0 +1,19 @@
+[package]
+name = "mindos-kernel"
+version = "0.1.0"
+edition = "2021"
+description = "MindOS kernel: a from-scratch x86_64 kernel with a Linux-compatible syscall ABI"
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+debug = true
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+debug = true
+codegen-units = 1
+lto = false

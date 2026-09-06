@@ -1,0 +1,11 @@
+/target
+/kernel/target
+/user/target
+/host/target
+/build
+/models/*.gguf
+*.img
+*.iso
+*.ppm
+*.png
+__pycache__/
