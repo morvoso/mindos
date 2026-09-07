@@ -1,0 +1,3 @@
+# Members of "mindos" (the desktop users) may switch performance modes; GameMode's
+# hooks call the game-start/game-end verbs as the user who launched the game.
+%mindos ALL=(root) NOPASSWD: /usr/bin/mindos-perf set balanced, /usr/bin/mindos-perf set performance, /usr/bin/mindos-perf set quiet, /usr/bin/mindos-perf game-start, /usr/bin/mindos-perf game-end, /usr/bin/mindos-perf apply, /usr/bin/mindos-perf config *

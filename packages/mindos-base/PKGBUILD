@@ -1,26 +1,28 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-base
 pkgver=0.1.0
-pkgrel=4
-pkgdesc="MindOS base system: branding, gaming/dev kernel and system tuning, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
+pkgrel=6
+pkgdesc="MindOS base system: branding, gaming/dev kernel and system tuning, performance modes, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
 arch=(any)
 url="https://mindos.local"
 license=(MIT)
 depends=(base linux-mindos linux-mindos-headers linux-firmware amd-ucode intel-ucode
          mkinitcpio zram-generator plymouth mindos-theme
          networkmanager bluez bluez-utils sudo limine efibootmgr btrfs-progs dosfstools e2fsprogs
-         snapper snap-pac
+         snapper snap-pac scx-scheds python
          nvidia-open-dkms nvidia-utils lib32-nvidia-utils nvidia-settings dkms clang llvm lld
          mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader vulkan-radeon lib32-vulkan-radeon
-         fastfetch flatpak)
+         fastfetch flatpak libnotify)
 install=mindos-base.install
-backup=(etc/systemd/zram-generator.conf etc/mindos/boot.conf etc/snapper/configs/root)
+backup=(etc/systemd/zram-generator.conf etc/mindos/boot.conf etc/snapper/configs/root etc/mindos/perf.conf)
 source=(os-release apply-branding 90-mindos-branding.hook 60-mindos-gaming.conf
         60-mindos-ioscheduler.rules 70-mindos-controllers.rules zram-generator.conf
         mindos-nvidia.conf 60-mindos.conf kernel-cmdline mkinitcpio-mindos.conf
-        mindos-boot boot.conf snapper-root 10-mindos-boot 95-mindos-boot.hook remount-fs-snapshot.conf)
+        mindos-boot boot.conf snapper-root 10-mindos-boot 95-mindos-boot.hook remount-fs-snapshot.conf
+        mindos-perf perf.conf mindos-perf.service 20-mindos-perf.sudoers mindos-base.sysusers)
 sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP
-            SKIP SKIP SKIP SKIP SKIP SKIP)
+            SKIP SKIP SKIP SKIP SKIP SKIP
+            SKIP SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm644 os-release                 "$pkgdir/usr/share/mindos/os-release"
@@ -44,4 +46,13 @@ package() {
   install -Dm755 10-mindos-boot             "$pkgdir/usr/lib/snapper/plugins/10-mindos-boot"
   install -Dm644 95-mindos-boot.hook        "$pkgdir/usr/share/libalpm/hooks/95-mindos-boot.hook"
   install -Dm644 remount-fs-snapshot.conf   "$pkgdir/usr/lib/systemd/system/systemd-remount-fs.service.d/mindos-snapshot.conf"
+  # Performance modes: balanced / performance / quiet, applied at boot and by
+  # GameMode's hooks while a game runs (docs/PERFORMANCE.md).
+  install -Dm755 mindos-perf                "$pkgdir/usr/bin/mindos-perf"
+  install -Dm644 perf.conf                  "$pkgdir/etc/mindos/perf.conf"
+  install -Dm644 mindos-perf.service        "$pkgdir/usr/lib/systemd/system/mindos-perf.service"
+  install -Dm440 20-mindos-perf.sudoers     "$pkgdir/etc/sudoers.d/20-mindos-perf"
+  install -Dm644 mindos-base.sysusers       "$pkgdir/usr/lib/sysusers.d/mindos-base.conf"
+  install -dm755 "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"
+  ln -s ../mindos-perf.service "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/mindos-perf.service"
 }

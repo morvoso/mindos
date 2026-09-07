@@ -1,0 +1,14 @@
+[Unit]
+Description=MindOS performance mode
+Documentation=man:mindos-perf
+After=systemd-modules-load.service sysinit.target
+ConditionPathExists=/usr/bin/mindos-perf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mindos-perf apply
+ExecStop=/usr/bin/mindos-perf apply
+
+[Install]
+WantedBy=multi-user.target
