@@ -22,7 +22,7 @@
 - [x] Settings app (Mind: tool lines, thinking, model catalog; Wallpaper; Displays with basic/advanced modes over the compositor's `set_output`; Desktop; About) as a `mindshell --app` window
 - [x] Standard apps instead of home-grown ones (`mindos-apps`): Nautilus, Loupe, File Roller and Text Editor in the MindOS colours (libadwaita named colours), default handlers, "Open in Terminal" in Files; the shell implements the Wallpaper portal so "Set as Background" in Files and Image Viewer works
 - [x] A login screen: greetd with a MindOS greeter (the compositor in kiosk mode rendering `mindshell --app greeter`), themed like the desktop; autologin is an installer option
-- [x] Qwen3.5 4B (Apache-2.0) as the default model, switchable at runtime from Settings or `mind model`, with catalog downloads and user-supplied GGUFs
+- [x] Qwen3.5 2B (Apache-2.0) as the default model, switchable at runtime from Settings or `mind model`, with catalog downloads and user-supplied GGUFs
 - [ ] `mindos-install` under BIOS firmware
 - [ ] `linux-mindos-nvidia-open` prebuilt modules (no DKMS build on first boot)
 - [x] Health checks (`mind health`, every 30 min and after every update): failed units, kernel/driver mismatch, disk, pacnew, kernel errors, snapshots — as notices on the desktop

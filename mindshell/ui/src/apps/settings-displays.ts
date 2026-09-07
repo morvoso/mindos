@@ -43,7 +43,7 @@ export function displaysPage(el: HTMLElement, root: HTMLElement): () => void {
   let advanced = false;
   const pending = new Map<string, Pending>();
   const cards = h('div', { class: 'stack' });
-  const canvasCard = card('Arrangement', h('p', { class: 'card-help' }, 'Drag a display to move it. The tops of displays line up when you drop one close.'), h('div', { class: 'arrange' }));
+  const canvasCard = card('Arrangement', h('p', { class: 'card-help' }, 'Drag a display to move it. Displays align at the top edge when placed close together.'), h('div', { class: 'arrange' }));
   const arrange = canvasCard.querySelector('.arrange') as HTMLElement;
 
   const modeBtns = [
@@ -93,7 +93,7 @@ export function displaysPage(el: HTMLElement, root: HTMLElement): () => void {
     pending.delete(o.name);
     render();
     let left = KEEP_SECONDS;
-    const text = h('div', { class: 'row-help' }, `Reverting in ${left} s if you do nothing.`);
+    const text = h('div', { class: 'row-help' }, `Reverting in ${left} s unless confirmed.`);
     const bar = progress(1, 'accent');
     let closeFn: (() => void) | undefined;
     const revert = () => {
@@ -105,7 +105,7 @@ export function displaysPage(el: HTMLElement, root: HTMLElement): () => void {
     const keep = () => {
       clearInterval(t);
       closeFn?.();
-      note.show(`${o.name}: kept.`, 'ok');
+      note.show(`${o.name}: settings kept.`, 'ok');
     };
     const t = setInterval(() => {
       left -= 1;
@@ -160,31 +160,31 @@ export function displaysPage(el: HTMLElement, root: HTMLElement): () => void {
 
     const c = card(null, head);
     if (!o.enabled && !advanced) {
-      c.appendChild(row('This display is off', 'Turn it on under Advanced.', null));
+      c.appendChild(row('This display is disabled', 'Enable it under Advanced.', null));
       return c;
     }
     if (o.enabled) {
       c.append(
         row('Resolution', null, resSel),
-        row('Refresh rate', 'Higher is smoother; games follow this unless VRR is on.', rateSel),
-        row('Scale', 'Make everything bigger on high-resolution displays.', scaleSel),
+        row('Refresh rate', 'Higher rates are smoother. Games use this rate unless variable refresh rate is enabled.', rateSel),
+        row('Scale', 'Enlarges the interface on high-resolution displays.', scaleSel),
       );
     }
     if (advanced) {
       const onlyOne = outputs.filter((x) => x.enabled).length <= 1 && o.enabled;
       c.append(
         row('Enabled', onlyOne ? 'The last display cannot be turned off.' : null, toggle(o.enabled, (v) => apply(o.name, { enabled: v }).catch(fail), onlyOne)),
-        row('Primary display', 'The top bar and the dock live here.', toggle(o.primary, (v) => apply(o.name, { primary: v }).catch(fail), o.primary || !o.enabled)),
+        row('Primary display', 'The top bar and the dock are shown on this display.', toggle(o.primary, (v) => apply(o.name, { primary: v }).catch(fail), o.primary || !o.enabled)),
       );
       if (o.enabled) {
         c.append(
           row('Orientation', null, selectBox(TRANSFORMS, transform, (v) => set({ transform: v }))),
-          row('Variable refresh rate', o.vrr_supported ? 'FreeSync / G-Sync: the display follows the game’s frame rate.' : 'Not supported by this display or driver.', toggle(o.vrr, (v) => apply(o.name, { vrr: v }).catch(fail), !o.vrr_supported)),
-          row('Position', 'Where this display sits in the arrangement, in pixels.', positionFields(o)),
+          row('Variable refresh rate', o.vrr_supported ? 'FreeSync / G-Sync: the display refresh rate follows the game’s frame rate.' : 'Not supported by this display or driver.', toggle(o.vrr, (v) => apply(o.name, { vrr: v }).catch(fail), !o.vrr_supported)),
+          row('Position', 'Position of this display in the arrangement, in pixels.', positionFields(o)),
         );
       }
     }
-    if (o.enabled) c.appendChild(h('div', { class: 'card-actions' }, dirty ? h('span', { class: 'row-help' }, 'You will have 15 seconds to keep the change.') : null, h('span', { class: 'strip-gap' }), applyBtn));
+    if (o.enabled) c.appendChild(h('div', { class: 'card-actions' }, dirty ? h('span', { class: 'row-help' }, 'The change must be confirmed within 15 seconds.') : null, h('span', { class: 'strip-gap' }), applyBtn));
     return c;
   };
 

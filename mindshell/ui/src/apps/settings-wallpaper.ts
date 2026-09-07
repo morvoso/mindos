@@ -20,10 +20,10 @@ export function wallpaperPage(el: HTMLElement): () => void {
   });
 
   el.append(
-    pageHeader('Wallpaper', 'Pick a picture for the desktop. Anything in ~/Pictures/Wallpapers or /usr/share/backgrounds shows up here.'),
+    pageHeader('Wallpaper', 'Select a desktop background. Images in ~/Pictures/Wallpapers and /usr/share/backgrounds are listed here.'),
     note.el,
     card(null, grid),
-    card('More pictures', h('div', { class: 'inline-form' }, folderIn, addBtn), h('div', { class: 'row-help' }, 'Or right-click a picture in Files or Image Viewer and choose “Set as Background”.')),
+    card('Add a folder', h('div', { class: 'inline-form' }, folderIn, addBtn), h('div', { class: 'row-help' }, 'An image can also be set by right-clicking it in Files or Image Viewer and choosing “Set as Background”.')),
   );
 
   const current = () => store.state.layout.desktop.wallpaper;
@@ -57,7 +57,7 @@ export function wallpaperPage(el: HTMLElement): () => void {
         grid.appendChild(tile(e.name, e.path, img, wp.mode === 'image' && wp.path === e.path, () => choose(e.path)));
       }
     }
-    if (!all.length) grid.appendChild(h('div', { class: 'row-help' }, 'No pictures found yet. Put some in ~/Pictures/Wallpapers, or add a folder below.'));
+    if (!all.length) grid.appendChild(h('div', { class: 'row-help' }, 'No images found. Add images to ~/Pictures/Wallpapers, or add a folder below.'));
   };
 
   const addFolder = (path: string) => {
@@ -66,10 +66,10 @@ export function wallpaperPage(el: HTMLElement): () => void {
       .call<FsListing>('fs.list', { path, hidden: false })
       .then((l) => {
         const images = l.entries.filter((e) => e.image && !e.dir);
-        if (!images.length) return note.show('No pictures in that folder.', 'info');
+        if (!images.length) return note.show('No images found in that folder.', 'info');
         const folder = l.path.split('/').filter(Boolean).pop() ?? l.path;
         for (const e of images) if (!extra.some((x) => x.path === e.path)) extra.push({ path: e.path, name: e.name.replace(/\.[^.]+$/, ''), folder });
-        note.show(`Added ${images.length} picture${images.length === 1 ? '' : 's'} from ${l.path}.`, 'ok');
+        note.show(`Added ${images.length} image${images.length === 1 ? '' : 's'} from ${l.path}.`, 'ok');
         render();
       })
       .catch((e) => note.show(String(e instanceof Error ? e.message : e), 'error'));

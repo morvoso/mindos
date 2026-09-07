@@ -31,11 +31,11 @@ export function updatesPage(el: HTMLElement, root: HTMLElement): () => void {
   // ----- updates ------------------------------------------------------------
   const checkBtn = h('button', { class: 'btn' }, icon('refresh', 14), 'Check now');
   const applyBtn = h('button', { class: 'btn primary' }, icon('download', 14), 'Update now');
-  const autoToggle = toggle(false, (v) => request({ type: 'set_auto_update', enabled: v }).then(() => note.show(v ? 'Low-risk updates will be applied on their own, never while a game runs.' : 'Updates wait for you.', 'ok')).catch(fail));
+  const autoToggle = toggle(false, (v) => request({ type: 'set_auto_update', enabled: v }).then(() => note.show(v ? 'Low-risk updates will be applied automatically. Updates are never applied while a game is running.' : 'Updates will wait for manual approval.', 'ok')).catch(fail));
   const summary = h('div', { class: 'upd-summary' });
   const pkgs = h('div', { class: 'upd-pkgs' });
   const news = h('div', { class: 'upd-news' });
-  const updCard = card('Updates', summary, pkgs, news, h('div', { class: 'card-actions' }, checkBtn, applyBtn, h('span', { class: 'strip-gap' })), row('Apply low-risk updates automatically', 'The Mind checks every few hours. When nothing touches the kernel, the graphics driver or the core system, and no game is running, it updates on its own and verifies the system after.', autoToggle));
+  const updCard = card('Updates', summary, pkgs, news, h('div', { class: 'card-actions' }, checkBtn, applyBtn, h('span', { class: 'strip-gap' })), row('Apply low-risk updates automatically', 'The Mind checks every few hours. When an update does not affect the kernel, the graphics driver or the core system, and no game is running, it is applied automatically and the system is verified afterwards.', autoToggle));
 
   checkBtn.addEventListener('click', () => {
     checkBtn.classList.add('busy');
@@ -49,13 +49,13 @@ export function updatesPage(el: HTMLElement, root: HTMLElement): () => void {
 
   // ----- last update ------------------------------------------------------------
   const lastBody = h('div', { class: 'stack' });
-  const lastCard = card('After the last update', lastBody);
+  const lastCard = card('Last update', lastBody);
 
   // ----- health -------------------------------------------------------------------
   const healthBtn = h('button', { class: 'btn' }, icon('pulse', 14), 'Check now');
   const healthBody = h('div', { class: 'ntc-list' });
   const healthLine = h('div', { class: 'row-help' });
-  const healthCard = card('Health', h('p', { class: 'card-help' }, 'The Mind looks at failed services, the kernel and driver, disk space, pacnew files and the boot snapshots — after every update and every half hour.'), healthLine, healthBody, h('div', { class: 'card-actions' }, healthBtn));
+  const healthCard = card('Health', h('p', { class: 'card-help' }, 'The Mind checks failed services, the kernel and graphics driver, disk space, pacnew files and boot snapshots after every update and every 30 minutes.'), healthLine, healthBody, h('div', { class: 'card-actions' }, healthBtn));
   healthBtn.addEventListener('click', () => {
     healthBtn.classList.add('busy');
     request<HealthReport>({ type: 'health' })
@@ -69,9 +69,9 @@ export function updatesPage(el: HTMLElement, root: HTMLElement): () => void {
 
   // ----- snapshots ------------------------------------------------------------------
   const snapBody = h('div', { class: 'list' });
-  const snapCard = card('Snapshots', h('p', { class: 'card-help' }, 'Every update takes a snapshot first. Any of them can be booted from the boot menu, or made the system again from here; the current state is kept so a rollback can be undone.'), snapBody);
+  const snapCard = card('Snapshots', h('p', { class: 'card-help' }, 'A snapshot is taken before every update. Any snapshot can be booted from the boot menu or restored from here. The current state is preserved, so a rollback can be undone.'), snapBody);
 
-  el.append(pageHeader('Updates', 'The Mind watches for updates, reads the Arch news, and tells you when something could break a game or the desktop.'), note.el, updCard, lastCard, healthCard, snapCard);
+  el.append(pageHeader('Updates', 'The Mind checks for updates, reads the Arch news and reports when an update could affect a game or the desktop.'), note.el, updCard, lastCard, healthCard, snapCard);
 
   const rollback = (n: number, why: string) => {
     const body = h('div', { class: 'stack' }, h('p', {}, `Make snapshot ${n} the system again${why ? ` (${why})` : ''}? The machine reboots into it. What you have now is kept as a new snapshot.`));
@@ -86,7 +86,7 @@ export function updatesPage(el: HTMLElement, root: HTMLElement): () => void {
     pkgs.replaceChildren();
     news.replaceChildren();
     if (!u) {
-      summary.appendChild(h('div', { class: 'row-help' }, store.state.mind?.daemon ? 'No check yet.' : 'The Mind is not running.'));
+      summary.appendChild(h('div', { class: 'row-help' }, store.state.mind?.daemon ? 'Not checked yet.' : 'The Mind is not running.'));
       applyBtn.disabled = true;
       return;
     }
@@ -131,7 +131,7 @@ export function updatesPage(el: HTMLElement, root: HTMLElement): () => void {
     if (l.packages.length) lastBody.appendChild(h('div', { class: 'row-help mono wrap' }, l.packages.slice(0, 40).join('  ') + (l.packages.length > 40 ? ' …' : '')));
     if (l.pre_snapshot) {
       lastBody.appendChild(
-        row(`Snapshot ${l.pre_snapshot} from before`, 'The system exactly as it was before this update.', h('button', { class: 'btn danger small', onclick: () => rollback(l.pre_snapshot!, 'before the last update') }, icon('history', 13), 'Roll back')),
+        row(`Snapshot ${l.pre_snapshot} (before this update)`, 'The system state before this update was applied.', h('button', { class: 'btn danger small', onclick: () => rollback(l.pre_snapshot!, 'before the last update') }, icon('history', 13), 'Roll back')),
       );
     }
   };
@@ -154,7 +154,7 @@ export function updatesPage(el: HTMLElement, root: HTMLElement): () => void {
   const renderSnapshots = () => {
     snapBody.replaceChildren();
     if (!snapshots.length) {
-      snapBody.appendChild(h('div', { class: 'row-help' }, 'No snapshots yet (snapper takes one at every update).'));
+      snapBody.appendChild(h('div', { class: 'row-help' }, 'No snapshots yet. One is taken before every update.'));
       return;
     }
     for (const s of snapshots.slice(0, 12)) {

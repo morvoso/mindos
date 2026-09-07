@@ -10,7 +10,7 @@ registerWidget({
   icon: 'bell',
   containers: ['panel'],
   defaults: { count: true },
-  settings: { count: { label: 'Show the count', type: 'boolean', help: 'A badge with how many things are waiting' } },
+  settings: { count: { label: 'Show the count', type: 'boolean', help: 'A badge with the number of unread notifications' } },
   create(ctx) {
     const el = panelItem(ctx, 'w-notifications', 'Notifications');
     const ic = h('span', { class: 'w-ic' });

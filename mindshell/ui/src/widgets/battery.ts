@@ -15,7 +15,7 @@ registerWidget({
   settings: {
     percent: { label: 'Show the percentage', type: 'boolean' },
     warnAt: { label: 'Warn below', type: 'number', min: 5, max: 50, step: 5, unit: '%' },
-    alwaysShow: { label: 'Show without a battery', type: 'boolean', help: 'Desktops normally hide this widget' },
+    alwaysShow: { label: 'Show without a battery', type: 'boolean', help: 'Hidden by default on systems without a battery' },
   },
   create(ctx) {
     const el = panelItem(ctx, 'w-battery', 'Battery');

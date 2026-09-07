@@ -148,9 +148,11 @@ The mind of the OS: a system daemon that owns the model and the tools.
   largest GGUF in `/var/lib/mindos/models` that fits the GPU when
   `path = "auto"`. The OpenAI-compatible API is bound to localhost and used
   only by mindd. An external server can be configured instead.
-* The default model is **Qwen3.5 4B (Q4_K_M, 2.7 GB, Apache-2.0)**: small
-  enough to sit beside a running game on any 8 GB GPU and reliable at tool
-  calling; `make model` downloads it with its licence for the ISO. The
+* The default model is **Qwen3.5 2B (Q4_K_M, 1.2 GB, Apache-2.0)**: it loads
+  in about a second, leaves the GPU to the game and still calls tools well
+  enough for everyday questions and system work; `make model` downloads it
+  with its licence for the ISO. Machines with memory to spare can move up to
+  4B or 9B in Settings > Mind in one click. The
   choice is a symlink (`models_dir/default.gguf`) so any GGUF a user drops in
   works, and the Settings app switches models at runtime: a catalog
   (`/etc/mindos/model-catalog.json`: Qwen3.5 0.8B, 2B, 4B, 4B high quality,
@@ -324,7 +326,7 @@ All builds run in `scripts/buildbox.sh`, a Docker container based on
 `repo` (`repo-add` into `build/repo`), `iso-stage` (profile + repo + model
 into `build/iso-profile`), `iso` (`mkarchiso` into `build/out`), `qemu` /
 `qemu-bios` (boot the ISO with KVM and virtio-gpu), `screenshot`, `qemu-stop`,
-`model` (download the default Qwen3.5 4B GGUF and its licence into `models/`
+`model` (download the default Qwen3.5 2B GGUF and its licence into `models/`
 for the ISO).
 
 ## Boot sequence

@@ -90,7 +90,7 @@ export function shellPage(el: HTMLElement): () => void {
     }
     bridge
       .call('layout.reset')
-      .then(() => note.show('The panels and widgets are back to the defaults.', 'ok'))
+      .then(() => note.show('Panels and widgets have been reset to the defaults.', 'ok'))
       .catch((e) => note.show(String(e instanceof Error ? e.message : e), 'error'));
   });
 
@@ -107,18 +107,18 @@ export function shellPage(el: HTMLElement): () => void {
     note.el,
     card(
       'Windows',
-      row('Layout', 'How windows are arranged. Also next to the clock and on Super+T.', modeSel),
+      row('Layout', 'How windows are arranged. Also available next to the clock and with Super+T.', modeSel),
     ),
     card(
       'Panels and the dock',
-      h('p', { class: 'card-help' }, 'The bar is a panel. Right-click any widget on it for its settings (the clock\u2019s 12/24-hour format, what the task bar shows, and so on); right-click the desktop and choose Edit desktop to move panels, add widgets or make a new one.'),
+      h('p', { class: 'card-help' }, 'The bar is a panel. Right-click a widget for its settings (for example the clock\u2019s 12/24-hour format or the task bar contents). Right-click the desktop and choose Edit desktop to move panels, add widgets or create a new panel.'),
       h('div', { class: 'card-actions' }, h('span', { class: 'strip-gap' }), resetBtn),
     ),
+    pointerCard(note),
     card('Keyboard shortcuts', table),
     card(
-    pointerCard(note),
       'Shell',
-      row('Icon theme', 'From /etc/mindos/shell.toml or ~/.config/mindos/shell.toml.', h('span', { class: 'mono' }, cfg.icon_theme ?? 'default')),
+      row('Icon theme', 'The icon theme in use. Set icon_theme in ~/.config/mindos/shell.toml to choose another.', themeName),
       row('Terminal', null, h('span', { class: 'mono' }, cfg.terminal ?? 'foot')),
       row('Hardware acceleration', null, h('span', { class: 'mono' }, cfg.hardware_acceleration ?? 'auto')),
     ),

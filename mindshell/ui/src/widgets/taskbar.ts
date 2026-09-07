@@ -83,12 +83,12 @@ registerWidget({
   containers: ['panel'],
   defaults: { pins: [], labels: false, maxLabel: 160, showRunning: true, onlyThisOutput: false, indicator: true },
   settings: {
-    pins: { label: 'Pinned applications', type: 'list', help: 'Desktop entry ids, one per line (right-click a running app to pin it)', placeholder: 'firefox.desktop' },
-    showRunning: { label: 'Show open windows', type: 'boolean', help: 'Off: only the pinned applications, as a launcher' },
+    pins: { label: 'Pinned applications', type: 'list', help: 'Desktop entry IDs, one per line. Right-click a running application to pin it.', placeholder: 'firefox.desktop' },
+    showRunning: { label: 'Show open windows', type: 'boolean', help: 'When off, only pinned applications are shown' },
     onlyThisOutput: { label: 'Only windows on this display', type: 'boolean', when: (c) => !!c.showRunning },
     labels: { label: 'Show window titles', type: 'boolean', when: (c) => !!c.showRunning },
     maxLabel: { label: 'Title width', type: 'number', min: 80, max: 320, step: 10, unit: 'px', when: (c) => !!c.showRunning && !!c.labels },
-    indicator: { label: 'Running indicator', type: 'boolean', help: 'The dots under an open application' },
+    indicator: { label: 'Running indicator', type: 'boolean', help: 'A dot under each running application' },
   },
   create(ctx) {
     const el = h('div', { class: 'w w-taskbar' });

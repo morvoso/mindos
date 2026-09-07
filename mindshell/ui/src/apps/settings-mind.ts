@@ -29,15 +29,15 @@ export function mindPage(el: HTMLElement): () => void {
   });
   const answers = card(
     'Answers',
-    row('Show what Mind is doing', 'The commands Mind runs on the way to an answer (the yellow lines) appear above it. Off, you only see the answer.', toolsToggle),
-    row('Think before answering', 'Mind reasons through the question first. Slower, and better on hard questions. Qwen3.5 supports it; leave it off for quick answers.', thinkToggle),
+    row('Show tool activity', 'Shows the commands the Mind runs while producing an answer (the yellow lines). When off, only the answer is shown.', toolsToggle),
+    row('Think before answering', 'The Mind works through the question before answering. Slower, with better results on difficult questions. Supported by Qwen3.5.', thinkToggle),
   );
 
   // ----- model ----------------------------------------------------------------
   const modelBody = h('div', { class: 'stack' });
   const modelCard = card('Model', modelBody);
   const catalogBody = h('div', { class: 'catalog-grid' });
-  const catalogCard = card('Get a model', h('p', { class: 'card-help' }, 'Models are downloaded from Hugging Face into your models folder with their licence. Bigger models answer better and need more video memory.'), catalogBody);
+  const catalogCard = card('Get a model', h('p', { class: 'card-help' }, 'Models are downloaded from Hugging Face into the models folder, together with their licence. Larger models give better answers and require more video memory.'), catalogBody);
   const pathIn = h('input', { type: 'text', class: 'grow', placeholder: '/path/to/model.gguf', spellcheck: 'false' }) as HTMLInputElement;
   const useBtn = h('button', { class: 'btn', onclick: () => {
     const p = pathIn.value.trim();
@@ -47,14 +47,14 @@ export function mindPage(el: HTMLElement): () => void {
   const ownHelp = h('div', { class: 'row-help' });
   const ownCard = card('Use your own model', h('div', { class: 'inline-form' }, pathIn, useBtn), ownHelp);
 
-  el.append(pageHeader('Mind', 'The assistant behind Super+Space. Ask it to open apps, install things, change settings or explain what is going on.'), note.el, answers, modelCard, catalogCard, ownCard);
+  el.append(pageHeader('Mind', 'The assistant opened with Super+Space. It can open applications, install software, change settings and explain the state of the system.'), note.el, answers, modelCard, catalogCard, ownCard);
 
   const setModel = (path: string) => {
     busyUntil = Date.now() + 3000;
     request({ type: 'set_model', path })
       .then((m) => {
         info = m;
-        note.show(path === 'auto' || path === '' ? 'Mind will pick the largest model that fits.' : `Switching to ${path.split('/').pop()}…`, 'ok');
+        note.show(path === 'auto' || path === '' ? 'The Mind will select the largest model that fits in video memory.' : `Switching to ${path.split('/').pop()}…`, 'ok');
         render();
         schedule();
       })
@@ -95,12 +95,12 @@ export function mindPage(el: HTMLElement): () => void {
       h('div', { class: 'model-now' }, h('span', { class: 'model-ic', dataset: { state: info.external ? 'ready' : info.ready ? 'ready' : info.current ? 'loading' : 'off' } }, icon('mind', 22)), h('div', { class: 'model-text' }, h('div', { class: 'model-name' }, info.model || 'None'), h('div', { class: 'row-help' }, status)), badges),
     );
     if (info.external) {
-      modelBody.appendChild(h('div', { class: 'row-help' }, 'Mind is talking to an external server; models are managed there.'));
+      modelBody.appendChild(h('div', { class: 'row-help' }, 'The Mind is connected to an external server. Models are managed on that server.'));
       return;
     }
     const list = h('div', { class: 'list' });
     list.appendChild(
-      row('Automatic', 'Pick the largest installed model that fits the GPU.', info.auto ? pill('On', 'ok') : h('button', { class: 'btn small', onclick: () => setModel('auto') }, 'Use')),
+      row('Automatic', 'Selects the largest installed model that fits in video memory.', info.auto ? pill('On', 'ok') : h('button', { class: 'btn small', onclick: () => setModel('auto') }, 'Use')),
     );
     for (const m of info.models) {
       const tooBig = false;

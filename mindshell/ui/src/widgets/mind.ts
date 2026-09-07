@@ -13,13 +13,13 @@ registerWidget({
   containers: ['panel'],
   defaults: { label: true, model: false },
   settings: {
-    label: { label: 'Show the MIND label', type: 'boolean', help: 'Off: just the icon and the status dot' },
+    label: { label: 'Show the MIND label', type: 'boolean', help: 'When off, only the icon and the status indicator are shown' },
     model: { label: 'Show the model name', type: 'boolean' },
   },
   create(ctx) {
     const el = panelItem(ctx, 'w-mind', 'Mind · Super+Space');
     const dot = h('span', { class: 'mind-dot' });
-    const label = h('span', { class: 'w-label' }, 'MIND');
+    const label = h('span', { class: 'w-label' }, 'Mind');
     const model = h('span', { class: 'w-sub mono' });
     el.append(h('span', { class: 'w-ic' }, icon('mind', 18)), label, dot, model);
     let cfg = ctx.config;

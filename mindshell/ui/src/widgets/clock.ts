@@ -92,7 +92,7 @@ registerWidget({
   defaults: { hour24: false, suffix: true, leadingZero: false, seconds: false, date: true, dateFormat: 'short', stack: false, size: 'normal', weekStart: 'monday' },
   settings: {
     ...timeSettings(),
-    stack: { label: 'Date under the time', type: 'boolean', help: 'Two lines, like Windows', when: (c) => !!c.date },
+    stack: { label: 'Date under the time', type: 'boolean', help: 'Shows the date on a second line', when: (c) => !!c.date },
     size: { label: 'Text size', type: 'enum', segmented: true, options: [{ value: 'small', label: 'S' }, { value: 'normal', label: 'M' }, { value: 'large', label: 'L' }] },
     weekStart: { label: 'Calendar weeks start on', type: 'enum', segmented: true, options: [{ value: 'monday', label: 'Monday' }, { value: 'sunday', label: 'Sunday' }] },
   },

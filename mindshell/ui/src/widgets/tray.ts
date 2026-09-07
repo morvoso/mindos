@@ -12,7 +12,7 @@ registerWidget({
   containers: ['panel'],
   defaults: { hidePassive: true, iconSize: 16 },
   settings: {
-    hidePassive: { label: 'Hide passive items', type: 'boolean', help: 'Icons that say they need no attention' },
+    hidePassive: { label: 'Hide passive items', type: 'boolean', help: 'Icons whose status is passive (no attention required)' },
     iconSize: { label: 'Icon size', type: 'number', min: 12, max: 28, step: 2, unit: 'px' },
   },
   create(ctx) {

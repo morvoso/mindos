@@ -1,6 +1,6 @@
 // The authentication dialog (polkit). The host opens this popup when
-// something asks polkit for authorisation — pkexec, a system app, the Mind
-// running a privileged command — and closes it when the agent is done.
+// something asks polkit for authorisation (pkexec, a system app, the Mind
+// running a privileged command) and closes it when the agent is done.
 // Escape or a click beside it cancels the request (the host does that).
 
 import * as bridge from '../bridge';
@@ -67,7 +67,7 @@ export function authPopup(ctx: PopupCtx): PopupContent {
     if (!r) return;
     message.textContent = r.message || 'An application is asking for permission to make a system change.';
     // The command when polkit knows it (pkexec), otherwise the bare action id
-    // — the detail line is there to say exactly what is being authorised.
+    // The detail line states exactly what is being authorised.
     detail.textContent = r.command || r.action || '';
     detail.title = r.action ?? '';
     who.textContent = `as ${r.user}`;

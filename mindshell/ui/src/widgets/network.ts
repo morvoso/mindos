@@ -13,7 +13,7 @@ registerWidget({
   containers: ['panel'],
   defaults: { name: false, ip: false },
   settings: {
-    name: { label: 'Show the network name', type: 'boolean', help: 'The Wi-Fi name or the interface' },
+    name: { label: 'Show the network name', type: 'boolean', help: 'The Wi-Fi network name or the interface name' },
     ip: { label: 'Show the IP address', type: 'boolean' },
   },
   create(ctx) {
@@ -46,7 +46,11 @@ registerWidget({
       }).catch(() => undefined);
     render();
     poll();
-    every(el, 10000, poll);
+    ctx.store.bind(el, 'network', () => {
+      state = ctx.store.state.network;
+      render();
+    });
+    every(el, 30000, poll);
     return {
       el,
       update(c) {

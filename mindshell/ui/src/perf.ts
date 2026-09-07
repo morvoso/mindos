@@ -14,9 +14,9 @@ export interface PerfModeInfo {
 }
 
 export const PERF_MODES: PerfModeInfo[] = [
-  { mode: 'balanced', label: 'Balanced', icon: 'gauge', blurb: 'Quick when it matters, cool the rest of the time.', detail: 'schedutil governor, EPP balance, boost on, EEVDF + BORE scheduler, transparent huge pages, proactive compaction.' },
-  { mode: 'performance', label: 'Performance', icon: 'rocket', blurb: 'Everything for the game: max clocks, low latency.', detail: 'Performance governor and EPP, boost on, the scx_lavd scheduler for games, no proactive compaction, swappiness 10, NVIDIA persistence mode.' },
-  { mode: 'quiet', label: 'Quiet', icon: 'leaf', blurb: 'Low power, low fan noise.', detail: 'Powersave governor, EPP power, boost off, the low-power platform profile, huge pages on request only.' },
+  { mode: 'balanced', label: 'Balanced', icon: 'gauge', blurb: 'Full speed under load, low power when idle.', detail: 'schedutil governor, EPP balance, boost on, EEVDF + BORE scheduler, transparent huge pages, proactive compaction.' },
+  { mode: 'performance', label: 'Performance', icon: 'rocket', blurb: 'Maximum clocks and lowest latency for games.', detail: 'Performance governor and EPP, boost on, the scx_lavd scheduler for games, no proactive compaction, swappiness 10, NVIDIA persistence mode.' },
+  { mode: 'quiet', label: 'Quiet', icon: 'leaf', blurb: 'Reduced power draw and fan noise.', detail: 'Powersave governor, EPP power, boost off, the low-power platform profile, huge pages on request only.' },
 ];
 
 export function modeInfo(mode: string | undefined): PerfModeInfo {

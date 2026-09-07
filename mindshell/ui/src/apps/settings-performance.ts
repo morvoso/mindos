@@ -35,9 +35,9 @@ export function performancePage(el: HTMLElement): () => void {
   const sleepToggle = toggle(true, (v) => setConfig('MIND_SLEEPS_WHILE_GAMING', v ? '1' : '0'));
   const gameCard = card(
     'While a game runs',
-    h('p', { class: 'card-help' }, 'Steam and Lutris start games through GameMode; MindOS hooks it to switch modes for the length of the game and put them back after.'),
-    row('Switch to', 'The mode a game gets, whatever the mode was before.', gameSel),
-    row('Put the Mind to sleep', 'Unload the language model from the GPU so the game has all of the video memory. The Mind wakes when you ask it something or the game ends.', sleepToggle),
+    h('p', { class: 'card-help' }, 'Steam and Lutris start games through GameMode. MindOS switches the performance mode when a game starts and restores the previous mode when it ends.'),
+    row('Mode while a game runs', 'Applied when a game starts, regardless of the current mode.', gameSel),
+    row('Suspend the Mind during games', 'Unloads the language model from the GPU so the full video memory is available to the game. The Mind reloads when it is next used or when the game ends.', sleepToggle),
   );
 
   // ----- performance mode details --------------------------------------------
@@ -45,15 +45,15 @@ export function performancePage(el: HTMLElement): () => void {
   const plSel = selectBox([{ value: 'default', label: 'Card default' }, { value: 'max', label: 'Maximum the card allows' }], 'default', (v) => setConfig('NVIDIA_POWER_LIMIT', v));
   const tuneCard = card(
     'Performance mode',
-    row('Scheduler', 'A sched_ext scheduler loaded in performance mode. scx_lavd is built for games: it keeps the game threads on the fast cores and the frame pacing steady.', scxSel),
-    row('NVIDIA power limit', 'Raise the power limit in performance mode. The card decides how much of it to use.', plSel),
+    row('Scheduler', 'The sched_ext scheduler loaded in performance mode. scx_lavd is designed for games: it keeps game threads on the fastest cores and maintains consistent frame pacing.', scxSel),
+    row('NVIDIA power limit', 'Raises the power limit in performance mode. The card draws only what its workload requires.', plSel),
   );
 
   // ----- status table -----------------------------------------------------------
   const statusBody = h('div', { class: 'kv' });
-  const statusCard = card('Right now', statusBody);
+  const statusCard = card('Current state', statusBody);
 
-  el.append(pageHeader('Performance', 'Three modes for the whole machine: CPU governor and boost, the scheduler, memory and the GPU. GameMode switches for you when a game starts.'), note.el, modeCard, gameCard, tuneCard, statusCard);
+  el.append(pageHeader('Performance', 'Three system-wide modes covering the CPU governor and boost, the scheduler, memory and the GPU. GameMode switches modes automatically when a game starts.'), note.el, modeCard, gameCard, tuneCard, statusCard);
 
   const setConfig = (key: string, value: string) => {
     setPerfConfig(key, value)
@@ -80,7 +80,7 @@ export function performancePage(el: HTMLElement): () => void {
     nowLine.replaceChildren(
       s.game > 0 ? pill(`Game running · ${s.effective}`, 'accent') : pill(`${s.effective || s.mode} in effect`, 'ok'),
       ' ',
-      s.game > 0 ? `${s.game} game${s.game > 1 ? 's' : ''} running: ${s.effective} mode until ${s.game > 1 ? 'they end' : 'it ends'}, then back to ${s.mode}.` : `Applied at boot and whenever you switch.`,
+      s.game > 0 ? `${s.game} game${s.game > 1 ? 's' : ''} running: ${s.effective} mode until ${s.game > 1 ? 'they end' : 'it ends'}, then ${s.mode} is restored.` : `Applied at boot and whenever the mode is changed.`,
     );
     const g = gameSel;
     if (document.activeElement !== g) g.value = s.gameMode ?? '';
