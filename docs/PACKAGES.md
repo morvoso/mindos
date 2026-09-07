@@ -1,31 +1,53 @@
 # Package sources
 
-MindOS installs software from three places, always in this order, through one
-front door: `mindos-pkg`. The Mind uses it for every install, remove, search
-and info request, and it works the same from a terminal (`sudo mindos-pkg ...`).
+MindOS installs software from three sources, always in this order, through a
+single command: `mindos-pkg`. The Mind uses it for every install, remove,
+search and info request, and it works the same way from a terminal
+(`sudo mindos-pkg ...`).
 
 | Source | What it is | Tool underneath | Example |
 | --- | --- | --- | --- |
 | **MindOS + Arch repositories** | Binary packages: core, extra, multilib and the `[mindos]` repo (kernel, compositor, mind, AUR tools built into the repo such as `paru`) | `pacman` | `discord`, `steam`, `mangohud` |
 | **Flathub** | Sandboxed desktop apps, updated independently of the system | `flatpak` (the remote is added on first use) | `spotify`, `obs-studio` (as `com.obsproject.Studio`) |
-| **AUR** | Community recipes built locally from source | `paru`, running as the unprivileged `mindos-build` user | `octopi`, `protonup-qt` |
+| **AUR** (disabled by default) | User-submitted packages built locally from source | `paru`, running as the unprivileged `mindos-build` user | `octopi`, `protonup-qt` |
 
-Why this order: the repositories are signed binaries maintained by Arch and
-MindOS, Flathub gives sandboxed builds straight from upstream, and the AUR is
-convenient but unreviewed, so it is the last resort and is built as a
-throwaway user rather than as root.
+The order reflects trust. The repositories contain signed binary packages
+maintained by Arch and MindOS, and Flathub provides sandboxed builds from the
+upstream projects. Both are built and signed before they are distributed.
+
+The AUR is different. Its packages are submitted by users and are not
+reviewed, and a `PKGBUILD` runs its own shell script on the local system as
+part of the installation. For this reason **the AUR is disabled unless the
+administrator enables it**:
+
+```
+aur = no      # /etc/mindos/pkg.conf, the default
+```
+
+* `mindos-pkg install --aur NAME` permits the AUR for that command only.
+* `aur = yes` in `/etc/mindos/pkg.conf` permits it permanently.
+* `mindos-pkg search` always lists AUR results and notes that the AUR is
+  disabled.
+
+Nothing enables the AUR automatically. The Mind never passes `--aur`, and
+Settings › Developer installs with `--repo-only`, which stops at the
+repositories; the flag is fixed in the shell's command allow-list and cannot
+be changed by the page. When a name exists only in the AUR, the installation
+stops and reports how to permit it.
 
 ## mindos-pkg
 
 ```
-mindos-pkg install NAME...   repositories → Flathub → AUR; says which one it used
-mindos-pkg remove NAME...    pacman or flatpak, whichever has it
+mindos-pkg install NAME...   repositories → Flathub; reports which source was used
+mindos-pkg install --aur     also the AUR, for this command only
+mindos-pkg install --repo-only  repositories only; Flathub and the AUR are not used
+mindos-pkg remove NAME...    pacman or flatpak, whichever holds the package
 mindos-pkg search QUERY      all three sources, short list
-mindos-pkg info NAME         where it comes from, whether it is installed
+mindos-pkg info NAME         source, installation state and details
 mindos-pkg where NAME        installed | flatpak-installed | repo | flatpak | aur | none
 ```
 
-Behaviour worth knowing:
+Behaviour:
 
 * Names are plain package names (`discord`, not a description). Flathub
   matches on the app name or the last component of the app id, so `spotify`
@@ -33,14 +55,17 @@ Behaviour worth knowing:
 * If the pacman database is older than twelve hours and a name is unknown,
   the database is refreshed and the install is done with `pacman -Su` so the
   system never ends up partially upgraded.
-* AUR builds run `paru -S --needed --noconfirm --skipreview` as `mindos-build`
+* AUR builds run only when the AUR is permitted (above). They run
+  `paru -S --needed --noconfirm --skipreview` as `mindos-build`
   (home `/var/lib/mindos/build`, created by systemd-sysusers/tmpfiles). That
   user may run `pacman` through sudo without a password
   (`/etc/sudoers.d/20-mindos-build`) and nothing else. Builds can take minutes;
   the Mind's tool timeout is 30 minutes.
 * Output is plain sentences ("octopi: installed from the AUR (0.16.0-1)",
   "foo: not found in the MindOS or Arch repositories, on Flathub, or in the
-  AUR"). The exit status is non-zero if any requested package failed.
+  AUR", "octopi: available only from the AUR, which is disabled"). The exit
+  status is non-zero if any requested package failed, including a package
+  refused because it is available only from the AUR.
 
 ## How the Mind uses it
 
