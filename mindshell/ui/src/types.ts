@@ -458,6 +458,10 @@ export interface Prefs {
   network?: NetworkState;
   primary_output?: string | null;
   outputs?: Record<string, unknown>;
+  /** A game is running: the shell keeps still until it ends. */
+  game?: boolean;
+  /** The screensaver / lock stage, as the compositor reports it. */
+  lock?: LockState;
 }
 
 export interface WmMode {

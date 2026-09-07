@@ -23,7 +23,9 @@ mindwm ──(layer-shell + IPC socket)── mindshell host ──(bridge)─�
 
 Design rules: minimal, dark, futuristic. One accent (electric cyan). Red is
 reserved for the kernel/boot stages and never appears in the shell. No blur,
-no animations that cost GPU time while a game runs. Everything is a *widget*
+no animations that cost GPU time while a game runs — the host says when one
+is (`game`), and the pages drop their transitions, animations and
+`backdrop-filter`s and slow their samplers until it ends. Everything is a *widget*
 in a *container* (panel or desktop); the layout is data (`layout.json`) and
 the whole desktop is rebuilt from it, so *edit mode* is just editing that
 data with a nicer UI.

@@ -129,6 +129,12 @@ pub struct App {
     started: Instant,
     state: RefCell<State>,
     windows: RefCell<Vec<Rc<ShellWindow>>>,
+    /// A game is running (GameMode): the shell keeps still, see `watch_game`.
+    game: bool,
+    /// The compositor's idle state (the `idle` event): `stage`
+    /// (active / screensaver / blank), `locked`, `inhibited` and the chosen
+    /// screensaver. See `docs/SHELL.md`, "The screensaver and the lock screen".
+    idle: Value,
     /// Closed windows kept hidden for a moment: a popup that closes itself and
     /// then runs its menu action sends that request after `popup.close`.
     retired: RefCell<Vec<Rc<ShellWindow>>>,
@@ -169,6 +175,7 @@ impl App {
         web_context.set_cache_model(webkit::CacheModel::DocumentViewer);
         let network_session = if app_mode.as_ref().map(|m| m.name == "greeter").unwrap_or(false) {
             // The login screen keeps nothing on disk.
+    game_monitor: RefCell<Option<gio::FileMonitor>>,
             webkit::NetworkSession::new_ephemeral()
         } else {
             let data_dir = dirs_data().join("mindos/shell");
@@ -262,6 +269,7 @@ impl App {
                 app.sync_windows();
             }
         });
+            game_monitor: RefCell::new(None),
     }
 
     fn panels_for<'a>(layout: &'a Layout, name: &'a str, primary: bool) -> impl Iterator<Item = &'a Panel> + 'a {
@@ -272,6 +280,8 @@ impl App {
 
     /// Reload the layout when another process saves it (the Settings app
     /// changes the wallpaper, or the shell saves while an app is open).
+        app.watch_icon_theme();
+        app.watch_game();
     fn watch_layout(self: &Rc<Self>) {
         let path = Layout::user_path();
         if let Some(parent) = path.parent() {
@@ -339,6 +349,52 @@ impl App {
                 app.set_layout(layout);
             }
         });
+    /// While a game is running the shell goes quiet: the UI drops its
+    /// animations and slows its samplers so the frames belong to the game.
+    /// The GameMode hooks (`mindos-perf game-start` / `game-end`) count the
+    /// games in `/run/mindos/perf/game`.
+    fn watch_game(self: &Rc<Self>) {
+        self.state.borrow_mut().game = game_running();
+        let file = gio::File::for_path(GAME_FILE);
+        match file.monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+            Ok(monitor) => {
+                let events = self.events.clone();
+                monitor.connect_changed(move |_, _, _, event| {
+                    use gio::FileMonitorEvent as E;
+                    if matches!(event, E::ChangesDoneHint | E::Changed | E::Created | E::Deleted | E::Renamed) {
+                        let _ = events.send_blocking(HostEvent::Game);
+                    }
+                });
+                *self.game_monitor.borrow_mut() = Some(monitor);
+            }
+            Err(e) => tracing::warn!(path = GAME_FILE, %e, "cannot watch the GameMode counter"),
+        }
+    }
+
+    fn game_changed(&self) {
+        let running = game_running();
+        if self.state.borrow().game == running {
+            return;
+        }
+        self.state.borrow_mut().game = running;
+        if running {
+            tracing::info!("a game is running; the shell goes quiet");
+        } else {
+            tracing::info!("the game ended; the shell comes back");
+        }
+        self.broadcast("game", &json!({ "running": running }));
+        // Nothing idles while a game is running: no screensaver over the game,
+        // no lock in the middle of a cut scene, no display switching off on a
+        // controller-only session that the compositor never sees a key from.
+        let _ = self.ipc.send(json!({ "type": "inhibit_idle", "on": running }));
+    }
+
+    // -----------------------------------------------------------------
+    // The screensaver and the lock screen
+    // -----------------------------------------------------------------
+
+    /// The compositor's `idle` event: put the lock windows up or take them
+    /// down and tell the pages where the session stands.
     }
 
     /// `--app greeter`?
@@ -1518,6 +1574,8 @@ impl App {
     fn set_edit_mode(&self, enabled: bool) {
         {
             let mut state = self.state.borrow_mut();
+            "game": state.game,
+            "lock": state.idle.clone(),
             if state.edit_mode == enabled {
                 return;
             }
@@ -1997,6 +2055,10 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
     });
     rx.recv().await.expect("blocking worker vanished")
 }
+                    // A game may already have been running before the shell started.
+                    if app.state.borrow().game {
+                        let _ = app.ipc.send(json!({ "type": "inhibit_idle", "on": true }));
+                    }
 
 fn dirs_data() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
@@ -2068,6 +2130,7 @@ fn xembed_item_json(item: &Value) -> Option<Value> {
                     .stderr(std::process::Stdio::null())
                     .spawn()
                 else {
+            HostEvent::Game => self.game_changed(),
                     tracing::debug!("nmcli is not available; network changes are polled");
                     return;
                 };
@@ -2083,4 +2146,16 @@ fn xembed_item_json(item: &Value) -> Option<Value> {
                 let _ = child.wait();
             })
             .expect("spawn network thread");
+
+/// The GameMode counter kept by `mindos-perf game-start` / `game-end`.
+const GAME_FILE: &str = "/run/mindos/perf/game";
+
+/// True while at least one game is running.
+fn game_running() -> bool {
+    std::fs::read_to_string(GAME_FILE)
+        .ok()
+        .and_then(|t| t.split_whitespace().next().and_then(|n| n.parse::<u32>().ok()))
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
 

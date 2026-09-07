@@ -1,5 +1,7 @@
 // Tiny DOM helpers: h() builds elements, plus a few utilities used everywhere.
 
+import { isQuiet, onQuiet, quietInterval } from './quiet';
+
 type Child = Node | string | number | null | undefined | false;
 type Attrs = Record<string, unknown> | null | undefined;
 
@@ -50,14 +52,32 @@ export function debounce<A extends unknown[]>(fn: (...a: A) => void, ms: number)
   };
 }
 
-/** A repeating timer that stops when the element leaves the document. */
+/** A repeating timer that stops when the element leaves the document. It ticks
+ *  slower (or not at all) while a game runs — see quiet.ts. */
 export function every(el: Element, ms: number, fn: () => void): () => void {
-  fn();
-  const id = setInterval(() => {
+  let id: ReturnType<typeof setInterval> | undefined;
+  const tick = () => {
     if (!el.isConnected) return stop();
     fn();
-  }, ms);
-  const stop = () => clearInterval(id);
+  };
+  const arm = () => {
+    if (id !== undefined) clearInterval(id);
+    id = undefined;
+    const wait = quietInterval(ms);
+    if (wait > 0) id = setInterval(tick, wait);
+  };
+  const offQuiet = onQuiet(() => {
+    if (!el.isConnected) return stop();
+    arm();
+    if (!isQuiet()) fn();
+  });
+  const stop = () => {
+    if (id !== undefined) clearInterval(id);
+    id = undefined;
+    offQuiet();
+  };
+  fn();
+  arm();
   return stop;
 }
 

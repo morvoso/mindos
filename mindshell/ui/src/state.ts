@@ -52,6 +52,8 @@ export class Store {
       app: raw.app ?? null,
       polkit: raw.polkit ?? null,
       version: raw.version,
+      game: !!raw.game,
+      lock: raw.lock,
     };
     bridge.on<{ windows: WindowInfo[]; focused: number | null }>('windows', (p) => {
       this.state.windows = p.windows ?? [];
@@ -73,6 +75,18 @@ export class Store {
     bridge.on<{ layout: Layout }>('layout', (p) => {
       this.state.layout = normalizeLayout(p.layout);
       this.emit('layout');
+    });
+    bridge.on<{ running: boolean }>('game', (p) => {
+      this.state.game = !!p.running;
+      this.emit('game');
+    });
+    bridge.on<LockState>('lock', (p) => {
+      this.state.lock = p;
+      this.emit('lock');
+    });
+    bridge.on<{ config: ShellState['config'] }>('config', (p) => {
+      this.state.config = p.config ?? {};
+      this.emit('config');
     });
     bridge.on<{ enabled: boolean }>('edit_mode', (p) => {
       this.state.editMode = !!p.enabled;

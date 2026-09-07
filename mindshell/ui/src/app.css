@@ -124,6 +124,12 @@ img { display: block; }
   border-radius: inherit; overflow: hidden;
   background-color: var(--bg-0); background-repeat: no-repeat;
 }
+/* Quiet while a game runs (src/quiet.ts): nothing of the shell moves or blurs,
+   so the compositor has no reason to repaint a panel behind the game. */
+:root.quiet *, :root.quiet *::before, :root.quiet *::after {
+  transition: none !important; animation: none !important;
+  -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+}
 .glass-bd.builtin { background-image: var(--aurora); }
 .glass-bd::after {
   content: ''; position: absolute; inset: 0; border-radius: inherit;

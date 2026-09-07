@@ -8,6 +8,7 @@ import { renderPanel } from './panel';
 import { renderPopupWindow } from './popups';
 import { renderPreview } from './preview';
 import { store } from './state';
+import { setQuiet } from './quiet';
 import { renderToasts } from './toast';
 
 async function main(): Promise<void> {
@@ -16,6 +17,9 @@ async function main(): Promise<void> {
   document.documentElement.dataset.kind = info.kind;
   await store.init();
   const root = document.body;
+  // Quiet while a game runs: no animations, samplers slowed or stopped.
+  setQuiet(!!store.state.game);
+  store.on('game', () => setQuiet(!!store.state.game));
   switch (info.kind) {
     case 'desktop':
       renderDesktop(root, info.output);
