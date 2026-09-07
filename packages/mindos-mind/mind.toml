@@ -56,3 +56,26 @@ assess = true
 auto_apply = false
 # Health checks (failed services, drivers, disks, pacnew) every N minutes; 0 = off.
 health_interval_mins = 30
+
+[web]
+# The Mind can look things up on the internet: web_search, web_fetch,
+# arch_wiki, wikipedia, protondb, download_file and open_url. Everything goes
+# out through curl, GET only, with the redirects checked one at a time.
+enabled = true
+# Any engine works; {query} is where the words go. An HTML page is scraped, a
+# SearXNG-style JSON answer is read directly.
+search_url = "https://html.duckduckgo.com/html/?q={query}"
+user_agent = "Mozilla/5.0 (X11; Linux x86_64) MindOS-Mind/1.0"
+timeout_secs = 25
+# How much of a page is read (bytes) and how many redirects are followed.
+max_bytes = 400000
+max_redirects = 5
+# Off: this machine and the local network are out of reach, so nothing the
+# Mind reads online can make it call a service on your own network. Turn it
+# on only if you want the Mind to fetch from your LAN.
+allow_private = false
+# Hosts the Mind must never fetch; a bare domain covers its subdomains.
+deny_hosts = []
+# Downloads: how long one may take and how large it may be.
+download_timeout_secs = 900
+max_download_bytes = 4000000000

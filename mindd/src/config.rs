@@ -10,6 +10,32 @@ pub struct Config {
     pub daemon: DaemonConfig,
     pub policy: PolicyConfig,
     pub updates: UpdatesConfig,
+    pub web: WebConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    /// Let the Mind reach the internet at all.
+    pub enabled: bool,
+    /// Search engine, with {query} where the words go. Any engine that
+    /// answers with HTML or with SearXNG-shaped JSON works.
+    pub search_url: String,
+    pub user_agent: String,
+    /// Seconds one page may take.
+    pub timeout_secs: u64,
+    /// How much of a page is read into memory.
+    pub max_bytes: usize,
+    /// Redirect hops, each one checked again before it is followed.
+    pub max_redirects: u32,
+    /// Allow this machine and the local network (loopback, 10/8, link-local).
+    /// Off, so a page cannot make the Mind talk to a local service.
+    pub allow_private: bool,
+    /// Hosts the Mind must not fetch; a bare domain covers its subdomains.
+    pub deny_hosts: Vec<String>,
+    /// Seconds a download may take, and how large it may be.
+    pub download_timeout_secs: u64,
+    pub max_download_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +111,24 @@ pub struct PolicyConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { model: ModelConfig::default(), daemon: DaemonConfig::default(), policy: PolicyConfig::default(), updates: UpdatesConfig::default() }
+        Config { model: ModelConfig::default(), daemon: DaemonConfig::default(), policy: PolicyConfig::default(), updates: UpdatesConfig::default(), web: WebConfig::default() }
+    }
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        WebConfig {
+            enabled: true,
+            search_url: "https://html.duckduckgo.com/html/?q={query}".into(),
+            user_agent: "Mozilla/5.0 (X11; Linux x86_64) MindOS-Mind/1.0".into(),
+            timeout_secs: 25,
+            max_bytes: 400_000,
+            max_redirects: 5,
+            allow_private: false,
+            deny_hosts: vec![],
+            download_timeout_secs: 900,
+            max_download_bytes: 4_000_000_000,
+        }
     }
 }
 

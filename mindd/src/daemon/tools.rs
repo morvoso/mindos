@@ -3,10 +3,12 @@
 
 use super::policy;
 use super::sysinfo;
+use super::web;
 use crate::config::Config;
 use crate::proto::Policy;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -20,9 +22,15 @@ pub struct ToolDef {
 
 const MAX_OUTPUT: usize = 12_000;
 
-pub fn definitions() -> Vec<ToolDef> {
+/// How much text a web tool may return: half of what the model can hold at
+/// once, so a page and the conversation around it both fit.
+fn text_budget(cfg: &Config) -> usize {
+    (super::agent::context_chars(cfg) / 2).clamp(1_500, MAX_OUTPUT)
+}
+
+pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
     let none = json!({"type": "object", "properties": {}});
-    vec![
+    let mut defs = vec![
         ToolDef { name: "system_info", description: "Hardware, kernel, drivers, uptime and MindOS version of this machine.", parameters: none.clone(), policy: Policy::Observe, category: "info" },
         ToolDef { name: "gpu_info", description: "GPU model(s), driver in use, VRAM, Vulkan availability (lspci, nvidia-smi, vulkaninfo).", parameters: none.clone(), policy: Policy::Observe, category: "info" },
         ToolDef { name: "list_packages", description: "Installed packages (pacman -Q), optionally filtered by a substring.", parameters: json!({"type":"object","properties":{"filter":{"type":"string","description":"substring to match package names"}}}), policy: Policy::Observe, category: "packages" },
@@ -50,7 +58,19 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef { name: "performance_mode", description: "Read or switch the MindOS performance mode: balanced (default), performance (governor performance, sched_ext scx_lavd, no proactive compaction, NVIDIA persistence; GameMode switches here while a game runs) or quiet (powersave, no boost). Without `mode` it only reports the current state.", parameters: json!({"type":"object","properties":{"mode":{"type":"string","enum":["balanced","performance","quiet"]}}}), policy: Policy::Observe, category: "perf" },
         ToolDef { name: "dlss", description: "The DLSS/FSR/XeSS swapper (mindos-dlss), run as the user: `scan` lists the user's games and the upscaler DLLs they ship with versions; `library` the DLL versions on hand; `versions KIND` what can be downloaded; `download KIND VERSION|latest`; `swap GAME KIND VERSION|latest` (the original is kept as a backup); `restore GAME [KIND]`. Kinds: dlss, dlss_d, dlss_g, fsr_31_dx12, fsr_31_vk, xess, xess_fg, xess_dx11, xell.", parameters: json!({"type":"object","properties":{"args":{"type":"string","description":"the mindos-dlss command line, e.g. \"scan\" or \"swap Cyberpunk dlss latest\""}},"required":["args"]}), policy: Policy::Observe, category: "games" },
         ToolDef { name: "mind_sleep", description: "Unload the language model from the GPU (sleep) or load it again (wake). GameMode does this automatically while a game runs.", parameters: json!({"type":"object","properties":{"sleeping":{"type":"boolean"}},"required":["sleeping"]}), policy: Policy::Observe, category: "mind" },
-    ]
+    ];
+    if cfg.web.enabled {
+        defs.extend([
+            ToolDef { name: "web_search", description: "Search the web and get back titles, links and snippets. Use it whenever the answer depends on something newer or more specific than you know: driver versions, error messages, release notes, how other people fixed a problem. Follow up with web_fetch to read a result.", parameters: json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","default":8}},"required":["query"]}), policy: Policy::Observe, category: "web" },
+            ToolDef { name: "web_fetch", description: "Read a web page as plain text (HTML is stripped, JSON comes back as it is). Use it on a search result, a wiki page, a forum thread, a changelog or any URL the user gives you. Set links:true to also get the page's links so you can follow one.", parameters: json!({"type":"object","properties":{"url":{"type":"string"},"links":{"type":"boolean","default":false},"max_chars":{"type":"integer","description":"how much text to return; the default fits the model's context"}},"required":["url"]}), policy: Policy::Observe, category: "web" },
+            ToolDef { name: "arch_wiki", description: "Search the Arch Wiki and read the best matching page as plain text. The first place to look for anything about drivers, systemd, pacman, the kernel or hardware on Arch.", parameters: json!({"type":"object","properties":{"query":{"type":"string"},"page":{"type":"string","description":"exact page title to read instead of searching"},"max_chars":{"type":"integer","description":"how much text to return; the default fits the model's context"}},"required":["query"]}), policy: Policy::Observe, category: "web" },
+            ToolDef { name: "wikipedia", description: "Search Wikipedia and read the best matching article as plain text. For general knowledge questions, people, places, hardware history.", parameters: json!({"type":"object","properties":{"query":{"type":"string"},"page":{"type":"string","description":"exact article title to read instead of searching"},"max_chars":{"type":"integer","description":"how much text to return; the default fits the model's context"}},"required":["query"]}), policy: Policy::Observe, category: "web" },
+            ToolDef { name: "protondb", description: "How well a game runs on Linux: the ProtonDB rating, confidence and report count for a game name, plus its Steam app id.", parameters: json!({"type":"object","properties":{"game":{"type":"string"}},"required":["game"]}), policy: Policy::Observe, category: "games" },
+            ToolDef { name: "download_file", description: "Download a file to disk (defaults to the user's Downloads folder) and report where it landed, how big it is and its sha256. For installers, mods, wallpapers, firmware. Prefer install_packages for software that is packaged.", parameters: json!({"type":"object","properties":{"url":{"type":"string"},"path":{"type":"string","description":"optional: a file name (saved in Downloads), a directory, or an absolute path"}},"required":["url"]}), policy: Policy::Change, category: "web" },
+            ToolDef { name: "open_url", description: "Open a URL in the user's browser, on their screen.", parameters: json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}), policy: Policy::Change, category: "desktop" },
+        ]);
+    }
+    defs
 }
 
 pub fn openai_tools(defs: &[ToolDef], client_tools: &[crate::proto::ClientTool]) -> Vec<Value> {
@@ -368,8 +388,151 @@ pub async fn execute(name: &str, args: &Value, cfg: &Config, d: &super::Daemon, 
             let (ok, out) = sh("curl -sS --max-time 10 https://archlinux.org/feeds/news/ | grep -oE '<title>[^<]+</title>|<pubDate>[^<]+</pubDate>' | sed -e 's/<[^>]*>//g' | head -20", timeout).await?;
             Ok(json!({"ok": ok, "output": out}))
         }
+        "web_search" => {
+            let query = args["query"].as_str().unwrap_or("").trim();
+            if query.is_empty() {
+                return Err(anyhow!("web_search needs a query"));
+            }
+            let limit = args["limit"].as_u64().unwrap_or(8).clamp(1, 20) as usize;
+            web::search(query, limit, &cfg.web).await
+        }
+        "web_fetch" => {
+            let url = args["url"].as_str().unwrap_or("").trim();
+            if url.is_empty() {
+                return Err(anyhow!("web_fetch needs a url"));
+            }
+            let max_chars = args["max_chars"].as_u64().unwrap_or(text_budget(cfg) as u64).clamp(500, 40_000) as usize;
+            let page = web::fetch(url, &cfg.web, "text/html,application/xhtml+xml,application/json;q=0.9,text/plain;q=0.8,*/*;q=0.5", cfg.web.max_bytes).await?;
+            let mut out = json!({"ok": page.status < 400, "url": page.url, "status": page.status, "content_type": page.content_type, "note": web::UNTRUSTED});
+            if !page.hops.is_empty() {
+                out["redirected_from"] = json!(page.hops);
+            }
+            if page.is_json() {
+                let body = page.text();
+                match serde_json::from_str::<Value>(&body) {
+                    Ok(v) => out["json"] = v,
+                    Err(_) => out["text"] = json!(cut(body, max_chars)),
+                }
+            } else if page.is_html() {
+                let base = url::Url::parse(&page.url).ok();
+                let ex = web::html_to_text(&page.text(), base.as_ref());
+                out["title"] = json!(ex.title);
+                out["text"] = json!(cut(ex.text, max_chars));
+                if args["links"].as_bool().unwrap_or(false) {
+                    out["links"] = json!(ex.links.iter().take(25).map(|(u, t)| json!({"url": u, "text": t})).collect::<Vec<_>>());
+                }
+            } else if page.content_type.starts_with("text/") || page.content_type.is_empty() {
+                out["text"] = json!(cut(page.text(), max_chars));
+            } else {
+                out["text"] = json!(format!("{} bytes of {}, not text", page.body.len(), page.content_type));
+            }
+            if page.truncated {
+                out["truncated"] = json!(true);
+            }
+            Ok(out)
+        }
+        "arch_wiki" | "wikipedia" => {
+            let site = if name == "arch_wiki" { &web::ARCH_WIKI } else { &web::WIKIPEDIA };
+            let mut v = web::wiki(site, args["query"].as_str().unwrap_or("").trim(), args["page"].as_str(), &cfg.web).await?;
+            // A wiki page is often longer than the model's whole context.
+            let max = args["max_chars"].as_u64().unwrap_or(text_budget(cfg) as u64).clamp(500, 40_000) as usize;
+            if let Some(text) = v["text"].as_str() {
+                let cut = cut(text.to_string(), max);
+                if cut.len() < text.len() {
+                    v["more"] = json!(format!("the page continues at {}", v["url"].as_str().unwrap_or("")));
+                }
+                v["text"] = json!(cut);
+            }
+            Ok(v)
+        }
+        "protondb" => {
+            let game = args["game"].as_str().unwrap_or("").trim();
+            if game.is_empty() {
+                return Err(anyhow!("protondb needs a game name"));
+            }
+            web::protondb(game, &cfg.web).await
+        }
+        "download_file" => {
+            let url = args["url"].as_str().unwrap_or("").trim();
+            if url.is_empty() {
+                return Err(anyhow!("download_file needs a url"));
+            }
+            let user = (caller.uid != 0 && caller.uid != u32::MAX).then(|| user_name(caller.uid)).flatten();
+            let dest = download_path(args["path"].as_str(), url, user.as_deref())?;
+            web::download(url, &dest, &cfg.web, user.as_deref()).await
+        }
+        "open_url" => {
+            let url = args["url"].as_str().unwrap_or("").trim().to_string();
+            let u = url::Url::parse(&url).map_err(|e| anyhow!("{url}: {e}"))?;
+            if !matches!(u.scheme(), "http" | "https") {
+                return Err(anyhow!("only http and https URLs can be opened"));
+            }
+            let Some(user) = user_name(caller.uid) else {
+                return Err(anyhow!("no desktop session to open {url} in"));
+            };
+            let cmd = format!("systemd-run --quiet --collect --machine={}@.host --user -- xdg-open {}", shell_quote(&user), shell_quote(u.as_str()));
+            let (ok, out) = sh(&cmd, timeout).await?;
+            if ok {
+                return Ok(json!({"ok": true, "output": format!("opened {u}")}));
+            }
+            let (ok, out2) = sh_as(caller, &format!("XDG_RUNTIME_DIR=/run/user/{} xdg-open {}", caller.uid, shell_quote(u.as_str())), timeout).await?;
+            Ok(json!({"ok": ok, "output": if ok { format!("opened {u}") } else { format!("{out} {out2}").trim().to_string() }}))
+        }
         _ => Err(anyhow!("unknown tool {}", name)),
     }
+}
+
+/// Cut text to a character budget on a line boundary.
+fn cut(mut s: String, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s;
+    }
+    let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
+    let end = s[..end].rfind('\n').unwrap_or(end);
+    s.truncate(end);
+    s.push_str("\n… (cut off)");
+    s
+}
+
+fn user_home(user: &str) -> Option<PathBuf> {
+    let s = std::fs::read_to_string("/etc/passwd").ok()?;
+    s.lines().find_map(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        (f.len() > 5 && f[0] == user).then(|| PathBuf::from(f[5]))
+    })
+}
+
+/// Where a download goes: what was asked for, or the user's Downloads folder,
+/// with the name taken from the URL.
+fn download_path(path: Option<&str>, url: &str, user: Option<&str>) -> Result<String> {
+    let name = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.path_segments().and_then(|s| s.filter(|p| !p.is_empty()).next_back().map(|p| p.to_string())))
+        .filter(|n| !n.is_empty() && n != "/")
+        .unwrap_or_else(|| "download".to_string());
+    let name = name.replace(['/', '\\'], "_");
+    let base = match user.and_then(user_home) {
+        Some(home) => home.join("Downloads"),
+        None => PathBuf::from("/var/cache/mindos/downloads"),
+    };
+    let p = match path.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => {
+            let p = PathBuf::from(p);
+            let p = if p.is_dir() || p.to_string_lossy().ends_with('/') { p.join(&name) } else { p };
+            // A bare name, or anything relative, lands in the same place a
+            // download with no path at all would.
+            if p.is_absolute() {
+                p
+            } else {
+                base.join(p.strip_prefix("./").unwrap_or(&p))
+            }
+        }
+        None => base.join(&name),
+    };
+    if p.components().any(|c| c == std::path::Component::ParentDir) {
+        return Err(anyhow!("{} walks out of the folder it names", p.display()));
+    }
+    Ok(p.to_string_lossy().into_owned())
 }
 
 /// Edit the kernel command line in every place MindOS supports.
@@ -443,4 +606,34 @@ fn edit_cmdline(cur: &str, add: &str, remove: &str) -> String {
         params.push(add.to_string());
     }
     params.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downloads_land_somewhere_sensible() {
+        let d = |path: Option<&str>, url: &str| download_path(path, url, None).unwrap();
+        assert_eq!(d(None, "https://example.com/a/b/setup.exe"), "/var/cache/mindos/downloads/setup.exe");
+        assert_eq!(d(None, "https://example.com/"), "/var/cache/mindos/downloads/download");
+        assert_eq!(d(None, "https://example.com/x.tar.gz?v=2"), "/var/cache/mindos/downloads/x.tar.gz");
+        assert_eq!(d(Some("./mod.zip"), "https://example.com/a"), "/var/cache/mindos/downloads/mod.zip");
+        assert_eq!(d(Some("mod.zip"), "https://example.com/a"), "/var/cache/mindos/downloads/mod.zip");
+        assert_eq!(d(Some("/srv/games/mod.zip"), "https://example.com/a"), "/srv/games/mod.zip");
+        assert_eq!(d(Some("/srv/games/"), "https://example.com/a/mod.zip"), "/srv/games/mod.zip");
+        assert!(download_path(Some("../../etc/passwd"), "https://example.com/a", None).is_err());
+    }
+
+    #[test]
+    fn web_tools_follow_the_config() {
+        let mut cfg = Config::default();
+        assert!(find(&definitions(&cfg), "web_search").is_some());
+        cfg.web.enabled = false;
+        let off = definitions(&cfg);
+        for name in ["web_search", "web_fetch", "arch_wiki", "wikipedia", "protondb", "download_file", "open_url"] {
+            assert!(find(&off, name).is_none(), "{name} should be gone");
+        }
+        assert!(find(&off, "system_info").is_some());
+    }
 }

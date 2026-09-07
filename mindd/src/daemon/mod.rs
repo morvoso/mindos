@@ -11,6 +11,7 @@ pub mod server;
 pub mod sysinfo;
 pub mod tools;
 pub mod updates;
+pub mod web;
 
 use crate::config::Config;
 use std::sync::atomic::{AtomicBool, Ordering};

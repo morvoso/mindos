@@ -160,12 +160,25 @@ The mind of the OS: a system daemon that owns the model and the tools.
   settings live in `/var/lib/mindos/mind-prefs.json` and a change of either
   restarts `llama-server`.
 * An **agent loop** with tool calling. Tools are typed Rust functions with a
-  JSON schema: `system_info`, `gpu_info`, `list_packages`, `search_packages`,
-  `check_updates`, `apply_updates`, `install_packages`, `remove_packages`,
-  `service_status`, `service_control`, `journal`, `read_file`,
-  `write_config`, `run_command`, `set_kernel_parameter`, `game_library`,
-  `launch`. Clients can register additional tools (the compositor registers
-  `launch_app`, `open_terminal` and `run_in_terminal`).
+  JSON schema, grouped by category: *info* (`system_info`, `gpu_info`,
+  `journal`, `disk_usage`, `health_check`, `notices`), *packages*
+  (`list_packages`, `search_packages`, `package_info`, `install_packages`,
+  `remove_packages`), *update* (`check_updates`, `apply_updates`,
+  `update_status`, `arch_news`), *services* (`service_status`,
+  `service_control`), *files* (`read_file`, `write_file`), *boot*
+  (`set_kernel_parameter`, `list_snapshots`, `rollback`), *web*
+  (`web_search`, `web_fetch`, `arch_wiki`, `wikipedia`, `download_file`),
+  *games* (`dlss`, `protondb`), *perf* (`performance_mode`), *shell*
+  (`run_command`), *desktop* (`open_url`), *power* (`reboot`) and *mind*
+  (`mind_sleep`). Clients can register additional tools (the compositor
+  registers `launch_app`, `open_terminal` and `run_in_terminal`).
+* The **web tools** (`mindd/src/daemon/web.rs`, `docs/WEB.md`) let the Mind
+  look things up: search, read a page as text, the Arch Wiki and Wikipedia,
+  ProtonDB ratings, downloads. Every request is a `curl` GET whose redirects
+  are followed one hop at a time, each one re-checked against a guard that
+  refuses this machine and the local network. What comes back is labelled
+  untrusted and the system prompt tells the model it is information, never
+  instructions.
 * The package tools go through `mindos-pkg` (shipped by `mindos-mind`), which
   resolves a plain name against the MindOS/Arch repositories, then Flathub,
   then the AUR (built by the unprivileged `mindos-build` user) and reports
@@ -182,7 +195,8 @@ The mind of the OS: a system daemon that owns the model and the tools.
   `download_model`, `cancel_download`. Events: `welcome`, `delta`,
   `tool_call`, `tool_result`, `client_tool`, `done`, `status`, `history`,
   `models`, `download`, `error`.
-* Configuration: `/etc/mindos/mind.toml` (model, daemon, policy sections).
+* Configuration: `/etc/mindos/mind.toml` (model, daemon, policy, updates
+  and web sections).
 
 ### The Mind managing the system
 

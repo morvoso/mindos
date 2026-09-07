@@ -32,6 +32,7 @@
 - [x] The shell is the session's polkit authentication agent: one themed password dialog for `pkexec`, systemd and the standard apps; GameMode's helpers allowed without a prompt (`docs/SHELL.md`)
 - [ ] In-tree modules load with `module verification failed` (signature missing) on the current kernel build: keep module signatures intact or turn `MODULE_SIG` off
 - [ ] Steam, gamescope, Proton, MangoHud, GameMode verified with a real game on the 4090
+- [x] The Mind can look things up: web search, page reading, the Arch Wiki, Wikipedia and ProtonDB, downloads, all through curl behind a guard that refuses this machine and the local network, with fetched text treated as data and never as instructions (`docs/WEB.md`)
 - [x] The Mind watches for updates: rules + model risk assessment, Arch news, notices with actions, optional auto-apply of low-risk updates (never during a game), post-update verification against the pre-update snapshot, one-click rollback (`docs/UPDATES.md`)
 - [ ] Per-package release-note reading for the assessment (changelogs, upstream tags) rather than names and the news feed alone
 - [ ] Pick a bigger catalog model (Qwen3.5 9B / 27B) automatically when a GPU with enough memory is present; CUDA backend by default on NVIDIA

@@ -366,7 +366,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mind-prefs-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(load_prefs(&dir).thinking, None);
-        save_prefs(&dir, &Prefs { thinking: Some(true) }).unwrap();
+        save_prefs(&dir, &Prefs { thinking: Some(true), auto_update: None }).unwrap();
         assert_eq!(load_prefs(&dir).thinking, Some(true));
         std::fs::remove_dir_all(&dir).unwrap();
     }

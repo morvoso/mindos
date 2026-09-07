@@ -2,7 +2,7 @@
 # The Mind: mindd (local-LLM system daemon) and the `mind` CLI, built from ../../mindd.
 pkgname=mindos-mind
 pkgver=0.1.0
-pkgrel=8
+pkgrel=9
 pkgdesc="MindOS Mind: local LLM system daemon (mindd) and its CLI (mind)"
 arch=(x86_64)
 url="https://mindos.local"

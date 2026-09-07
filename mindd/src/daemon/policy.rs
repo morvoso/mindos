@@ -68,7 +68,40 @@ pub fn classify_command(cmd: &str, cfg: &PolicyConfig) -> Policy {
             "swapon" => !rest.contains("--show") && !rest.contains("-s"),
             "fstrim" | "hdparm" | "mkinitcpio" | "dkms" | "efibootmgr" | "fwupdmgr" | "bootctl" => !(rest.contains("-l") || rest.contains("status") || rest.contains("list") || rest.contains("get-") || rest.is_empty() && prog == "bootctl"),
             "sed" => rest.contains("-i"),
-            "curl" | "wget" => rest.contains("-o") || rest.contains("-O") || rest.contains("--output"),
+            // Fetching a page is reading; writing a file, uploading or
+            // sending a body is not.
+            "curl" | "wget" => {
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                const LONG: &[&str] = &[
+                    "--output", "--output-dir", "--upload-file", "--form", "--form-string", "--data", "--data-raw",
+                    "--data-binary", "--data-ascii", "--data-urlencode", "--json", "--user", "--remote-name",
+                    "--remote-name-all", "--post301", "--post302", "--post303", "--post-data", "--post-file",
+                ];
+                // Short flags can be bundled (-sSo is -s -S -o), and -o -
+                // means stdout, which is still only reading.
+                let mut writes = false;
+                for (i, w) in words.iter().enumerate() {
+                    if !w.starts_with('-') || w.starts_with("--") {
+                        continue;
+                    }
+                    let letters: String = w[1..].chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+                    let tail = &w[1 + letters.len()..];
+                    for c in letters.chars() {
+                        match c {
+                            'o' | 'O' => {
+                                let dest = if tail.is_empty() { words.get(i + 1).copied().unwrap_or("") } else { tail };
+                                writes |= dest != "-";
+                            }
+                            'T' | 'F' | 'd' | 'u' => writes = true,
+                            _ => {}
+                        }
+                    }
+                }
+                writes
+                    || LONG.iter().any(|f| words.iter().any(|w| w == f || w.starts_with(&format!("{f}="))))
+                    || words.windows(2).any(|w| (w[0] == "-X" || w[0] == "--request") && !w[1].eq_ignore_ascii_case("get"))
+                    || words.iter().any(|w| w.starts_with("--request=") && !w["--request=".len()..].eq_ignore_ascii_case("get"))
+            }
             "steam" | "gamescope" | "wine" | "winetricks" | "protontricks" => true,
             "timedatectl" | "localectl" | "hostnamectl" => rest.starts_with("set-"),
             "udevadm" => rest.starts_with("trigger") || rest.starts_with("control"),
@@ -110,5 +143,37 @@ fn short(v: &Value) -> String {
         format!("{}…", s.chars().take(117).collect::<String>())
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curl_may_read_but_not_write() {
+        let cfg = PolicyConfig::default();
+        for read in [
+            "curl -sS https://archlinux.org/feeds/news/",
+            "curl -sSL --max-time 10 https://example.com/a",
+            "curl --user-agent 'MindOS' https://example.com",
+            "curl -H 'Accept: text/html' https://example.com | head -40",
+            "wget -q -O- https://example.com",
+        ] {
+            assert_eq!(classify_command(read, &cfg), Policy::Observe, "{read}");
+        }
+        for change in [
+            "curl -o /etc/pacman.conf https://example.com/x",
+            "curl -sSo /tmp/x https://example.com/x",
+            "curl -O https://example.com/x.tar",
+            "curl -X POST https://example.com/api",
+            "curl --request DELETE https://example.com/api",
+            "curl --data 'a=b' https://example.com",
+            "curl --data-urlencode a=b https://example.com",
+            "curl -T ./secret https://example.com",
+            "wget -O /tmp/x https://example.com",
+        ] {
+            assert_eq!(classify_command(change, &cfg), Policy::Change, "{change}");
+        }
     }
 }
