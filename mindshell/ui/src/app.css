@@ -1009,6 +1009,13 @@ html[data-kind=toast], html[data-kind=toast] body { background: transparent; }
 .perf-mode.effective { border-style: dashed; }
 .perf-ic { display: inline-flex; color: var(--fg-dim); }
 .perf-mode.on .perf-ic, .perf-card.on .perf-ic { color: var(--accent); filter: drop-shadow(0 0 6px rgb(var(--accent-a) / .6)); }
+/* the updates indicator: quiet until something waits, amber when the Mind
+   would rather you looked first */
+.w-updates { position: relative; gap: 0; }
+.w-updates.has { color: var(--fg); }
+.w-updates.warn .w-ic { color: var(--warn); filter: drop-shadow(0 0 5px rgb(var(--warn-a) / .6)); }
+.w-updates.warn .w-badge { background: var(--warn); box-shadow: 0 0 10px rgb(var(--warn-a) / .6); }
+
 .perf-text { display: flex; flex-direction: column; gap: 2px; }
 .perf-name { font: 600 13.5px/1.2 var(--ui); }
 .perf-blurb { font: 500 11.5px/1.3 var(--ui); color: var(--fg-faint); }

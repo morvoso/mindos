@@ -5,7 +5,7 @@ import type { DesktopWidgetEntry, Layout, PanelDef, WidgetEntry } from './types'
 
 export function defaultLayout(): Layout {
   return {
-    version: 2,
+    version: 3,
     panels: [
       {
         // One bar along the bottom, flush with the edge: the apps centred,
@@ -23,6 +23,7 @@ export function defaultLayout(): Layout {
           { id: 'mode', type: 'layout-mode', config: {} },
           { id: 'perf', type: 'perf', config: {} },
           { id: 'mind', type: 'mind', config: {} },
+          { id: 'updates', type: 'updates', config: {} },
           { id: 'notify', type: 'notifications', config: {} },
           { id: 'clock', type: 'clock', config: { seconds: false, date: true, hour24: false } },
         ],
@@ -55,7 +56,7 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
   const panels = Array.isArray(raw.panels) ? raw.panels : base.panels;
   const desktop = raw.desktop && typeof raw.desktop === 'object' ? raw.desktop : base.desktop;
   return {
-    version: 2,
+    version: 3,
     panels: panels.map((p, i) => ({
       id: p.id ?? `panel-${i}`,
       output: p.output ?? '*',

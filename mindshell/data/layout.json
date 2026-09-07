@@ -25,6 +25,7 @@
         { "id": "mode", "type": "layout-mode", "config": {} },
         { "id": "perf", "type": "perf", "config": {} },
         { "id": "mind", "type": "mind", "config": {} },
+        { "id": "updates", "type": "updates", "config": {} },
         { "id": "notify", "type": "notifications", "config": {} },
         { "id": "clock", "type": "clock", "config": { "seconds": false, "date": true, "hour24": false } }
       ]

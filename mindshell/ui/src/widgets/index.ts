@@ -10,6 +10,7 @@ import './network';
 import './vpn';
 import './battery';
 import './mind';
+import './updates';
 import './notifications';
 import './perf';
 import './sysmon';

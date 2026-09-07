@@ -25,7 +25,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Layout {
-            version: 2,
+            version: 3,
             panels: Vec::new(),
             desktop: Desktop::default(),
             extra: Map::new(),
@@ -170,6 +170,25 @@ impl Layout {
         self.version = 2;
     }
 
+    /// Version 3 added the updates indicator; a layout saved by an older shell
+    /// gets it in front of the notification bell (or beside its Mind widget).
+    fn migrate_v3(&mut self) {
+        for panel in &mut self.panels {
+            if panel.widgets.iter().any(|w| w.kind == "updates") {
+                continue;
+            }
+            let at = panel
+                .widgets
+                .iter()
+                .position(|w| w.kind == "notifications")
+                .or_else(|| panel.widgets.iter().position(|w| w.kind == "mind").map(|i| i + 1));
+            if let Some(at) = at {
+                panel.widgets.insert(at, Widget::new("updates", "updates"));
+            }
+        }
+        self.version = 3;
+    }
+
     /// Clamp values to something the host can build windows from.
     pub fn sanitized(mut self) -> Layout {
         if self.version == 0 {
@@ -177,6 +196,9 @@ impl Layout {
         }
         if self.version < 2 {
             self.migrate_v2();
+        }
+        if self.version < 3 {
+            self.migrate_v3();
         }
         let mut seen = std::collections::HashSet::new();
         let mut n = 0;
@@ -283,7 +305,7 @@ mod tests {
         let layout: Layout = serde_json::from_str(BUILTIN_LAYOUT).unwrap();
         // One Windows-style bar along the bottom: the task bar centred
         // between two expanding spacers, then the tray, performance mode,
-        // Mind, the bell and the clock.
+        // Mind, the updates indicator, the bell and the clock.
         assert_eq!(layout.panels.len(), 1);
         let bar = &layout.panels[0];
         assert_eq!(bar.edge, "bottom");
@@ -297,7 +319,7 @@ mod tests {
         assert_eq!(names.iter().filter(|n| **n == "spacer").count(), 2, "two expanding spacers centre the apps");
         let pos = |k: &str| names.iter().position(|n| *n == k).unwrap();
         assert!(pos("taskbar") < pos("tray") && pos("tray") < pos("perf") && pos("perf") + 1 == pos("mind"), "performance mode, then Mind, on the right");
-        assert!(pos("mind") + 1 == pos("notifications") && pos("notifications") + 1 == pos("clock"), "the bell sits between Mind and the clock");
+        assert!(pos("mind") + 1 == pos("updates") && pos("updates") + 1 == pos("notifications") && pos("notifications") + 1 == pos("clock"), "updates and the bell sit between Mind and the clock");
         assert!(layout.desktop.widgets.is_empty(), "no desktop widgets by default");
         assert_eq!(layout.desktop.extra.get("icons"), Some(&Value::Bool(true)), "desktop icons on");
         let round: Value = layout.to_value();
@@ -305,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn old_layout_gains_perf_and_bell() {
+    fn old_layout_gains_perf_bell_and_updates() {
         let v = serde_json::json!({
             "version": 1,
             "panels": [{ "id": "bar", "widgets": [
@@ -313,11 +335,11 @@ mod tests {
             ]}]
         });
         let layout = Layout::from_value(v).unwrap();
-        assert_eq!(layout.version, 2);
+        assert_eq!(layout.version, 3);
         let names: Vec<&str> = layout.panels[0].widgets.iter().map(|w| w.kind.as_str()).collect();
-        assert_eq!(names, ["tray", "perf", "mind", "notifications", "clock"]);
+        assert_eq!(names, ["tray", "perf", "mind", "updates", "notifications", "clock"]);
         let again = Layout::from_value(layout.to_value()).unwrap();
-        assert_eq!(again.panels[0].widgets.len(), 5, "migrating twice adds nothing");
+        assert_eq!(again.panels[0].widgets.len(), 6, "migrating twice adds nothing");
     }
 
     #[test]

@@ -66,12 +66,13 @@ on the wallpaper and no desktop widgets. It is only a default: edit mode
 moves panels to any edge, adds a dock (a fit-to-content panel) or a top bar,
 adds widgets and re-orders them. `version` is the layout format: a saved
 layout from before version 2 gains the `perf` and `notifications` widgets
-beside its `mind` widget when it loads (`Layout::sanitized` migrates, and
-the next save writes version 2).
+beside its `mind` widget when it loads, and one from before version 3 gains
+the `updates` indicator in front of its bell (`Layout::sanitized` migrates,
+and the next save writes version 3).
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "panels": [
     {
       "id": "bar",
@@ -103,9 +104,12 @@ the next save writes version 2).
     "wallpaper": { "mode": "builtin" },
     "icons": true,
     "widgets": []
-  }
         { "id": "vpn", "type": "vpn", "config": {} },
+  }
+        { "id": "perf", "type": "perf", "config": {} },
 }
+        { "id": "updates", "type": "updates", "config": {} },
+        { "id": "notify", "type": "notifications", "config": {} },
 ```
 
 * `panel.output`: `"*"` means one instance of the panel on every output;
@@ -160,11 +164,12 @@ the next save writes version 2).
 | `desktop-notes` | desktop | a sticky note (plain text, stored in the widget config). Settings: `title`, `fontSize`, `mono` |
 
 Every widget's settings are reachable without edit mode: right-click the
+| `vpn` | panel | WireGuard tunnels (NetworkManager connections of type `wireguard`): a shield, lit green while a tunnel is up, with the tunnel's name; click opens the tunnel list popup (a switch per tunnel, details on click: interface, address, endpoint, connect at start-up, remove; *Import…* opens a file chooser for a wg-quick `.conf`), middle-click drops the active tunnel or brings up the only one. Settings: `name`, `hideWhenNone` |
 widget (a panel widget or a desktop one) and pick *… settings*; the same
 menu offers *Edit the panel* / *Edit desktop*, *Add widget* and *Remove*.
+| `updates` | panel | the updates indicator: how many package updates the Mind's watcher found, amber when it rates them high-risk or they need a hand; hidden while the system is up to date; click opens Settings › Updates. Settings: `count`, `alwaysShow` |
 Changes apply and save as they are made; *Defaults* clears the widget's
 config. In edit mode the gear button on each widget opens the same form.
-| `vpn` | panel | WireGuard tunnels (NetworkManager connections of type `wireguard`): a shield, lit green while a tunnel is up, with the tunnel's name; click opens the tunnel list popup (a switch per tunnel, details on click: interface, address, endpoint, connect at start-up, remove; *Import…* opens a file chooser for a wg-quick `.conf`), middle-click drops the active tunnel or brings up the only one. Settings: `name`, `hideWhenNone` |
 
 Adding a widget type = one TypeScript module registering `{ type, name,
 description, containers, defaults, settings?, create(ctx) }` in the widget
