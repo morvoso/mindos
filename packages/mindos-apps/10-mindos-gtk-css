@@ -1,0 +1,14 @@
+#!/bin/bash
+# Link the MindOS GTK stylesheets into the user's configuration, once. GTK and
+# libadwaita only read gtk.css from $XDG_CONFIG_HOME/gtk-{3,4}.0/, never from
+# the system directories, so this is the only way to give every GTK app the
+# MindOS colours. An existing gtk.css is left alone: delete the import line
+# (or the file) to opt out, add rules below it to customise.
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
+for v in 3 4; do
+  f="$cfg/gtk-$v.0/gtk.css"
+  [[ -e $f ]] && continue
+  mkdir -p "${f%/*}" || continue
+  printf '/* MindOS look for GTK %s apps (mindos-apps); remove this import to opt out. */\n@import url("/usr/share/mindos/gtk/gtk-%s.0.css");\n' "$v" "$v" > "$f"
+done
+exit 0

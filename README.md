@@ -22,13 +22,13 @@ frosted translucent panels with soft corners, one electric-cyan accent.
 │  │ Mind bar   │ │ Steam    │ │ Gamescope│ │ any Linux app      │   │
 │  │ (LLM chat) │ │ (X11)    │ │ (nested) │ │ (Wayland / X11)    │   │
 │  └─────┬──────┘ └──────────┘ └──────────┘ └────────────────────┘   │
-│  mindshell ── dock, top bar, Settings, Files: WebKit + TypeScript,   │
+│  mindshell ── dock, top bar, Settings, login: WebKit + TypeScript,   │
 │               KDE-style edit mode, driven over the compositor IPC    │
 ├────────┼────────────────────────────────────────────────────────────┤
 │  mindd ── LLM daemon: llama.cpp, tools, policy, audit log            │
 │  mind  ── CLI: `mind update`, `mind "install steam"`, `mind doctor`  │
 ├─────────────────────────────────────────────────────────────────────┤
-│  systemd · greetd autologin · pacman + [mindos] repo · Arch ecosystem│
+│  systemd · greetd + MindOS login screen · pacman + [mindos] repo     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  linux-mindos ── Linux 7.2 + BORE, 1000 Hz, full preempt, ntsync,   │
 │                  Clang ThinLTO, tuned for Zen 5, white-on-red console│
@@ -41,11 +41,12 @@ frosted translucent panels with soft corners, one electric-cyan accent.
 | --- | --- | --- |
 | `linux-mindos` | `packages/linux-mindos/` | Custom kernel: kernel.org 7.2.y + BORE scheduler + MindOS console theme, built with Clang ThinLTO for the local CPU (`X86_NATIVE_CPU`), 1000 Hz, full preemption, `amd-pstate`, ntsync. Headers package for DKMS (NVIDIA). |
 | `mindwm` | `mindwm/`, `packages/mindwm/` | The compositor (Rust, Smithay). Three window layouts (floating like KDE, tiles like Hyprland, columns like Niri), title bars in the MindOS look, `Super+F` fullscreens, a tap on Super opens the **Mind bar** (launcher, shell and LLM chat in one field). Wayland and XWayland. See `docs/COMPOSITOR.md`. |
-| `mindshell` | `mindshell/`, `packages/mindshell/` | The desktop shell: a lean Rust host that opens layer-shell windows and renders them with WebKitGTK; the UI is HTML/CSS/TypeScript. A centred dock (pins, running apps), top bar (Mind status, tray, audio, network, battery, layout switcher, clock), desktop widgets, a KDE-like **edit mode**, and the **Settings** (Mind, wallpaper, displays, desktop) and **Files** apps. See `docs/SHELL.md`. |
+| `mindshell` | `mindshell/`, `packages/mindshell/` | The desktop shell: a lean Rust host that opens layer-shell windows and renders them with WebKitGTK; the UI is HTML/CSS/TypeScript. A centred dock (pins, running apps), top bar (Mind status, tray, audio, network, battery, layout switcher, clock), desktop widgets, a KDE-like **edit mode**, the **Settings** app (Mind, wallpaper, displays, desktop) and the login screen. See `docs/SHELL.md`. |
+| `mindos-apps` | `packages/mindos-apps/` | The standard apps, existing ones in the MindOS look: Files (Nautilus), Image Viewer (Loupe), Archive Manager (File Roller), Text Editor; libadwaita colours, default handlers, "Open in Terminal" in Files; their "Set as Background" works through the shell's Wallpaper portal. |
 | `mindd` / `mind` | `mindd/`, `packages/mindos-mind/` | The mind: a system daemon that runs `llama-server` on a local GGUF model (Qwen3.5 4B by default; any model from the catalog or your own file), exposes typed tools (packages, updates, services, journal, files, commands, kernel parameters, game library) behind an observe/change/forbidden policy, logs everything to `/var/log/mindos/mind.jsonl`, and speaks newline-delimited JSON on `/run/mindos/mind.sock`. `mind` is the CLI. |
-| `mindos-base` | `packages/mindos-base/` | Identity and tuning: `os-release`, kernel command line, sysctl (`vm.max_map_count`, BBR, split-lock mitigation off), zram, I/O scheduler and controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset. |
-| `mindos-session` | `packages/mindos-session/` | greetd config (`/etc/mindos/greetd.toml`), the `mindos-session` launcher, `session-startup`, the compositor defaults (`/etc/mindos/mindwm.toml`). |
-| `mindos-theme` | `packages/mindos-theme/` | White-on-red GRUB and console theme service (the boot stage), the dark animated Plymouth theme, the display fonts (Orbitron, Share Tech Mono), the system font rendering defaults for fontconfig, wallpaper and icon. |
+| `mindos-base` | `packages/mindos-base/` | Identity and tuning: `os-release`, kernel command line, sysctl (`vm.max_map_count`, BBR, split-lock mitigation off), zram, I/O scheduler and controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset. The boot menu and the way back: Limine, snapper + snap-pac (a snapshot before and after every pacman run) and `mindos-boot`, which lists the snapshots in the boot menu and restores one. See `docs/ROLLBACK.md`. |
+| `mindos-session` | `packages/mindos-session/` | greetd config (`/etc/mindos/greetd.toml`), the MindOS login screen (`mindos-greeter`: mindwm in kiosk mode + `mindshell --app greeter`), the `mindos-session` launcher, `session-startup`, the compositor defaults (`/etc/mindos/mindwm.toml`). |
+| `mindos-theme` | `packages/mindos-theme/` | White-on-red boot menu (Limine) and console theme service (the boot stage), the dark animated Plymouth theme, the display fonts (Orbitron, Share Tech Mono), the system font rendering defaults for fontconfig, wallpaper and icon. |
 | `mindos-gaming` | `packages/mindos-gaming/` | Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime, plus gaming sysctl and `gamemode.ini`. |
 | `mindos-dev` | `packages/mindos-dev/` | Compilers, Rust, Node, Python, Docker, editors, CLI tools. |
 | `mindos-install` | `packages/mindos-install/` | Guided installer run from the live ISO (GPT, btrfs subvolumes, user, timezone, optional gaming/dev stacks). |
@@ -94,5 +95,6 @@ runs in active mode, the NVIDIA open kernel modules are built by DKMS against
 * `docs/SHELL.md` — mindshell: the web-rendered desktop shell, widgets, edit mode, the bridge and the compositor IPC.
 * `docs/THEME.md` — the theme, stage by stage: red boot loader and console, dark cyan loading screen, compositor and shell.
 * `docs/PACKAGES.md` — where packages come from and how `mindos-pkg` and the Mind install them.
+* `docs/ROLLBACK.md` — updates and the way back: Limine, snapper snapshots around every pacman run, booting a snapshot, `mindos-boot restore`.
 * `docs/ROADMAP.md` — what is done and what is next.
 * `docs/DEV-VM.md` — persistent development VM on libvirt/virt-manager: shared source tree, snapshots, dev loops.

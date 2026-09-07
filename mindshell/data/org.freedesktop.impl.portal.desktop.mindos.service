@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.mindos
+Exec=/bin/false
+SystemdService=mindos-shell.service

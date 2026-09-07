@@ -1,0 +1,376 @@
+#!/bin/bash
+# mindos-boot — the MindOS boot menu and system snapshots.
+#
+# Limine boots the system from the EFI system partition (/boot). snapper keeps
+# read-only snapshots of the root subvolume (@) in @snapshots and snap-pac
+# takes one before and one after every pacman transaction. This tool keeps a
+# copy of the kernel and initramfs that belong to each snapshot on /boot
+# (/boot is not part of the snapshot) and lists every snapshot in the boot
+# menu. A snapshot boots with its changes kept in RAM (systemd.volatile=overlay),
+# so trying an older state alters nothing; `mindos-boot restore` makes it the
+# system again.
+#
+#   mindos-boot install [--disk DEV]   Limine onto the ESP (UEFI) and into the
+#                                      BIOS boot partition; UEFI boot entry "MindOS"
+#   mindos-boot config                 write /boot/limine.conf
+#   mindos-boot sync                   kernel copies for every snapshot, then config
+#   mindos-boot list                   the snapshots and whether they can boot
+#   mindos-boot restore [N]            make snapshot N the system again (default:
+#                                      the snapshot that is booted right now)
+#   mindos-boot status                 what is booted, what is installed
+#   mindos-boot setup                  first-time snapper and snap-pac setup
+#
+# Settings: /etc/mindos/boot.conf. Menu colours: /usr/share/mindos/limine-theme.conf.
+set -euo pipefail
+
+ESP=/boot
+STORE=$ESP/mindos            # kernels for snapshots: mindos/k/<id>/, mindos/snapshots/<N>
+SNAPDIR=/.snapshots
+CONF=/etc/mindos/boot.conf
+THEME=/usr/share/mindos/limine-theme.conf
+CMDLINE_FILE=/usr/share/mindos/kernel-cmdline
+KERNEL=linux-mindos
+# /etc/mindos/boot.conf overrides these.
+TIMEOUT=3            # seconds the menu waits
+CMDLINE=""           # replaces the packaged kernel command line when set
+CMDLINE_EXTRA=""     # appended to the kernel command line
+SNAPSHOT_ENTRIES=12  # newest snapshots shown in the menu
+DISK=""              # disk for the BIOS stage (default: the disk /boot is on)
+# shellcheck disable=SC1090
+[[ -r $CONF ]] && . "$CONF"
+
+QUIET=0
+log()  { [[ $QUIET == 1 ]] || printf 'mindos-boot: %s\n' "$*"; }
+warn() { printf 'mindos-boot: %s\n' "$*" >&2; }
+die()  { printf 'mindos-boot: %s\n' "$*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "run as root"; }
+
+# ---- where things are --------------------------------------------------------
+btrfs_dev()  { findmnt -no SOURCE "$SNAPDIR" 2>/dev/null | sed 's/\[.*//'; }
+btrfs_uuid() { findmnt -no UUID "$SNAPDIR" 2>/dev/null; }
+esp_dev()    { findmnt -no SOURCE "$ESP" 2>/dev/null; }
+disk_of()    { local p; p=$(lsblk -no PKNAME "$1" 2>/dev/null | head -1); [[ -n $p ]] && echo "/dev/$p"; }
+# The snapshot number the running system was booted from, if any.
+booted_snapshot() { sed -n 's|.*rootflags=[^ ]*subvol=/\?@snapshots/\([0-9]*\)/snapshot.*|\1|p' /proc/cmdline; }
+has_nvidia() {
+  local d
+  for d in /sys/bus/pci/devices/*; do
+    [[ -r $d/vendor && $(<"$d/vendor") == 0x10de && $(<"$d/class") == 0x03* ]] && return 0
+  done
+  return 1
+}
+kernel_cmdline() {
+  local c=$CMDLINE
+  [[ -n $c ]] || c=$(cat "$CMDLINE_FILE" 2>/dev/null || true)
+  # The NVIDIA switches only make sense with the card present.
+  has_nvidia || c=$(sed -E 's/ ?nvidia_drm\.[a-z]+=[^ ]*//g' <<<"$c")
+  printf '%s\n' "$c${CMDLINE_EXTRA:+ $CMDLINE_EXTRA}"
+}
+kernel_version() {  # version of an installed kernel by pkgbase
+  local m
+  for m in /usr/lib/modules/*/; do
+    [[ -f $m/pkgbase && $(<"$m/pkgbase") == "$1" ]] && { basename "$m"; return; }
+  done
+  true
+}
+
+# ---- snapshots ---------------------------------------------------------------
+snapshots() { ls -1 "$SNAPDIR" 2>/dev/null | grep -E '^[0-9]+$' | sort -n; }
+# N -> "type|date (local)|description|important"
+snap_info() {
+  local x=$SNAPDIR/$1/info.xml type date desc imp=no
+  [[ -f $x ]] || return 1
+  type=$(sed -n 's/.*<type>\(.*\)<\/type>.*/\1/p' "$x")
+  date=$(sed -n 's/.*<date>\(.*\)<\/date>.*/\1/p' "$x")
+  desc=$(sed -n 's/.*<description>\(.*\)<\/description>.*/\1/p' "$x" \
+         | sed 's/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&apos;/'"'"'/g; s/&amp;/\&/g')
+  grep -A1 '<key>important</key>' "$x" 2>/dev/null | grep -q '<value>yes</value>' && imp=yes
+  [[ -n $date ]] && date=$(date -d "$date UTC" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$date")
+  printf '%s|%s|%s|%s\n' "$type" "$date" "$desc" "$imp"
+}
+# The kernel image inside the snapshot is the one on /boot right now.
+snapshot_kernel_matches() {
+  local m found=0
+  for m in "$SNAPDIR/$1/snapshot"/usr/lib/modules/*/; do
+    [[ -f $m/pkgbase && $(<"$m/pkgbase") == "$KERNEL" ]] || continue
+    found=1
+    [[ -f $m/vmlinuz ]] || return 0
+    cmp -s "$m/vmlinuz" "$ESP/vmlinuz-$KERNEL" && return 0
+  done
+  [[ $found == 0 ]]  # no kernel package in the snapshot: nothing to compare
+}
+
+# ---- kernel copies on the ESP ------------------------------------------------
+current_id() { cat "$ESP/vmlinuz-$KERNEL" "$ESP/initramfs-$KERNEL.img" | sha256sum | cut -c1-12; }
+# Copy the kernel on /boot into the store (once per distinct kernel+initramfs); prints its id.
+store_kernel() {
+  local id d need free
+  [[ -f $ESP/vmlinuz-$KERNEL && -f $ESP/initramfs-$KERNEL.img ]] || return 1
+  id=$(current_id); d=$STORE/k/$id
+  if [[ ! -f $d/vmlinuz || ! -f $d/initramfs.img ]]; then
+    need=$(( ($(stat -c %s "$ESP/vmlinuz-$KERNEL") + $(stat -c %s "$ESP/initramfs-$KERNEL.img")) / 1024 + 65536 ))
+    free=$(df -k --output=avail "$ESP" | tail -1)
+    (( free > need )) || { warn "not enough room on $ESP for another kernel copy (${free} KiB free)"; return 1; }
+    rm -rf "$d.tmp"; mkdir -p "$d.tmp"
+    cp "$ESP/vmlinuz-$KERNEL" "$d.tmp/vmlinuz"
+    cp "$ESP/initramfs-$KERNEL.img" "$d.tmp/initramfs.img"
+    rm -rf "$d"; mv "$d.tmp" "$d"
+  fi
+  echo "$id"
+}
+snapshot_kernel_id() { [[ -f $STORE/snapshots/$1 ]] && cat "$STORE/snapshots/$1" || true; }
+snapshot_bootable() { local id; id=$(snapshot_kernel_id "$1"); [[ -n $id && $id != - && -f $STORE/k/$id/vmlinuz ]]; }
+
+sync_snapshots() {
+  local n id f d
+  mkdir -p "$STORE/k" "$STORE/snapshots"
+  for n in $(snapshots); do
+    [[ -d $SNAPDIR/$n/snapshot && ! -f $STORE/snapshots/$n ]] || continue
+    if snapshot_kernel_matches "$n"; then
+      if id=$(store_kernel); then echo "$id" > "$STORE/snapshots/$n"; log "snapshot #$n: kernel $id"; fi
+    else
+      echo "-" > "$STORE/snapshots/$n"
+      warn "snapshot #$n carries a kernel that is not on $ESP; it will not be in the boot menu"
+    fi
+  done
+  # Snapshots snapper has cleaned up, then kernels nothing refers to any more.
+  for f in "$STORE"/snapshots/*; do
+    [[ -e $f ]] || continue
+    n=${f##*/}; [[ -d $SNAPDIR/$n/snapshot ]] || rm -f "$f"
+  done
+  for d in "$STORE"/k/*/; do
+    [[ -d $d ]] || continue
+    id=${d%/}; id=${id##*/}
+    grep -qsx "$id" "$STORE"/snapshots/* 2>/dev/null || rm -rf "$d"
+  done
+}
+
+# ---- limine.conf -------------------------------------------------------------
+entry() {  # depth+title, comment, kernel path, initramfs path, cmdline
+  local title=$1 comment=$2 kernel=$3 initrd=$4 cmdline=$5 u
+  printf '\n%s\n' "$title"
+  [[ -n $comment ]] && printf '    comment: %s\n' "$comment"
+  printf '    protocol: linux\n    path: %s\n    cmdline: %s\n' "$kernel" "$cmdline"
+  # Microcode is not tied to the kernel version: every entry loads the current one.
+  for u in amd-ucode.img intel-ucode.img; do
+    [[ -f $ESP/$u ]] && printf '    module_path: boot():/%s\n' "$u"
+  done
+  printf '    module_path: %s\n' "$initrd"
+}
+write_config() {
+  local uuid cmd tmp k name ver n id info type date desc imp shown=0 kind
+  uuid=$(btrfs_uuid); [[ -n $uuid ]] || die "cannot find the btrfs file system ($SNAPDIR is not mounted)"
+  cmd=$(kernel_cmdline)
+  ver=$(kernel_version "$KERNEL")
+  tmp=$ESP/limine.conf.new
+  {
+    echo "# Written by mindos-boot. Settings: $CONF, then 'mindos-boot config'."
+    echo "timeout: $TIMEOUT"
+    [[ -r $THEME ]] && grep -v '^\s*#' "$THEME"
+    entry "/MindOS" "${ver:+$KERNEL $ver}" "boot():/vmlinuz-$KERNEL" "boot():/initramfs-$KERNEL.img" \
+          "root=UUID=$uuid rootflags=subvol=@ rw $cmd"
+    if [[ -f $ESP/initramfs-$KERNEL-fallback.img ]]; then
+      entry "/MindOS (fallback initramfs)" "" "boot():/vmlinuz-$KERNEL" "boot():/initramfs-$KERNEL-fallback.img" \
+            "root=UUID=$uuid rootflags=subvol=@ rw $cmd"
+    fi
+    for k in "$ESP"/vmlinuz-*; do
+      name=${k##*/vmlinuz-}
+      [[ $name != "$KERNEL" && -f $ESP/initramfs-$name.img ]] || continue
+      entry "/MindOS ($name)" "$name $(kernel_version "$name")" "boot():/vmlinuz-$name" "boot():/initramfs-$name.img" \
+            "root=UUID=$uuid rootflags=subvol=@ rw $cmd"
+    done
+    for n in $(snapshots | sort -rn); do
+      snapshot_bootable "$n" || continue
+      (( shown < SNAPSHOT_ENTRIES )) || break
+      (( shown++ == 0 )) && printf '\n/Snapshots\n    comment: Older states of the system. Changes made while one is booted stay in RAM.\n'
+      id=$(snapshot_kernel_id "$n")
+      info=$(snap_info "$n") || continue
+      IFS='|' read -r type date desc imp <<<"$info"
+      case $type in pre) kind="before" ;; post) kind="after" ;; *) kind="" ;; esac
+      desc=$(tr '/\\' '  ' <<<"$desc" | cut -c1-48)
+      entry "//#$n  $date  ${kind:+$kind: }$desc" \
+            "Snapshot #$n$([[ $imp == yes ]] && echo ' (important)'). To make it the system again: mindos-boot restore $n" \
+            "boot():/mindos/k/$id/vmlinuz" "boot():/mindos/k/$id/initramfs.img" \
+            "root=UUID=$uuid rootflags=subvol=@snapshots/$n/snapshot rw systemd.volatile=overlay $cmd"
+    done
+  } > "$tmp"
+  mv -f "$tmp" "$ESP/limine.conf"
+  log "$ESP/limine.conf: $KERNEL${ver:+ $ver}, $shown snapshot$([[ $shown == 1 ]] || echo s)"
+}
+
+# ---- install -----------------------------------------------------------------
+do_install() {
+  need_root
+  local disk=$DISK esp part idx b
+  while [[ $# -gt 0 ]]; do
+    case $1 in --disk) disk=$2; shift 2 ;; *) die "install: unknown option $1" ;; esac
+  done
+  [[ -f /usr/share/limine/BOOTX64.EFI ]] || die "the limine package is not installed"
+  esp=$(esp_dev); [[ -n $esp ]] || die "$ESP is not a mounted partition"
+  [[ -n $disk ]] || disk=$(disk_of "$esp")
+  mkdir -p "$ESP/EFI/BOOT" "$ESP/EFI/MindOS" "$STORE"
+  install -m644 /usr/share/limine/BOOTX64.EFI "$ESP/EFI/BOOT/BOOTX64.EFI"
+  install -m644 /usr/share/limine/BOOTX64.EFI "$ESP/EFI/MindOS/BOOTX64.EFI"
+  [[ -f /usr/share/limine/BOOTIA32.EFI ]] && install -m644 /usr/share/limine/BOOTIA32.EFI "$ESP/EFI/BOOT/BOOTIA32.EFI"
+  install -m644 /usr/share/limine/limine-bios.sys "$ESP/limine-bios.sys"
+  log "UEFI: $ESP/EFI/MindOS/BOOTX64.EFI (and EFI/BOOT for firmware without an entry)"
+  # BIOS: stage 2 goes into the BIOS boot partition when the disk has one.
+  if [[ -n $disk && -b $disk ]]; then
+    idx=$(lsblk -pnro NAME,PARTTYPE,PARTN "$disk" | awk '$2=="21686148-6449-6e6f-744e-656564454649"{print $3; exit}')
+    if [[ -n $idx ]]; then
+      if limine bios-install "$disk" "$idx" >/dev/null 2>&1; then log "BIOS: stage 2 in partition $idx of $disk"
+      else warn "BIOS: limine bios-install $disk $idx failed (UEFI boot is unaffected)"; fi
+    else
+      log "BIOS: $disk has no BIOS boot partition; UEFI only"
+    fi
+  fi
+  if [[ -d /sys/firmware/efi/efivars ]] && command -v efibootmgr >/dev/null; then
+    part=$(lsblk -no PARTN "$esp" 2>/dev/null | head -1)
+    disk=$(disk_of "$esp")
+    if [[ -n $part && -n $disk ]]; then
+      for b in $(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} *MindOS\t.*/\1/p'); do
+        efibootmgr -q -b "$b" -B 2>/dev/null || true
+      done
+      if efibootmgr -q -c -d "$disk" -p "$part" -L MindOS -l '\EFI\MindOS\BOOTX64.EFI' 2>/dev/null; then
+        log "UEFI: boot entry MindOS -> $disk partition $part"
+      else
+        warn "UEFI: could not write the boot entry; the firmware will find EFI/BOOT/BOOTX64.EFI"
+      fi
+    fi
+  fi
+}
+
+# ---- setup (installer) -------------------------------------------------------
+do_setup() {
+  need_root
+  [[ -f /etc/snapper/configs/root ]] || die "/etc/snapper/configs/root missing (mindos-base)"
+  if [[ -f /etc/conf.d/snapper ]]; then
+    if grep -q '^SNAPPER_CONFIGS=' /etc/conf.d/snapper; then
+      grep -q '^SNAPPER_CONFIGS=.*root' /etc/conf.d/snapper || sed -i 's/^SNAPPER_CONFIGS=.*/SNAPPER_CONFIGS="root"/' /etc/conf.d/snapper
+    else
+      echo 'SNAPPER_CONFIGS="root"' >> /etc/conf.d/snapper
+    fi
+  fi
+  if [[ -f /etc/snap-pac.ini ]] && ! grep -q '^\[root\]' /etc/snap-pac.ini; then
+    cat >> /etc/snap-pac.ini <<'INI'
+
+# MindOS: snapshots around the kernel, the graphics stack and the desktop are
+# kept longer (NUMBER_LIMIT_IMPORTANT in /etc/snapper/configs/root).
+[root]
+important_packages = ["linux-mindos", "linux-mindos-headers", "nvidia-open-dkms", "nvidia-utils", "mesa", "mindwm", "mindshell", "mindos-base", "mindos-session"]
+important_commands = ["pacman -Syu"]
+INI
+  fi
+  systemctl enable snapper-cleanup.timer >/dev/null 2>&1 || true
+  mkdir -p "$STORE/k" "$STORE/snapshots"
+  log "snapper configuration 'root' active; snap-pac takes a snapshot before and after every pacman run"
+}
+
+# ---- restore -----------------------------------------------------------------
+do_restore() {
+  need_root
+  local n=${1:-} dev top keep id_keep id sv p now booted
+  booted=$(booted_snapshot)
+  [[ -n $n ]] || n=$booted
+  [[ -n $n ]] || die "which snapshot? mindos-boot restore N  (mindos-boot list shows them)"
+  [[ $n =~ ^[0-9]+$ && -d $SNAPDIR/$n/snapshot ]] || die "snapshot #$n does not exist"
+  dev=$(btrfs_dev); [[ -b $dev ]] || die "cannot find the btrfs device"
+  top=$(mktemp -d /run/mindos-boot.XXXXXX)
+  mount -o subvolid=5 "$dev" "$top"
+  # shellcheck disable=SC2064
+  trap "umount '$top' 2>/dev/null; rmdir '$top' 2>/dev/null" EXIT
+  [[ -d $top/@snapshots/$n/snapshot ]] || die "@snapshots/$n/snapshot is not on $dev"
+  mkdir -p "$STORE/k" "$STORE/snapshots"
+  if [[ -d $top/@ ]]; then
+    # The current @ becomes a snapper snapshot, so the restore can be undone.
+    keep=$(( $( { ls -1 "$top/@snapshots" | grep -E '^[0-9]+$'; echo 0; } | sort -n | tail -1) + 1 ))
+    # Nested subvolumes cannot live inside a snapshot; drop the empty ones systemd creates.
+    while read -r sv; do
+      [[ -n $sv ]] || continue
+      p=$top/$sv
+      if [[ -d $p && -z $(ls -A "$p" 2>/dev/null) ]]; then btrfs subvolume delete -q "$p" 2>/dev/null || true
+      else warn "$sv is a subvolume with content and stays inside the kept snapshot #$keep"; fi
+    done < <(btrfs subvolume list -o "$top/@" 2>/dev/null | awk '{print $NF}')
+    id_keep=$(store_kernel) || id_keep="-"
+    mkdir -p "$top/@snapshots/$keep"
+    mv "$top/@" "$top/@snapshots/$keep/snapshot"
+    now=$(date -u '+%Y-%m-%d %H:%M:%S')
+    cat > "$top/@snapshots/$keep/info.xml" <<XML
+<?xml version="1.0"?>
+<snapshot>
+  <type>single</type>
+  <num>$keep</num>
+  <date>$now</date>
+  <description>the system before restoring #$n</description>
+  <cleanup>number</cleanup>
+</snapshot>
+XML
+    echo "$id_keep" > "$STORE/snapshots/$keep"
+    # Booted from @ itself: it keeps running until the reboot, so it stays writable.
+    [[ -z $booted ]] || btrfs property set -ts "$top/@snapshots/$keep/snapshot" ro true 2>/dev/null || true
+    log "kept the current system as snapshot #$keep"
+  fi
+  btrfs subvolume snapshot "$top/@snapshots/$n/snapshot" "$top/@" >/dev/null
+  # The kernel that belongs to the restored system goes back to the main entry.
+  id=$(snapshot_kernel_id "$n")
+  if [[ -n $id && $id != - && -f $STORE/k/$id/vmlinuz ]]; then
+    cp "$STORE/k/$id/vmlinuz" "$ESP/vmlinuz-$KERNEL"
+    cp "$STORE/k/$id/initramfs.img" "$ESP/initramfs-$KERNEL.img"
+  else
+    warn "no kernel copy for snapshot #$n; the kernel on $ESP stays as it is"
+  fi
+  sync_snapshots
+  write_config
+  log "snapshot #$n is the system again. Reboot to use it."
+}
+
+# ---- list / status -----------------------------------------------------------
+do_list() {
+  local n info type date desc imp id mark booted
+  booted=$(booted_snapshot)
+  printf '%5s  %-16s  %-6s  %-12s  %s\n' "#" "date" "kind" "kernel" "description"
+  for n in $(snapshots | sort -rn); do
+    info=$(snap_info "$n") || continue
+    IFS='|' read -r type date desc imp <<<"$info"
+    id=$(snapshot_kernel_id "$n")
+    if snapshot_bootable "$n"; then mark=$id; elif [[ $id == - ]]; then mark="(no kernel)"; else mark="(not synced)"; fi
+    printf '%5s%s %-16s  %-6s  %-12s  %s%s\n' "$n" "$([[ $n == "$booted" ]] && echo '*' || echo ' ')" "$date" "$type" "$mark" "$desc" "$([[ $imp == yes ]] && echo '  [important]')"
+  done
+  [[ -n $booted ]] && echo "* booted right now (changes stay in RAM); 'mindos-boot restore' makes it the system"
+  true
+}
+do_status() {
+  local booted
+  booted=$(booted_snapshot)
+  echo "firmware   $([[ -d /sys/firmware/efi ]] && echo UEFI || echo BIOS)"
+  echo "limine     $([[ -f $ESP/EFI/MindOS/BOOTX64.EFI ]] && echo "installed on $ESP" || echo "not on $ESP")$([[ -f $ESP/limine.conf ]] && echo ", limine.conf present" || echo ", no limine.conf")"
+  echo "kernel     $KERNEL $(kernel_version "$KERNEL")"
+  echo "cmdline    $(kernel_cmdline)"
+  echo "root       $(findmnt -no SOURCE / 2>/dev/null)$([[ -n $booted ]] && echo "  (snapshot #$booted, changes in RAM)")"
+  echo "snapshots  $(snapshots | wc -l) in $SNAPDIR, $(ls -1 "$STORE/k" 2>/dev/null | wc -l) kernel copies in $STORE/k"
+  echo "snapper    $(grep -q '^SNAPPER_CONFIGS=.*root' /etc/conf.d/snapper 2>/dev/null && echo "root configuration active" || echo "not set up (mindos-boot setup)")"
+}
+
+# ---- pacman hook -------------------------------------------------------------
+do_hook() {  # target paths on stdin
+  local t limine=0
+  while read -r t; do [[ $t == usr/share/limine/* ]] && limine=1; done
+  [[ -f $ESP/limine.conf ]] || exit 0   # not booted by Limine here (live ISO, pacstrap)
+  [[ $limine == 1 ]] && do_install
+  write_config
+}
+
+cmd=${1:-status}; shift || true
+[[ ${1:-} == --quiet ]] && { QUIET=1; shift; }
+case $cmd in
+  install) do_install "$@" ;;
+  config)  need_root; write_config ;;
+  sync)    need_root; sync_snapshots; write_config ;;
+  setup)   do_setup; write_config; sync_snapshots; write_config ;;
+  restore) do_restore "$@" ;;
+  list)    do_list ;;
+  status)  do_status ;;
+  hook)    need_root; do_hook ;;
+  -h|--help|help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command $cmd (install, config, sync, list, restore, status, setup)" ;;
+esac

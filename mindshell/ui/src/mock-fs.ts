@@ -1,7 +1,7 @@
 // An in-memory file system for the browser mock: enough of a home folder to
-// develop the Files app and the wallpaper picker without a host.
+// develop the desktop icons and the wallpaper picker without a host.
 
-import type { FsEntry, FsListing, FsStat, Place, WallpaperEntry } from './types';
+import type { FsEntry, FsListing, WallpaperEntry } from './types';
 
 export interface Node {
   name: string;
@@ -158,61 +158,6 @@ export function list(pathRaw: string, hidden: boolean): FsListing {
   return { path, parent, entries };
 }
 
-export function stat(pathRaw: string): FsStat {
-  const path = normalize(pathRaw);
-  const n = lookup(path);
-  if (!n) throw new Error(`No such file: ${path}`);
-  return {
-    path,
-    name: n.name || '/',
-    dir: n.dir,
-    size: n.size,
-    mtime: n.mtime,
-    mime: n.mime,
-    items: n.dir ? n.children?.length ?? 0 : undefined,
-    permissions: n.dir ? 'rwxr-xr-x' : 'rw-r--r--',
-    mode: n.dir ? 0o755 : 0o644,
-  };
-}
-
-export function places(): Place[] {
-  return [
-    { name: 'Home', path: HOME, icon: 'home', kind: 'home' },
-    { name: 'Desktop', path: `${HOME}/Desktop`, icon: 'desktop', kind: 'folder' },
-    { name: 'Documents', path: `${HOME}/Documents`, icon: 'note', kind: 'folder' },
-    { name: 'Downloads', path: `${HOME}/Downloads`, icon: 'download', kind: 'folder' },
-    { name: 'Games', path: `${HOME}/Games`, icon: 'gamepad', kind: 'folder' },
-    { name: 'Music', path: `${HOME}/Music`, icon: 'music', kind: 'folder' },
-    { name: 'Pictures', path: `${HOME}/Pictures`, icon: 'image', kind: 'folder' },
-    { name: 'Videos', path: `${HOME}/Videos`, icon: 'window', kind: 'folder' },
-    { name: 'System', path: '/', icon: 'hdd', kind: 'system' },
-    { name: 'Games SSD', path: '/run/media/morvoso/games', icon: 'hdd', kind: 'mount', removable: false },
-    { name: 'USB stick', path: '/run/media/morvoso/USB', icon: 'usb', kind: 'mount', removable: true },
-  ];
-}
-
-export function mkdir(parentRaw: string, name: string): { path: string } {
-  const parent = normalize(parentRaw);
-  const n = lookup(parent);
-  if (!n?.dir) throw new Error(`Not a folder: ${parent}`);
-  let final = name;
-  let i = 2;
-  while (n.children!.some((c) => c.name === final)) final = `${name} (${i++})`;
-  n.children!.push(dir(final, [], 0));
-  return { path: `${parent === '/' ? '' : parent}/${final}` };
-}
-
-export function rename(pathRaw: string, name: string): { path: string } {
-  const path = normalize(pathRaw);
-  const p = parentOf(path);
-  const n = lookup(path);
-  if (!p || !n) throw new Error(`No such file: ${path}`);
-  if (name.includes('/') || !name || name === '.' || name === '..') throw new Error('Not a valid name');
-  if (p.node.children!.some((c) => c.name === name)) throw new Error(`${name} already exists`);
-  n.name = name;
-  return { path: `${normalize(path + '/..') === '/' ? '' : normalize(path + '/..')}/${name}` };
-}
-
 export function remove(paths: string[]): { count: number } {
   let count = 0;
   for (const raw of paths) {
@@ -224,28 +169,6 @@ export function remove(paths: string[]): { count: number } {
       p.node.children!.splice(i, 1);
       count++;
     }
-  }
-  return { count };
-}
-
-export function transfer(paths: string[], destRaw: string, moving: boolean): { count: number } {
-  const dest = normalize(destRaw);
-  const d = lookup(dest);
-  if (!d?.dir) throw new Error(`Not a folder: ${dest}`);
-  let count = 0;
-  for (const raw of paths) {
-    const path = normalize(raw);
-    const n = lookup(path);
-    const p = parentOf(path);
-    if (!n || !p) continue;
-    if (d.children!.some((c) => c.name === n.name)) throw new Error(`${n.name} already exists in ${dest}`);
-    const copy: Node = JSON.parse(JSON.stringify(n));
-    d.children!.push(copy);
-    if (moving) {
-      const i = p.node.children!.indexOf(n);
-      if (i >= 0) p.node.children!.splice(i, 1);
-    }
-    count++;
   }
   return { count };
 }

@@ -13,7 +13,7 @@ export function defaultLayout(): Layout {
         id: 'bar', output: '*', edge: 'bottom', size: 48, length: 100, align: 'center', margin: 0, layer: 'top', opacity: 0.85, float: false,
         widgets: [
           { id: 'sp-l', type: 'spacer', config: { expand: true } },
-          { id: 'tasks', type: 'taskbar', config: { pins: ['firefox.desktop', 'mindos-files.desktop', 'foot.desktop', 'steam.desktop', 'mindos-settings.desktop'] } },
+          { id: 'tasks', type: 'taskbar', config: { pins: ['firefox.desktop', 'org.gnome.Nautilus.desktop', 'foot.desktop', 'steam.desktop', 'mindos-settings.desktop'] } },
           { id: 'sp-r', type: 'spacer', config: { expand: true } },
           { id: 'tray', type: 'tray', config: {} },
           { id: 'audio', type: 'audio', config: {} },

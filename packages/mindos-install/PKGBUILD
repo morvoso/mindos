@@ -1,7 +1,7 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-install
 pkgver=0.1.0
-pkgrel=2
+pkgrel=4
 pkgdesc="MindOS guided installer (run from the live ISO)"
 arch=(any)
 url="https://mindos.local"

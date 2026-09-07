@@ -1,23 +1,24 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-session
 pkgver=0.1.0
-pkgrel=10
-pkgdesc="MindOS session: greetd configuration, session launcher, compositor defaults and the dark-mode defaults for GTK, the portal and Firefox"
+pkgrel=13
+pkgdesc="MindOS session: greetd configuration and the MindOS login screen, session launcher, compositor defaults and the dark-mode defaults for GTK, the portal and Firefox"
 arch=(any)
 url="https://mindos.local"
 license=(MIT)
-depends=(mindwm mindos-mind greetd greetd-agreety seatd dbus xorg-xwayland foot polkit
+depends=(mindwm mindshell mindos-apps mindos-mind greetd greetd-agreety seatd dbus xorg-xwayland foot polkit
          xdg-user-dirs
          ttf-jetbrains-mono noto-fonts noto-fonts-emoji inter-font
          wl-clipboard grim slurp pipewire wireplumber pipewire-pulse pipewire-alsa pipewire-jack
          pamixer brightnessctl util-linux
          xdg-desktop-portal xdg-desktop-portal-gtk dconf gsettings-desktop-schemas)
 optdepends=('firefox: gets the MindOS dark defaults from /usr/lib/firefox/defaults/pref/mindos.js')
-backup=(etc/mindos/greetd.toml etc/mindos/mindwm.toml etc/mindos/xdg/foot/foot.ini
+backup=(etc/mindos/greetd.toml etc/mindos/greeter/mindwm.toml etc/mindos/mindwm.toml etc/mindos/xdg/foot/foot.ini
         etc/mindos/xdg/gtk-3.0/settings.ini etc/mindos/xdg/gtk-4.0/settings.ini)
 source=(mindos-session session-startup greetd.toml greetd-mindos.conf greetd-vt mindwm.toml mindos.desktop foot.ini
-        gtk-settings.ini mindos-portals.conf 90_mindos.gschema.override firefox-mindos.js)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+        gtk-settings.ini mindos-portals.conf 90_mindos.gschema.override firefox-mindos.js
+        mindos-greeter greeter-mindwm.toml mindos-greeter.tmpfiles)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm755 mindos-session   "$pkgdir/usr/bin/mindos-session"
@@ -25,6 +26,12 @@ package() {
   install -Dm644 greetd.toml      "$pkgdir/etc/mindos/greetd.toml"
   install -Dm644 greetd-mindos.conf "$pkgdir/usr/lib/systemd/system/greetd.service.d/mindos.conf"
   install -Dm755 greetd-vt        "$pkgdir/usr/lib/mindos/greetd-vt"
+  # The login screen: greetd runs mindos-greeter (mindwm in kiosk mode showing
+  # `mindshell --app greeter`) as the greeter user; it remembers the last login
+  # in /var/lib/mindos/greeter.
+  install -Dm755 mindos-greeter         "$pkgdir/usr/bin/mindos-greeter"
+  install -Dm644 greeter-mindwm.toml    "$pkgdir/etc/mindos/greeter/mindwm.toml"
+  install -Dm644 mindos-greeter.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/mindos-greeter.conf"
   install -Dm644 mindwm.toml      "$pkgdir/etc/mindos/mindwm.toml"
   install -Dm644 mindos.desktop   "$pkgdir/usr/share/wayland-sessions/mindos.desktop"
   install -Dm644 foot.ini         "$pkgdir/etc/mindos/xdg/foot/foot.ini"

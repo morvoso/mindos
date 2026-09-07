@@ -1,0 +1,32 @@
+# Maintainer: MindOS <build@mindos.local>
+pkgname=mindos-apps
+pkgver=0.1.0
+pkgrel=2
+pkgdesc="The MindOS standard applications (Files, Image Viewer, Archive Manager, Text Editor) in the MindOS look: libadwaita colours, default handlers, Open in Terminal in the file manager, the mindos-wallpaper command"
+arch=(any)
+url="https://mindos.local"
+license=(MIT)
+# Every app is GTK 4 + libadwaita so one stylesheet themes them all; the
+# terminal stays foot (mindos-session). Trash, mounts and phones need gvfs.
+depends=(nautilus nautilus-python gvfs gvfs-mtp loupe file-roller gnome-text-editor foot python)
+optdepends=('sushi: preview a file in Files with the space bar'
+            'gvfs-smb: Windows shares in Files'
+            'gvfs-nfs: NFS shares in Files')
+source=(mimeapps.list gtk-4.0.css gtk-3.0.css 10-mindos-gtk-css mindos-wallpaper mindos-nautilus.py)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP)
+
+package() {
+  # Default handlers: folders, images, archives and text go to these apps.
+  install -Dm644 mimeapps.list "$pkgdir/usr/share/applications/mimeapps.list"
+  # The MindOS look for libadwaita / GTK 4 and GTK 3 apps. GTK only reads
+  # gtk.css from the user's config directory, so 10-mindos-gtk-css (run by
+  # the session's autostart) links these in for each user, once.
+  install -Dm644 gtk-4.0.css "$pkgdir/usr/share/mindos/gtk/gtk-4.0.css"
+  install -Dm644 gtk-3.0.css "$pkgdir/usr/share/mindos/gtk/gtk-3.0.css"
+  install -Dm755 10-mindos-gtk-css "$pkgdir/etc/xdg/mindos/autostart/10-mindos-gtk-css"
+  # `mindos-wallpaper PATH` sets the shell's wallpaper from a script or the
+  # Mind; apps use "Set as Background" (the shell's Wallpaper portal). The
+  # nautilus-python extension adds Open in Terminal to the Files menus.
+  install -Dm755 mindos-wallpaper "$pkgdir/usr/bin/mindos-wallpaper"
+  install -Dm644 mindos-nautilus.py "$pkgdir/usr/share/nautilus-python/extensions/mindos.py"
+}

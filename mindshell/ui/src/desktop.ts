@@ -298,7 +298,7 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
           { label: '', separator: true },
           { label: 'Terminal', icon: 'terminal', action: { exec: terminal } },
           { label: 'Ask Mind', icon: 'mind', action: { call: 'mind.toggle' } },
-          { label: 'Files', icon: 'folder', action: { call: 'shell.openApp', params: { name: 'files' } } },
+          { label: 'Files', icon: 'folder', action: { call: 'fs.open', params: { path: '~' } } },
           { label: '', separator: true },
           ...desktopIconMenu(),
           { label: '', separator: true },

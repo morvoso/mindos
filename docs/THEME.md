@@ -15,10 +15,12 @@ MindOS has two visual stages with a hard line between them:
 
 | Stage | How | Where |
 | --- | --- | --- |
-| GRUB | `set color_normal=white/black` on a `background_color 140,16,16` menu (black is transparent in gfxterm), highlight `red/white` | `packages/mindos-theme/05_mindos`, `grub-default`, `iso/grub/grub.cfg` |
+| Limine (installed system) | `term_background: 008c1010`, white foreground and palette, the selected entry inverted to red on white; `mindos-boot config` folds the file into `/boot/limine.conf` | `packages/mindos-theme/limine-theme.conf` |
+| GRUB (UEFI ISO) | `set color_normal=white/black` on a `background_color 140,16,16` menu (black is transparent in gfxterm), highlight `red/white` | `iso/grub/grub.cfg` |
 | syslinux (BIOS ISO) | red menu with white text | `iso/syslinux/` |
 | Kernel console | `linux-mindos` carries a patch that makes the VT default attribute white on red and sets the palette's red to `#8c1010`, so every message from the first kernel line onwards is white on red. On a stock kernel the same look comes from `vt.color=0x4f vt.default_red=... vt.default_grn=... vt.default_blu=...` | `packages/linux-mindos/` |
 | Virtual consoles after boot | `mindos-console-theme.service` re-applies the colours to tty1–6, so the tty2 recovery shell stays red | `packages/mindos-theme/console-theme` |
+| Login screen | dark glass like the desktop: the aurora, a frosted card, the cyan accent; rendered by the shell's own UI stack (`mindshell --app greeter`) under mindwm in kiosk mode | `mindshell/ui/src/greeter.ts`, `docs/img/greeter.png` |
 
 ## System stage (dark glass)
 
@@ -55,7 +57,8 @@ wide tracking; body text is Inter at normal tracking.
 | Desktop widgets | real `backdrop-filter: blur(28px) saturate(1.5)` — they live in the wallpaper's own window |
 | Panels, the dock, popups, app sidebars | separate WebKit windows cannot see the wallpaper, so `mindshell/ui/src/glass.ts` puts a `.glass-bd` layer under the surface: the wallpaper blurred once on a small canvas (or the aurora gradient), sized to the output and shifted by the surface's position on it, so the crop under the window shows through. Updated when the wallpaper, the layout or the window moves. |
 | Title bars and the Mind bar | drawn by the compositor as translucent rounded cards (`Canvas::fill_rounded_rect`); mindwm does not blur, the alpha alone reads as glass over the desktop |
-| App windows (Settings, Files) | opaque, over the same aurora; the sidebar is frosted with the wallpaper |
+| App windows (Settings) | opaque, over the same aurora; the sidebar is frosted with the wallpaper |
+| Files, Image Viewer, Archive Manager, Text Editor (libadwaita) | opaque in the MindOS colours (`mindos-apps`, below); they draw their own header bars, which the compositor leaves alone |
 | Terminals | `foot` runs at 92 % alpha with the MindOS palette (`packages/mindos-session/foot.ini`) |
 
 The aurora is `--aurora` in `mindshell/ui/src/app.css` (radial cyan, violet,
@@ -71,6 +74,7 @@ Every toolkit is told the desktop is dark, from `mindos-session`:
 | --- | --- |
 | GTK 3 / GTK 4 | `/etc/mindos/xdg/gtk-{3,4}.0/settings.ini` (via `XDG_CONFIG_DIRS`): `gtk-theme-name=Adwaita-dark`, `gtk-application-prefer-dark-theme=1`, `breeze-dark` icons |
 | libadwaita, GTK 4, Firefox, Electron | the Settings portal: `/usr/share/xdg-desktop-portal/mindos-portals.conf` picks `xdg-desktop-portal-gtk`, which reports `org.gnome.desktop.interface color-scheme` — defaulted to `prefer-dark` by `/usr/share/glib-2.0/schemas/90_mindos.gschema.override` (also the Inter / JetBrains Mono font names) |
+| libadwaita, GTK 4 | the MindOS colours: `/usr/share/mindos/gtk/gtk-4.0.css` (`mindos-apps`) sets libadwaita's named colours (`--accent-bg-color`, `--window-bg-color`, `--headerbar-bg-color`, … and the `@define-color` names for older apps) to the theme tokens: teal accent with dark text, bg-1 windows, bg-0 views, bg-2 header bars and popovers, hot pink destructive. GTK reads `gtk.css` only from `~/.config/gtk-4.0/`, so `/etc/xdg/mindos/autostart/10-mindos-gtk-css` writes a one-line `@import` there on first login (and a GTK 3 one importing `gtk-3.0.css`, which overrides Adwaita-dark's `theme_*` colours). Delete the import to opt out. The accent is also announced through the portal: `accent-color='teal'` in the gschema override |
 | Firefox | `/usr/lib/firefox/defaults/pref/mindos.js`: `ui.systemUsesDarkTheme=1`, dark toolbar and content themes, `prefers-color-scheme: dark` for pages, the compositor's title bar instead of Firefox's own |
 | foot | the palette in `foot.ini` |
 
@@ -159,14 +163,15 @@ cyan accent glowing along its top edge, and gives every decorated window the
 same 30 px glass title bar with rounded top corners
 (`mindwm/src/mindbar.rs`, `mindwm/src/shell/ssd.rs`, `docs/COMPOSITOR.md`).
 `mindshell` draws the bottom bar, the desktop icons, the popups, the
-Settings and Files apps and the desktop widgets from the same tokens
+Settings app and the desktop widgets from the same tokens
 (`mindshell/ui/src/app.css`, `mindshell/ui/src/glass.ts`, `docs/SHELL.md`). The compositor colours can
 be changed in `/etc/mindos/mindwm.toml` (`[theme] background`, `foreground`,
 `accent`), but the defaults are the brand.
 
 ### Verified
 
-Captured from the dev VM on 2026-09-06 (`scripts/vm/bootshots.sh`): GRUB stays
-white on red (`docs/img/grub-red.png`), then Plymouth shows the dark splash with
+Captured from the dev VM on 2026-09-06 (`scripts/vm/bootshots.sh`): the boot
+menu is white on red (`docs/img/limine-red.png`, Limine; the ISO's GRUB in
+`docs/img/grub-red.png`), then Plymouth shows the dark splash with
 the glowing wordmark, the cyan progress line and the sweeping scan line
 (`docs/img/plymouth-dark.png`); on shutdown the caption reads `SYSTEM // HALT`.

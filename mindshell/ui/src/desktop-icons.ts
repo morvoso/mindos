@@ -28,7 +28,7 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
   const openAction = (e: FsEntry) => {
     const app = appFor(e);
     if (app) return { call: 'apps.launch', params: { id: app.id } };
-    if (e.dir) return { call: 'shell.openApp', params: { name: 'files', arg: e.path } };
+    if (e.dir) return { call: 'fs.open', params: { path: e.path } };
     return { call: 'fs.open', params: { path: e.path } };
   };
 
@@ -58,7 +58,7 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
       const many = paths.length > 1;
       const items: MenuAction[] = [
         { label: many ? `Open ${paths.length} items` : e.dir ? 'Open folder' : appFor(e) ? 'Launch' : 'Open', icon: e.dir ? 'folder' : 'window', action: openAction(e), disabled: many },
-        { label: 'Show in Files', icon: 'folder', action: { call: 'shell.openApp', params: { name: 'files', arg: dir } } },
+        { label: 'Show in Files', icon: 'folder', action: { call: 'fs.open', params: { path: dir } } },
         { label: '', separator: true },
         { label: many ? `Move ${paths.length} items to trash` : 'Move to trash', icon: 'trash', danger: true, action: { call: 'fs.trash', params: { paths } } },
       ];
@@ -142,6 +142,6 @@ export function desktopIconMenu(): MenuAction[] {
   const on = store.state.layout.desktop.icons !== false;
   return [
     { label: on ? 'Hide desktop icons' : 'Show desktop icons', icon: 'desktop', action: { desktopIcons: !on } },
-    { label: 'Open Desktop folder', icon: 'folder', action: { call: 'shell.openApp', params: { name: 'files', arg: '~/Desktop' } } },
+    { label: 'Open Desktop folder', icon: 'folder', action: { call: 'fs.open', params: { path: '~/Desktop' } } },
   ];
 }

@@ -116,15 +116,28 @@ default layout is a centred, transparent dock (pinned and running apps,
 macOS-style) and a top bar (Mind status, system tray, audio, network,
 battery, the window-layout switcher, clock). There is no launcher button:
 a tap on Super opens the Mind bar, which is the launcher. The same binary
-also opens ordinary windows (`mindshell --app settings|files`): the
+also opens an ordinary window (`mindshell --app settings`): the
 **Settings** app (Mind: tool lines on/off, thinking, model choice and the
 download catalog; Wallpaper; Displays with a basic and an advanced mode;
-Desktop: layout mode, panels, shortcuts; About) and the **Files** app (a
-small file manager: places, thumbnails, copy/move/trash, open with the
-default application, set as wallpaper). The host provides the system side:
-desktop entries and icon themes, the StatusNotifier tray, power, audio,
-network, battery and stats, the file operations and the compositor IPC.
-Details in `SHELL.md`.
+Desktop: layout mode, panels, shortcuts; About) and the login screen
+(`--app greeter`). The host provides the system side: desktop entries and
+icon themes, the StatusNotifier tray, power, audio, network, battery and
+stats, the desktop folder and the compositor IPC. Details in `SHELL.md`.
+
+### Standard applications (packages/mindos-apps/)
+
+MindOS ships existing applications wherever one can be themed instead of
+writing its own; only what has to talk to the Mind or the compositor
+(Settings, the shell, the login screen) is custom. `mindos-apps` pulls in
+**Files** (Nautilus), **Image Viewer** (Loupe), **Archive Manager** (File
+Roller) and **Text Editor** (GNOME Text Editor), all GTK 4 + libadwaita, and
+the terminal is foot. It ships the default handlers (`mimeapps.list`), the
+MindOS colours for libadwaita and GTK 3 (`/usr/share/mindos/gtk/`, linked
+into each user's `gtk.css` by an autostart entry, see `THEME.md`), a
+nautilus-python extension that adds "Open in Terminal" to the Files context
+menus, and `mindos-wallpaper PATH`, a command that sets the shell's wallpaper.
+"Set as Background" in these apps needs no extension: the shell host
+implements the Wallpaper portal backend (`SHELL.md`).
 
 ### mindd and mind (mindd/)
 
@@ -173,8 +186,13 @@ The mind of the OS: a system daemon that owns the model and the tools.
 
 ### mindos-session (packages/mindos-session)
 
-greetd on VT 1 logs the user into `mindos-session`, a script that exports the
-Wayland environment (Qt, GTK, SDL, Firefox, Java hints) and execs
+greetd on VT 1 shows the MindOS login screen, `mindos-greeter`: the compositor
+in kiosk mode (`/etc/mindos/greeter/mindwm.toml`) running
+`mindshell --app greeter` as the unprivileged `greeter` user, which relays the
+login to greetd over its socket (PAM stays in greetd; docs/SHELL.md, *The
+login screen*). The installer can add an `initial_session` for automatic
+login instead. Either way greetd logs the user into `mindos-session`, a
+script that exports the Wayland environment (Qt, GTK, SDL, Firefox, Java hints) and execs
 `mindwm --tty-udev` with its output in the journal (`journalctl -t mindwm`).
 Once the Wayland socket is up the compositor runs
 `/usr/lib/mindos/session-startup`, which publishes the display to
@@ -190,9 +208,13 @@ stays available on tty2 on the live ISO.
   tuning (`vm.max_map_count` for Proton, BBR, dirty-page bounds, split-lock
   mitigation off, `kernel.sched_bore`), zram swap, I/O scheduler and
   game-controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset and
-  the pacman hook that re-applies branding after updates. Depends on
-  `linux-mindos`, `linux-mindos-headers`, the NVIDIA and Mesa stacks.
-* **theme**: GRUB colours and the console theme service (red boot stage), the
+  the pacman hook that re-applies branding after updates. Also the boot menu
+  and the way back from a bad update: Limine, snapper with snap-pac, and
+  `mindos-boot`, which writes `/boot/limine.conf`, keeps a kernel copy on the
+  ESP for every snapshot, lists the snapshots in the menu and restores one
+  (`docs/ROLLBACK.md`). Depends on `linux-mindos`, `linux-mindos-headers`,
+  the NVIDIA and Mesa stacks.
+* **theme**: the boot menu colours (Limine) and the console theme service (red boot stage), the
   dark animated Plymouth `mindos` theme, the MindOS fonts, wallpaper, icon.
 * **gaming**: Steam, gamescope, GameMode (with `gamemode.ini`), MangoHud,
   Lutris, Wine and the lib32 runtime.
@@ -207,6 +229,10 @@ partition, a 1 GiB EFI system partition on `/boot` and btrfs with `@`,
 bundled `[mindos]` repository plus the Arch mirrors; asks for disk, hostname,
 user, password, timezone and whether to add the gaming and development
 stacks. Fully non-interactive with `MINDOS_AUTO=1` and `MINDOS_*` variables.
+Puts Limine on the EFI partition (UEFI entry "MindOS", plus the removable
+path) and into the BIOS boot partition, activates the snapper `root`
+configuration, takes a first snapshot ("MindOS installed") and writes the
+boot menu.
 
 ### The image (iso/)
 
@@ -231,9 +257,10 @@ for the ISO).
 ## Boot sequence
 
 ```
-firmware → GRUB or syslinux (white on red)
+firmware → Limine (white on red; installed system) · GRUB/syslinux on the ISO
   → linux-mindos (white-on-red VT) → plymouth "mindos" (dark, cyan)
   → systemd → mindd (llama-server loads the model) · greetd on VT 1
+  → mindos-greeter (mindwm kiosk + mindshell --app greeter: the login screen)
   → mindos-session → mindwm (DRM/KMS) → session-startup → mindos-shell.service
   → dock, top bar, tray · Mind bar (Super tap or Super+Space): "What should we do?"
 ```

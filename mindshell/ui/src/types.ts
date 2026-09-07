@@ -4,7 +4,7 @@ export type Edge = 'top' | 'bottom' | 'left' | 'right';
 export type Align = 'start' | 'center' | 'end';
 export type PanelLayer = 'top' | 'bottom';
 export type Container = 'panel' | 'desktop';
-export type WindowKind = 'desktop' | 'panel' | 'popup' | 'preview' | 'app';
+export type WindowKind = 'desktop' | 'panel' | 'popup' | 'preview' | 'app' | 'greeter';
 
 export type Config = Record<string, unknown>;
 
@@ -309,27 +309,6 @@ export interface FsListing {
   path: string;
   parent: string | null;
   entries: FsEntry[];
-}
-
-export interface FsStat {
-  path: string;
-  name: string;
-  dir: boolean;
-  size: number;
-  mtime: number;
-  mime: string;
-  items?: number;
-  link?: string;
-  permissions: string;
-  mode: number;
-}
-
-export interface Place {
-  name: string;
-  path: string;
-  icon: string;
-  kind: 'home' | 'folder' | 'system' | 'mount';
-  removable?: boolean;
 }
 
 export interface WallpaperEntry {

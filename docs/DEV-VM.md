@@ -134,7 +134,14 @@ cd ~/mindos/mindwm && cargo build --release          # lands in ~/build/cargo/re
 sudo install ~/build/cargo/release/mindwm /usr/bin/mindwm.new \
   && sudo mv -f /usr/bin/mindwm.new /usr/bin/mindwm
 sudo rm -f /run/greetd.run && sudo systemctl restart greetd   # new session with the new binary
+sudo systemctl restart greetd                                 # ... or the login screen (mindos-greeter)
 ```
+
+The dev VM installs with autologin (`MINDOS_AUTOLOGIN=1` in
+`guest-install.sh`), so the login screen only appears after a logout or a
+`systemctl restart greetd` without removing `/run/greetd.run`. Its compositor
+logs as `journalctl -t mindos-greeter`, the page as `journalctl -t mindshell`
+(both under the `greeter` user).
 
 (`rustup default stable` once in a fresh VM; the mindos-dev package ships
 rustup, clang, lld and the rest of the toolchain.)
@@ -148,9 +155,16 @@ sudo pacman -Syu                    # VM: picks up build/repo from the share
 ```
 
 **Kernel.** `make kernel && make repo` on the host, then in the VM
-`sudo pacman -Syu linux-mindos` and reboot. Take a snapshot first
-(`make vm-snapshot NAME=before-kernel`); `scripts/vm/mindos-vm.sh revert
-before-kernel` brings the VM back if it does not boot.
+`sudo pacman -Syu linux-mindos` and reboot. snap-pac takes a snapshot of the
+system before and after, and the boot menu lists it under "Snapshots": pick
+the "before" one if the new kernel does not boot, then `sudo mindos-boot
+restore` (`docs/ROLLBACK.md`). A libvirt snapshot (`make vm-snapshot
+NAME=before-kernel`, `scripts/vm/mindos-vm.sh revert before-kernel`) is the
+belt to those braces.
+
+**Boot menu.** `guest-install.sh` puts `video=Virtual-1:1920x1080@120` into
+`CMDLINE_EXTRA` in `/etc/mindos/boot.conf`; after editing that file run
+`sudo mindos-boot config`.
 
 **Installer and ISO.** `make iso`, then either `scripts/vm/mindos-vm.sh
 destroy` and `make vm` again for a from-scratch install, or attach the new

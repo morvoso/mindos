@@ -24,6 +24,18 @@ pub struct Config {
     pub mind: Mind,
     pub theme: Theme,
     pub layout: LayoutConfig,
+    pub session: Session,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Session {
+    /// Kiosk mode, used for the login screen (`mindos-greeter`): the
+    /// compositor shows only what `[startup].exec` starts. No Mind bar, no
+    /// launcher, and no shortcut or IPC request that starts a program or ends
+    /// the session (a Quit over IPC is still honoured: that is how the greeter
+    /// hands over to the user's session). VT switching stays available.
+    pub kiosk: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

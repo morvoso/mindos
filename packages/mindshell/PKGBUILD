@@ -4,8 +4,8 @@
 # the user service and the session autostart entry.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=12
-pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings and Files apps, all rendered by WebKitGTK"
+pkgrel=16
+pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://mindos.local"
 license=(MIT OFL-1.1)
@@ -21,7 +21,7 @@ optdepends=('mindos-session: starts the shell from the session autostart directo
             'networkmanager: network widget (nmcli)'
             'iproute2: IP address in the network widget'
             'xdg-utils: open external links from the shell'
-            'gvfs: trash and removable drives in the Files app'
+            'gvfs: moving desktop icons to the trash'
             'nvidia-utils: GPU statistics in the system monitor widgets'
             'papirus-icon-theme: alternative icon theme (icon_theme in shell.toml)')
 makedepends=(rust clang lld rsync esbuild pkgconf)
@@ -67,11 +67,14 @@ package() {
   install -Dm644 "$srcdir/mindshell/data/mindos-shell.service" "$pkgdir/usr/lib/systemd/user/mindos-shell.service"
   install -Dm755 "$srcdir/mindshell/data/50-mindshell" "$pkgdir/etc/xdg/mindos/autostart/50-mindshell"
 
-  # The Settings and Files apps (the same binary with --app) and the folder default.
-  for entry in mindos-settings mindos-displays mindos-wallpaper mindos-files; do
+  # The Settings app (the same binary with --app).
+  for entry in mindos-settings mindos-displays mindos-wallpaper; do
     install -Dm644 "$srcdir/mindshell/data/$entry.desktop" "$pkgdir/usr/share/applications/$entry.desktop"
   done
-  install -Dm644 "$srcdir/mindshell/data/mimeapps.list" "$pkgdir/usr/share/applications/mimeapps.list"
+
+  # The Wallpaper portal backend the shell provides (Set as Background in Files, Image Viewer, ...).
+  install -Dm644 "$srcdir/mindshell/data/mindos.portal" "$pkgdir/usr/share/xdg-desktop-portal/portals/mindos.portal"
+  install -Dm644 "$srcdir/mindshell/data/org.freedesktop.impl.portal.desktop.mindos.service" "$pkgdir/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.mindos.service"
 
   install -Dm644 "$srcdir/mindshell/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
   if [[ -d "$srcdir/mindshell/ui/fonts" ]]; then

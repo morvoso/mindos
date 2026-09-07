@@ -1,0 +1,38 @@
+# /etc/snapper/configs/root — snapshots of the MindOS root subvolume (@).
+# /home, /var/log and the package cache are separate subvolumes and are never
+# part of a snapshot, so restoring one only rolls back the system.
+
+SUBVOLUME="/"
+FSTYPE="btrfs"
+QGROUP=""
+SPACE_LIMIT="0.5"
+FREE_LIMIT="0.2"
+
+# Members of wheel can list and compare snapshots without sudo.
+ALLOW_USERS=""
+ALLOW_GROUPS="wheel"
+SYNC_ACL="no"
+
+# No background diffing of snapshots: it costs I/O for nothing on a gaming machine.
+BACKGROUND_COMPARISON="no"
+
+# Pacman snapshots (snap-pac) and manual ones: keep the newest 10, the 5 newest
+# "important" ones (kernel, graphics stack, desktop, pacman -Syu) longer.
+NUMBER_CLEANUP="yes"
+NUMBER_MIN_AGE="1800"
+NUMBER_LIMIT="10"
+NUMBER_LIMIT_IMPORTANT="5"
+
+# No hourly timeline snapshots; the updates are what needs a way back.
+TIMELINE_CREATE="no"
+TIMELINE_CLEANUP="yes"
+TIMELINE_MIN_AGE="1800"
+TIMELINE_LIMIT_HOURLY="0"
+TIMELINE_LIMIT_DAILY="0"
+TIMELINE_LIMIT_WEEKLY="0"
+TIMELINE_LIMIT_MONTHLY="0"
+TIMELINE_LIMIT_QUARTERLY="0"
+TIMELINE_LIMIT_YEARLY="0"
+
+EMPTY_PRE_POST_CLEANUP="yes"
+EMPTY_PRE_POST_MIN_AGE="1800"

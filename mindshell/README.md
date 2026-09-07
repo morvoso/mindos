@@ -2,8 +2,8 @@
 
 The MindOS desktop shell host. One small Rust process that owns GTK4
 layer-shell windows on every output (a desktop, the dock and the top bar,
-transient popups) or, with `--app`, one ordinary window (the Settings and
-Files apps), renders the TypeScript UI in `ui/` with WebKitGTK 6.0, and
+transient popups) or, with `--app`, one ordinary window (the Settings
+app) or the login screen (`--app greeter`, one overlay per output), renders the TypeScript UI in `ui/` with WebKitGTK 6.0, and
 exposes the system to that UI through `window.mindos`: the compositor (mindwm
 IPC socket: windows, layout mode, outputs, preferences), the Mind daemon,
 the StatusNotifier tray, desktop entries, icons, files, wallpapers, audio,
@@ -21,14 +21,15 @@ file is the host's operating notes.
 | `src/scheme.rs` | the `mindos://shell/` URI scheme (`/app`, `/icon`, `/tray`, `/file`, `/thumb`) |
 | `src/ipc.rs` | compositor IPC client (newline JSON over `$MINDWM_SOCKET`), auto-reconnect; layout mode, outputs and preferences requests |
 | `src/mind.rs` | client for the Mind daemon socket (`/run/mindos/mind.sock`): `mind.request` pass-through, `models` / `download` events |
-| `src/fs.rs` | the Files app's backend: places, directory listings with MIME types and thumbnails, copy / move / trash / rename / mkdir, `gio open`, wallpaper folders |
+| `src/fs.rs` | the desktop folder: directory listings with MIME types and thumbnails, trash, `gio open`, wallpaper folders |
+| `src/portal.rs` | the Wallpaper portal backend (`org.freedesktop.impl.portal.Wallpaper` on `org.freedesktop.impl.portal.desktop.mindos`): "Set as Background" in Files / Image Viewer writes the layout's `desktop.wallpaper` |
 | `src/tray.rs` | StatusNotifierItem/DBusMenu through `system-tray` on a tokio thread; pixmaps as PNG |
 | `src/apps.rs` | desktop-entry index (XDG data dirs + Flatpak exports), Exec cleaning, detached spawn |
 | `src/icons.rs` | icon lookup (theme, `IconThemePath`, pixmaps), percent-encoding |
 | `src/system.rs` | `systemctl` power, `/proc` statistics, `nvidia-smi`, `wpctl`, `nmcli`, sysfs battery |
 | `src/layout.rs` | `layout.json` model, validation (`sanitized`), atomic save, reset |
 | `src/config.rs` | `shell.toml` model and overlay of `/etc` + `~/.config` |
-| `data/` | default `layout.json`, `shell.toml`, `mindos-shell.service`, `50-mindshell` autostart, the `mindos-settings` / `mindos-files` / `mindos-displays` / `mindos-wallpaper` desktop entries and `mimeapps.list` (Files handles `inode/directory`) |
+| `data/` | default `layout.json`, `shell.toml`, `mindos-shell.service`, `50-mindshell` autostart, the `mindos-settings` / `mindos-displays` / `mindos-wallpaper` desktop entries, `mindos.portal` and the D-Bus activation file of the Wallpaper portal backend |
 | `ui/` | the TypeScript UI (built by `ui/build.sh <outdir>` with esbuild) |
 
 ## Runtime model

@@ -411,6 +411,35 @@ export function installMock(): MindosGlobal {
       console.info('[mock] power', p.action);
       return {};
     },
+    // The login screen (kind=greeter): two accounts, "hunter2" signs in,
+    // "otp" asks for a second factor.
+    'greeter.info': () => ({
+      users: [
+        { name: 'morvoso', display: 'Justin', avatar: null },
+        { name: 'guest', display: 'Guest', avatar: null },
+      ],
+      sessions: [
+        { id: 'mindos', name: 'MindOS', exec: 'mindos-session' },
+        { id: 'sway', name: 'Sway', exec: 'sway' },
+      ],
+      last: { user: 'morvoso', session: 'mindos' },
+      host: 'mindos-dev',
+    }),
+    'greeter.login': (p) => {
+      if (p.password === 'hunter2') return { status: 'started' };
+      if (p.password === 'otp') return { status: 'prompt', secret: false, message: 'One-time code:', notes: ['Enter the code from your phone.'] };
+      return { status: 'failed', message: 'Login failed', notes: [] };
+    },
+    'greeter.respond': (p) => (p.response === '123456' ? { status: 'started' } : { status: 'failed', message: 'Login failed', notes: ['That code was not accepted.'] }),
+    'greeter.cancel': () => ({}),
+    'greeter.done': () => {
+      console.info('[mock] greeter done, the session would start now');
+      return {};
+    },
+    'greeter.power': (p) => {
+      console.info('[mock] greeter power', p.action);
+      return {};
+    },
     'system.stats': stats,
     'audio.get': () => ({ ...audio }),
     'audio.set': (p) => {
@@ -444,16 +473,9 @@ export function installMock(): MindosGlobal {
     },
     'mind.request': (p) => mindRequest((p.request as Record<string, unknown>) ?? {}),
     'wallpaper.list': () => mfs.wallpapers(),
-    'fs.home': () => ({ path: mfs.HOME }),
-    'fs.places': () => mfs.places(),
     'fs.desktop': () => ({ path: `${mfs.HOME}/Desktop` }),
     'fs.list': (p) => mfs.list(String(p.path ?? mfs.HOME), !!p.hidden),
-    'fs.stat': (p) => mfs.stat(String(p.path)),
-    'fs.mkdir': (p) => mfs.mkdir(String(p.path), String(p.name)),
-    'fs.rename': (p) => mfs.rename(String(p.path), String(p.name)),
     'fs.trash': (p) => mfs.remove((p.paths as string[]) ?? []),
-    'fs.copy': (p) => mfs.transfer((p.paths as string[]) ?? [], String(p.dest), false),
-    'fs.move': (p) => mfs.transfer((p.paths as string[]) ?? [], String(p.dest), true),
     'fs.open': (p) => {
       console.info('[mock] open', p.path);
       return {};

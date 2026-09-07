@@ -1,8 +1,8 @@
 # mindshell — the MindOS desktop shell
 
 `mindshell` is the MindOS desktop environment: the dock, the top bar
-(system tray, clock, layout switcher), desktop widgets, and the Settings and
-Files apps. It is one small Rust process (the *host*) that opens layer-shell
+(system tray, clock, layout switcher), desktop widgets, the Settings app and
+the login screen. It is one small Rust process (the *host*) that opens layer-shell
 windows on the compositor and renders every window with WebKitGTK; the user
 interface itself is HTML/CSS/TypeScript (`mindshell/ui`). The host owns
 everything that needs the system (D-Bus, the compositor IPC, files,
@@ -39,7 +39,7 @@ data with a nicer UI.
 | host config | `/etc/mindos/shell.toml`, `~/.config/mindos/shell.toml` |
 | user service | `mindos-shell.service` (systemd --user, `Restart=on-failure`), started by `/etc/xdg/mindos/autostart/50-mindshell` |
 | log | `journalctl --user -u mindos-shell` |
-| app windows | `mindshell --app settings [--page mind\|wallpaper\|displays\|shell\|about]`, `mindshell --app files [PATH]`: ordinary toplevels (app id `mindos-settings` / `mindos-files`) with the compositor's title bar; desktop entries `mindos-settings`, `mindos-files` (the default handler for `inode/directory`), `mindos-displays`, `mindos-wallpaper` |
+| app windows | `mindshell --app settings [--page mind\|wallpaper\|displays\|shell\|about]`: an ordinary toplevel (app id `mindos-settings`) with the compositor's title bar; desktop entries `mindos-settings`, `mindos-displays`, `mindos-wallpaper`. Files is Nautilus (`mindos-apps`), not a shell window |
 
 Environment: `WAYLAND_DISPLAY` (from the compositor), `MINDWM_SOCKET` (the
 compositor IPC socket, exported by mindwm to everything it spawns and imported
@@ -84,7 +84,7 @@ adds widgets and re-orders them.
       "autohide": false,
       "widgets": [
         { "id": "sp-l", "type": "spacer", "config": { "expand": true } },
-        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "mindos-files.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } },
+        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "org.gnome.Nautilus.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } },
         { "id": "sp-r", "type": "spacer", "config": { "expand": true } },
         { "id": "tray", "type": "tray", "config": {} },
         { "id": "audio", "type": "audio", "config": {} },
@@ -129,8 +129,8 @@ adds widgets and re-orders them.
   the XDG desktop directory, `~/Desktop` otherwise, created if missing) as
   icons on the wallpaper, column by column from the top left, clear of the
   panels. Click selects (Ctrl adds), double-click opens (`.desktop` files
-  show as and launch their application, folders open in Files), right-click
-  offers open / show in Files / move to trash; the desktop's own menu toggles
+  show as and launch their application, folders open in the file manager),
+  right-click offers open / show in Files / move to trash; the desktop's own menu toggles
   the icons. The host watches the folder and broadcasts `desktop.changed`.
 * Unknown widget types render as an "unavailable" placeholder and are kept.
 
@@ -173,7 +173,8 @@ and one `mindos://shell/` origin.
 | `desktop` (one per output) | `background`, anchored to all edges, exclusive −1, keyboard `none` (`on-demand` while in edit mode) | wallpaper, desktop icons, desktop widgets, edit-mode toolbar, right-click menu |
 | `panel` (one per panel × output) | `top`/`bottom` per layout, anchored to the panel edge (+ both sides when `length` = 100), exclusive zone = `size` + `margin`, keyboard `none` | the panel and its widgets; in edit mode the window is enlarged by 140 px toward the screen centre (exclusive zone unchanged) to show the panel settings strip |
 | `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus. Clicking the transparent area or pressing Escape closes it |
-| `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings and Files apps; one process per window, `app.close` ends it |
+| `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings app; one process per window, `app.close` ends it |
+| `greeter` (`mindshell --app greeter`, one per output) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output and `none` on the others | the login screen: wallpaper and clock everywhere, the login card, the other accounts, the session and the power buttons on the first output. Started by greetd through `mindos-greeter` (see *The login screen* below) |
 
 Every window loads `mindos://shell/app/index.html?kind=<kind>&id=<id>&output=<name>`
 (`&popup=<name>&arg=<json>` for popups). `?kind=preview` renders every
@@ -233,14 +234,16 @@ data so the UI can be developed in Chromium/Firefox.
 | `prefs.get` / `prefs.set` | none / `{ prefs }` → `{ prefs }` (compositor preferences: `layout_mode`, `mind_show_tools`, `primary_output`, `outputs`); `prefs` is broadcast on every change |
 | `wallpaper.list` | → `[{ path, name, folder }]`: the images in `/usr/share/mindos/wallpapers`, `~/.local/share/mindos/wallpapers` and `Wallpapers/` under the pictures folder (images are shown through `mindos://shell/thumb/`) |
 | `fs.desktop` | → `{ path }` the Desktop folder shown as icons |
-| `fs.home` / `fs.places` | → `{ path }` / `[{ name, path, icon, kind: "home" \| "folder" \| "system" \| "mount", removable? }]` (home and the XDG user folders, the root file system, mounted drives) |
 | `fs.list` | `{ path, hidden? }` → `{ path, parent, entries: [{ name, path, dir, size, mtime, hidden, symlink, mime, icon, image }] }` |
-| `fs.stat` / `fs.mkdir` / `fs.rename` | `{ path }` / `{ path, name }` / `{ path, name }` |
-| `fs.copy` / `fs.move` / `fs.trash` | `{ paths, dest }` / `{ paths, dest }` / `{ paths }` → `{ count }` (`cp` / `mv`; trash goes through GIO, so it lands in the freedesktop trash) |
-| `fs.open` | `{ path }` → opens with the default application for the file's MIME type (GIO; `Terminal=true` entries get the configured terminal) |
-| `shell.openApp` | `{ name: "settings" \| "files", page?, arg? }` → spawns `mindshell --app` |
+| `fs.trash` | `{ paths }` → `{ count }` (through GIO, so it lands in the freedesktop trash) |
+| `fs.open` | `{ path }` → opens with the default application for the file's MIME type (GIO; a folder opens in the file manager, `Terminal=true` entries get the configured terminal) |
+| `shell.openApp` | `{ name: "settings", page?, arg? }` → spawns `mindshell --app` |
 | `app.close` / `app.setTitle` | none / `{ title }` (app windows only) |
 | `system.power` | `{ action: "shutdown" \| "reboot" \| "suspend" \| "logout" }` |
+| `greeter.info` | → `{ users: [{ name, display, avatar? }], sessions: [{ id, name, exec }], last: { user?, session? }, host }` (login screen only; accounts with a login shell and a uid from 1000, `/usr/share/wayland-sessions`, `/var/lib/AccountsService/icons`) |
+| `greeter.login` | `{ user, password, session }` → `{ status: "started" }` \| `{ status: "prompt", secret, message, notes }` \| `{ status: "failed", message, notes }` (the greetd conversation; a `prompt` is answered with `greeter.respond { response, session }`, dropped with `greeter.cancel`) |
+| `greeter.done` | after `started`: asks the compositor to quit so greetd starts the session |
+| `greeter.power` | `{ action: "poweroff" \| "reboot" \| "suspend" }` |
 | `system.stats` | → `{ cpu, memUsed, memTotal, gpu?: { util, temp, mem, memTotal, name }, load, uptime }` |
 | `audio.get` | → `{ volume, muted, sink }` |
 | `audio.set` | `{ volume }` (0..1.5) |
@@ -469,7 +472,7 @@ window (keeping `align`) and the panel background is drawn by the UI, so
 ![Settings › Mind: tool lines, thinking, the model catalog](img/settings-mind.png)
 
 **App windows.** `?kind=app&app=<name>&page=<page>&arg=<json>` renders the
-Settings (`settings`) or Files (`files`) app in an ordinary window. Apps use
+Settings (`settings`) app in an ordinary window. Apps use
 the same widgets, theme and bridge as the panels; `app.setTitle` updates the
 compositor's title bar and `app.close` ends the process. Settings pages:
 `mind` (tool lines, thinking, model catalog and downloads through
@@ -479,11 +482,52 @@ per output; advanced: position, rotation, VRR, primary, enable, through
 `wm.outputs` / `wm.setOutput`), `shell` (layout mode, panels, edit mode),
 `about`.
 
+## The login screen
+
+![The MindOS login screen](img/greeter.png)
+
+`mindshell --app greeter` is the greeter for [greetd](https://sr.ht/~kennylevinsen/greetd/),
+the login manager MindOS uses (Arch `greetd`, nothing from the AUR). greetd
+runs `mindos-greeter` (`mindos-session`) on VT 1 as the unprivileged
+`greeter` user: it is `mindwm --tty-udev` with
+`/etc/mindos/greeter/mindwm.toml` on top of the normal configuration
+(`[session] kiosk = true`: no Mind bar, no launcher, no shortcut or IPC
+request that starts a program; `[startup].exec = ["mindshell --app greeter"]`),
+so the login screen is the same compositor and the same UI stack as the
+desktop, in the same theme. greetd does the authenticating (PAM, through
+`/etc/pam.d/greetd`); the greeter only relays the conversation over
+`$GREETD_SOCK`: `create_session` → the password at the first secret prompt →
+any further prompt (a one-time code, an expired password) shown as is and
+answered through `greeter.respond` → `start_session` with the chosen
+session's `Exec` → `greeter.done` ends the greeter compositor and greetd
+starts the session as the user. The greeter keeps nothing but
+`/var/lib/mindos/greeter/state.json` (who signed in last, which session;
+systemd-tmpfiles creates the directory). WebKit runs an ephemeral session
+there, the process can open no links, and the host refuses every bridge
+method except `greeter.*` and `shell.state` / `shell.ready`.
+
+The page: the aurora wallpaper and a clock on every output; on the first
+output a frosted card (real `backdrop-filter`, this window has the wallpaper
+in its own DOM) with the account's avatar (AccountsService icon or initials),
+the password field (Enter submits; a wrong password shakes the card and
+clears the field; Caps Lock is announced), the other accounts as chips when
+there are any, the session as a pill when more than one is installed, the
+wordmark with the host name, and Restart / Power off buttons that ask for a
+second click. A successful login says "Welcome" and fades out before the
+hand-over. The installer offers to skip the login screen (`initial_session`
+autologin, once per boot); logging out always shows it.
+
 **Wallpaper.** With `desktop.wallpaper.mode = "image"` the desktop sets
 `background-image: url(mindos://shell/file/<path>)` (a path that already has
 a scheme is used verbatim); `mode = "builtin"` draws the generated MindOS
-wallpaper. The Settings › Wallpaper page and the Files app's "Set as
-wallpaper" write `desktop.wallpaper` through `layout.save`.
+wallpaper. The Settings › Wallpaper page writes `desktop.wallpaper` through
+`layout.save`. "Set as Background" in Files, Image Viewer and any other app
+that uses the Wallpaper portal reaches the shell host, which implements that
+portal's backend (`src/portal.rs`: bus name
+`org.freedesktop.impl.portal.desktop.mindos`, selected by
+`mindos-portals.conf`, activatable through `mindos-shell.service`) and writes
+the same field; so does the `mindos-wallpaper PATH` command from
+`mindos-apps`. The host's file monitor picks the change up either way.
 
 **Widget settings.** Widgets declare `settings: { key: { label, type, min?,
 max?, step?, unit?, slider?, options?, segmented?, help?, placeholder?,

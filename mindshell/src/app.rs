@@ -18,6 +18,7 @@ use crate::apps::{self, AppEntry};
 use crate::bridge;
 use crate::config::Config;
 use crate::fs;
+use crate::greeter;
 use crate::icons;
 use crate::ipc::{IpcClient, IpcEvent};
 use crate::layout::{Layout, Panel};
@@ -28,6 +29,8 @@ use crate::windows::{self, Kind, PanelSpec, ShellWindow};
 use crate::HostEvent;
 
 pub const DEFAULT_UI_DIR: &str = "/usr/share/mindos/shell/ui";
+/// Besides `greeter.*`, all the login screen may ask the host for.
+const GREETER_ALLOWED: &[&str] = &["shell.state", "shell.ready", "shell.reload", "app.setTitle"];
 /// How long a closed window keeps its view alive for late bridge requests.
 const RETIRE_GRACE: Duration = Duration::from_millis(1500);
 
@@ -113,6 +116,8 @@ pub struct App {
     desktop_monitor: RefCell<Option<gio::FileMonitor>>,
     desktop_notify_pending: Cell<bool>,
     layout_reload_pending: Cell<bool>,
+    /// The login conversation in progress (`--app greeter` only).
+    greeter: RefCell<Option<greeter::Login>>,
 }
 
 impl App {
@@ -137,14 +142,16 @@ impl App {
 
         let web_context = webkit::WebContext::new();
         web_context.set_cache_model(webkit::CacheModel::DocumentViewer);
-        let data_dir = dirs_data().join("mindos/shell");
-        let cache_dir = dirs_cache().join("mindos/shell");
-        let _ = std::fs::create_dir_all(&data_dir);
-        let _ = std::fs::create_dir_all(&cache_dir);
-        let network_session = webkit::NetworkSession::new(
-            Some(&data_dir.to_string_lossy()),
-            Some(&cache_dir.to_string_lossy()),
-        );
+        let network_session = if app_mode.as_ref().map(|m| m.name == "greeter").unwrap_or(false) {
+            // The login screen keeps nothing on disk.
+            webkit::NetworkSession::new_ephemeral()
+        } else {
+            let data_dir = dirs_data().join("mindos/shell");
+            let cache_dir = dirs_cache().join("mindos/shell");
+            let _ = std::fs::create_dir_all(&data_dir);
+            let _ = std::fs::create_dir_all(&cache_dir);
+            webkit::NetworkSession::new(Some(&data_dir.to_string_lossy()), Some(&cache_dir.to_string_lossy()))
+        };
 
         let settings = webkit::Settings::new();
         settings.set_enable_developer_extras(devtools);
@@ -163,6 +170,9 @@ impl App {
 
         let ipc = IpcClient::start(events.clone());
         let tray = if app_mode.is_some() { None } else { Some(TrayHandle::start(events.clone(), icon_theme.clone())) };
+        if app_mode.is_none() {
+            crate::portal::start();
+        }
         let layout = Layout::load();
 
         let app = Rc::new(App {
@@ -190,6 +200,7 @@ impl App {
             desktop_monitor: RefCell::new(None),
             desktop_notify_pending: Cell::new(false),
             layout_reload_pending: Cell::new(false),
+            greeter: RefCell::new(None),
         });
         crate::scheme::register(&app.web_context, Rc::downgrade(&app));
         windows::install_css();
@@ -253,7 +264,7 @@ impl App {
     }
 
     /// Tell the desktop views when the Desktop folder changes so the icons
-    /// follow (a download landing there, a file renamed in Files).
+    /// follow (a download landing there, a file renamed in the file manager).
     fn watch_desktop(self: &Rc<Self>) {
         let path = fs::desktop_dir();
         let dir = gio::File::for_path(&path);
@@ -300,8 +311,52 @@ impl App {
         });
     }
 
+    /// `--app greeter`?
+    pub fn is_greeter(&self) -> bool {
+        self.app_mode.as_ref().map(|m| m.name == "greeter").unwrap_or(false)
+    }
+
+    /// The login screen: a full-screen overlay on every output. The first
+    /// one carries the login card and the keyboard, the rest the wallpaper.
+    fn sync_greeter_windows(self: &Rc<Self>) {
+        let monitors = windows::monitors();
+        let names: Vec<(String, gdk::Monitor)> = monitors
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (windows::monitor_name(m, i), m.clone()))
+            .collect();
+        let gone: Vec<Rc<ShellWindow>> = self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|w| !names.iter().any(|(n, m)| *n == w.output && *m == w.monitor))
+            .cloned()
+            .collect();
+        for w in gone {
+            self.remove_window(&w);
+        }
+        let has_primary = self.windows.borrow().iter().any(|w| w.keyboard.get());
+        for (i, (name, monitor)) in names.iter().enumerate() {
+            if self.find_window(Kind::Greeter, "greeter", name).is_some() {
+                continue;
+            }
+            let primary = !has_primary && i == 0;
+            let arg = json!({ "primary": primary });
+            let url = bridge::window_url("greeter", "greeter", name, None, Some(&arg), None);
+            self.create_window(Kind::Greeter, "greeter", name, monitor, None, primary, &url);
+        }
+        if self.windows.borrow().is_empty() {
+            tracing::error!("no monitor to show the login screen on");
+            self.main_loop.quit();
+        }
+    }
+
     /// `--app`: the one window this process shows.
     fn sync_app_window(self: &Rc<Self>, mode: &AppMode) {
+        if mode.name == "greeter" {
+            self.sync_greeter_windows();
+            return;
+        }
         if self.windows.borrow().iter().any(|w| w.kind == Kind::App) {
             return;
         }
@@ -521,7 +576,8 @@ impl App {
                 }
             });
         });
-        view.connect_decide_policy(|_, decision, kind| {
+        let greeter_view = kind == Kind::Greeter;
+        view.connect_decide_policy(move |_, decision, kind| {
             if kind != webkit::PolicyDecisionType::NavigationAction {
                 return false;
             }
@@ -535,8 +591,12 @@ impl App {
             if uri.starts_with("mindos://") || uri.starts_with("about:") || uri.is_empty() {
                 return false;
             }
-            tracing::info!(uri, "opening external link");
             decision.ignore();
+            if greeter_view {
+                // The login screen opens nothing.
+                return true;
+            }
+            tracing::info!(uri, "opening external link");
             let _ = apps::spawn_detached(&format!("xdg-open {}", shell_quote(&uri)), &[]);
             true
         });
@@ -546,6 +606,10 @@ impl App {
         *sw.panel.borrow_mut() = panel;
         sw.keyboard.set(keyboard);
         sw.apply_geometry(self.state.borrow().edit_mode);
+        if kind == Kind::Greeter {
+            // The void, so the hand-over from the splash never flashes.
+            sw.view.set_background_color(&gdk::RGBA::new(0.0196, 0.0275, 0.0392, 1.0));
+        }
         if kind == Kind::App {
             // Opaque page background (the theme's --bg-0) so nothing shows through while loading.
             sw.view.set_background_color(&gdk::RGBA::new(0.039, 0.051, 0.071, 1.0));
@@ -631,8 +695,62 @@ impl App {
                 .map(|s| s.to_string())
                 .ok_or_else(|| format!("{method}: missing '{key}'"))
         };
+        if self.is_greeter() && !method.starts_with("greeter.") && !GREETER_ALLOWED.contains(&method) {
+            return Err(format!("'{method}' is not available on the login screen"));
+        }
         match method {
             "shell.state" => Ok(self.state_json()),
+            // ---- the login screen (greetd does the authenticating)
+            "greeter.info" => Ok(greeter::info_json()),
+            "greeter.login" => {
+                let user = str_param("user")?;
+                let password = params.get("password").and_then(Value::as_str).unwrap_or("").to_string();
+                let session = params.get("session").and_then(Value::as_str).unwrap_or("mindos").to_string();
+                let exec = greeter::sessions()
+                    .into_iter()
+                    .find(|s| s.id == session)
+                    .map(|s| s.exec)
+                    .ok_or_else(|| format!("unknown session '{session}'"))?;
+                if let Some(mut old) = self.greeter.borrow_mut().take() {
+                    blocking(move || old.cancel()).await;
+                }
+                let (login, outcome) = blocking(move || greeter::Login::start(&user, &password, vec![exec], Vec::new())).await?;
+                self.greeter_outcome(login, outcome, &session)
+            }
+            "greeter.respond" => {
+                let response = params.get("response").and_then(Value::as_str).map(|s| s.to_string());
+                let session = params.get("session").and_then(Value::as_str).unwrap_or("mindos").to_string();
+                let mut login = self.greeter.borrow_mut().take().ok_or("greeter.respond: no login in progress")?;
+                let (login, result) = blocking(move || {
+                    let r = login.respond(response);
+                    (login, r)
+                })
+                .await;
+                self.greeter_outcome(login, result?, &session)
+            }
+            "greeter.cancel" => {
+                if let Some(mut login) = self.greeter.borrow_mut().take() {
+                    blocking(move || login.cancel()).await;
+                }
+                Ok(Value::Null)
+            }
+            "greeter.done" => {
+                // The session is queued in greetd; it starts when the greeter
+                // is gone. The compositor ends, and this process with it.
+                tracing::info!("login complete, handing over to the session");
+                if self.ipc.is_connected() {
+                    let _ = self.ipc.request(json!({ "type": "quit" })).await;
+                }
+                let _ = self.events.send_blocking(HostEvent::Quit);
+                Ok(Value::Null)
+            }
+            "greeter.power" => {
+                let action = str_param("action")?;
+                if !matches!(action.as_str(), "poweroff" | "reboot" | "suspend") {
+                    return Err(format!("greeter.power: '{action}' is not offered on the login screen"));
+                }
+                blocking(move || system::power(&action)).await.map(|_| Value::Null)
+            }
             "shell.ready" => {
                 win.ready.set(true);
                 tracing::debug!(kind = win.kind.as_str(), id = win.id, output = win.output, "view ready");
@@ -843,11 +961,9 @@ impl App {
                     .ok_or("mind.request: missing 'request'")?;
                 blocking(move || mind::request(request)).await
             }
-            // ---- wallpapers and files
+            // ---- wallpapers and the desktop folder
             "wallpaper.list" => Ok(blocking(fs::wallpapers).await),
-            "fs.home" => Ok(json!({ "path": fs::home().to_string_lossy() })),
             "fs.desktop" => Ok(json!({ "path": fs::desktop_dir().to_string_lossy() })),
-            "fs.places" => Ok(fs::places()),
             "fs.list" => {
                 let path = fs::expand(&str_param("path").unwrap_or_default());
                 let hidden = params.get("hidden").and_then(Value::as_bool).unwrap_or(false);
@@ -855,38 +971,16 @@ impl App {
                 let size = self.config.shell.icon_size;
                 blocking(move || fs::list(&path, hidden, &theme, size)).await
             }
-            "fs.stat" => {
-                let path = fs::expand(&str_param("path")?);
-                blocking(move || fs::stat(&path)).await
-            }
-            "fs.mkdir" => {
-                let parent = fs::expand(&str_param("path")?);
-                let name = str_param("name")?;
-                let made = blocking(move || fs::mkdir(&parent, &name)).await?;
-                Ok(json!({ "path": made.to_string_lossy() }))
-            }
-            "fs.rename" => {
-                let path = fs::expand(&str_param("path")?);
-                let name = str_param("name")?;
-                let renamed = blocking(move || fs::rename(&path, &name)).await?;
-                Ok(json!({ "path": renamed.to_string_lossy() }))
-            }
-            "fs.trash" | "fs.copy" | "fs.move" => {
+            "fs.trash" => {
                 let paths: Vec<PathBuf> = params
                     .get("paths")
                     .and_then(Value::as_array)
                     .map(|a| a.iter().filter_map(Value::as_str).map(fs::expand).collect())
                     .unwrap_or_default();
                 if paths.is_empty() {
-                    return Err(format!("{method}: missing 'paths'"));
+                    return Err("fs.trash: missing 'paths'".into());
                 }
-                let count = if method == "fs.trash" {
-                    blocking(move || fs::trash(&paths)).await?
-                } else {
-                    let dest = fs::expand(&str_param("dest")?);
-                    let moving = method == "fs.move";
-                    blocking(move || fs::transfer(&paths, &dest, moving)).await?
-                };
+                let count = blocking(move || fs::trash(&paths)).await?;
                 Ok(json!({ "count": count }))
             }
             "fs.open" => {
@@ -916,6 +1010,19 @@ impl App {
             }
             _ => Err(format!("unknown method '{method}'")),
         }
+    }
+
+    /// Keep or drop the login conversation depending on how far it got.
+    fn greeter_outcome(&self, login: greeter::Login, outcome: greeter::Outcome, session: &str) -> Result<Value, String> {
+        match &outcome {
+            greeter::Outcome::Prompt { .. } => *self.greeter.borrow_mut() = Some(login),
+            greeter::Outcome::Started => {
+                greeter::save_state(&login.user, session);
+                tracing::info!(user = login.user, session, "authenticated");
+            }
+            greeter::Outcome::Failed { .. } => {}
+        }
+        Ok(greeter::outcome_json(&outcome))
     }
 
     /// StatusNotifier items first, then the compositor's XEmbed icons.

@@ -1,0 +1,15 @@
+# /etc/mindos/greeter/mindwm.toml — the compositor as the login screen.
+# Loaded on top of /etc/mindos/mindwm.toml by mindos-greeter (MINDWM_CONFIG).
+
+[session]
+# Kiosk: no Mind bar, no launcher, no shortcut or IPC request that starts a
+# program or ends the session. VT switching (Ctrl+Alt+F2...) still works.
+kiosk = true
+
+[startup]
+# The login screen itself: one full-screen overlay per output.
+exec = ["mindshell --app greeter"]
+
+[theme]
+# The greeter draws its own wordmark.
+show_wordmark = false

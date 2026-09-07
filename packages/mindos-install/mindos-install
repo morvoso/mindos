@@ -4,9 +4,11 @@
 # Interactive by default. Non-interactive with MINDOS_AUTO=1 and:
 #   MINDOS_DISK=/dev/nvme0n1  MINDOS_HOSTNAME=mindos  MINDOS_USER=alice
 #   MINDOS_PASSWORD=secret    MINDOS_TZ=America/Chicago
-#   MINDOS_INSTALL_GAMING=1   MINDOS_INSTALL_DEV=1
+#   MINDOS_INSTALL_GAMING=1   MINDOS_INSTALL_DEV=1   MINDOS_AUTOLOGIN=0
 #
 # Layout: GPT — 1 MiB BIOS boot, 1 GiB EFI (/boot), rest btrfs (@ @home @log @pkg @snapshots).
+# Boot: Limine on the EFI partition (and the BIOS boot partition); snapper keeps
+# snapshots of @ around every pacman run and the boot menu lists them (mindos-boot).
 set -euo pipefail
 trap 'rc=$?; echo; echo "mindos-install: FAILED at line $LINENO: $BASH_COMMAND (exit $rc)" >&2; exit $rc' ERR
 
@@ -44,6 +46,7 @@ if [[ $AUTO == 1 ]]; then
   TZ_=${MINDOS_TZ:-America/Chicago}
   GAMING=${MINDOS_INSTALL_GAMING:-1}
   DEV=${MINDOS_INSTALL_DEV:-1}
+  AUTOLOGIN=${MINDOS_AUTOLOGIN:-0}
 else
   say "Disks:"; list_disks | sed 's/^/    /'; echo
   ask DISK "Install to (whole disk, will be ERASED)"
@@ -66,6 +69,8 @@ else
   GAMING=$([[ $g =~ ^[Nn] ]] && echo 0 || echo 1)
   ask d "Install the development stack (Rust, Node, Docker, editors)? [Y/n]" Y
   DEV=$([[ $d =~ ^[Nn] ]] && echo 0 || echo 1)
+  ask l "Skip the login screen and sign $USERNAME in automatically at boot? [y/N]" N
+  AUTOLOGIN=$([[ $l =~ ^[Yy] ]] && echo 1 || echo 0)
 fi
 [[ -b $DISK ]] || die "$DISK is not a block device"
 [[ -f /usr/share/zoneinfo/$TZ_ ]] || die "unknown timezone $TZ_"
@@ -74,7 +79,7 @@ KEYMAP=us
 NVIDIA=0; lspci -d 10de: 2>/dev/null | grep -qiE "vga|3d|display" && NVIDIA=1
 AMDGPU=0; lspci -d 1002: 2>/dev/null | grep -qiE "vga|3d|display" && AMDGPU=1
 
-PKGS=(base base-devel linux-firmware mindos-base mindos-session mindos-mind mindwm mindos-theme)
+PKGS=(base base-devel linux-firmware mindos-base mindos-session mindos-mind mindwm mindos-theme mindos-apps)
 [[ $NVIDIA == 1 ]] && PKGS+=(ggml-cuda)
 [[ $GAMING == 1 ]] && PKGS+=(mindos-gaming)
 [[ $DEV == 1 ]] && PKGS+=(mindos-dev)
@@ -84,6 +89,7 @@ say "Plan"
 cat <<PLAN
     disk      $DISK  (GPT: BIOS boot 1M, EFI 1G, btrfs rest)
     hostname  $HOSTNAME_      user  $USERNAME      timezone  $TZ_
+    login     $([[ $AUTOLOGIN == 1 ]] && echo "automatic (no login screen)" || echo "MindOS login screen")
     gpu       nvidia=$NVIDIA amdgpu=$AMDGPU
     packages  ${PKGS[*]}
 PLAN
@@ -150,16 +156,14 @@ mods=()
 mkdir -p "$TARGET/etc/mkinitcpio.conf.d"
 sed "s/^MODULES=.*/MODULES=(${mods[*]})/" /usr/share/mindos/mkinitcpio-mindos.conf \
   > "$TARGET/etc/mkinitcpio.conf.d/mindos.conf"
-install -Dm644 /usr/share/mindos/grub-default "$TARGET/etc/default/grub"
-if [[ $NVIDIA == 0 ]]; then
-  sed -i 's/ nvidia_drm.modeset=1 nvidia_drm.fbdev=1//' "$TARGET/etc/default/grub"
-fi
-cat >> "$TARGET/etc/mindos/greetd.toml" <<GREETD
+if [[ $AUTOLOGIN == 1 ]]; then
+  cat >> "$TARGET/etc/mindos/greetd.toml" <<GREETD
 
 [initial_session]
 command = "mindos-session"
 user = "$USERNAME"
 GREETD
+fi
 install -Dm440 /dev/stdin "$TARGET/etc/sudoers.d/10-wheel" <<<'%wheel ALL=(ALL:ALL) ALL'
 
 cat > "$TARGET/root/mindos-configure.sh" <<CHROOT
@@ -181,14 +185,16 @@ done
 useradd -m -s /bin/bash -G "\${groups#,}" "$USERNAME"
 printf '%s:%s\n' "$USERNAME" '$(printf %s "$PASSWORD" | sed "s/'/'\\\\''/g")' | chpasswd
 /usr/lib/mindos/apply-branding || true
-if [[ $UEFI == 1 ]]; then
-  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=MindOS --recheck
-  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=MindOS --removable || true
-fi
-grub-install --target=i386-pc --recheck "$DISK" || true
-grub-mkconfig -o /boot/grub/grub.cfg
 plymouth-set-default-theme -R mindos
-for u in greetd mindd NetworkManager bluetooth fstrim.timer systemd-timesyncd mindos-console-theme; do
+# Boot menu and snapshots: Limine on the ESP (UEFI entry "MindOS") and in the
+# BIOS boot partition, the snapper "root" configuration, a first snapshot of the
+# freshly installed system, and /boot/limine.conf listing it all.
+mindos-boot install --disk "$DISK"
+mindos-boot setup
+snapper --no-dbus -c root create -d "MindOS installed" -c number --userdata important=yes >/dev/null 2>&1 \
+  || echo "  (could not take the first snapshot)"
+mindos-boot sync
+for u in greetd mindd NetworkManager bluetooth fstrim.timer systemd-timesyncd mindos-console-theme snapper-cleanup.timer; do
   systemctl enable "\$u" >/dev/null 2>&1 || echo "  (could not enable \$u)"
 done
 if [[ $DEV == 1 ]] && systemctl list-unit-files docker.service >/dev/null 2>&1; then
@@ -202,8 +208,11 @@ rm -f "$TARGET/root/mindos-configure.sh"
 say "Done"
 cat <<SUMMARY
     MindOS is installed on $DISK.
-      hostname $HOSTNAME_   user $USERNAME (wheel, mindos)   autologin into the MindOS session
-      kernel   linux-mindos   bootloader GRUB ($([[ $UEFI == 1 ]] && echo UEFI || echo BIOS))
+      hostname $HOSTNAME_   user $USERNAME (wheel, mindos)
+      login    $([[ $AUTOLOGIN == 1 ]] && echo "automatic at boot; logging out shows the MindOS login screen" || echo "the MindOS login screen (greetd)")
+      kernel   linux-mindos   boot menu Limine ($([[ $UEFI == 1 ]] && echo UEFI || echo BIOS))
+      updates  snapper takes a snapshot before and after every pacman run; the boot menu
+               lists them under "Snapshots" and 'mindos-boot restore' rolls back
       Mind     mindd enabled; models in /var/lib/mindos/models
     Remove the install medium and reboot:  reboot
 SUMMARY

@@ -8,6 +8,7 @@ mindos-session
 mindos-mind
 mindwm
 mindshell
+mindos-apps
 mindos-install
 # --- boot / live ---
 base

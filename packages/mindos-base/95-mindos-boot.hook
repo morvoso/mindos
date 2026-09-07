@@ -1,0 +1,19 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/lib/modules/*/vmlinuz
+Target = usr/lib/modules/*/pkgbase
+Target = usr/share/limine/*
+Target = usr/share/mindos/kernel-cmdline
+Target = usr/share/mindos/limine-theme.conf
+Target = boot/amd-ucode.img
+Target = boot/intel-ucode.img
+
+[Action]
+Description = Updating the MindOS boot menu...
+When = PostTransaction
+Depends = mindos-base
+NeedsTargets
+Exec = /usr/bin/mindos-boot hook

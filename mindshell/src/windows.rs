@@ -24,6 +24,9 @@ pub enum Kind {
     Popup,
     /// An ordinary decorated window (`mindshell --app`).
     App,
+    /// The login screen (`mindshell --app greeter`): one full-screen overlay
+    /// per output with the keyboard to itself.
+    Greeter,
 }
 
 impl Kind {
@@ -33,6 +36,7 @@ impl Kind {
             Kind::Panel => "panel",
             Kind::Popup => "popup",
             Kind::App => "app",
+            Kind::Greeter => "greeter",
         }
     }
 }
@@ -193,6 +197,21 @@ impl ShellWindow {
                 });
                 self.view.set_size_request(-1, -1);
             }
+            Kind::Greeter => {
+                w.set_layer(Layer::Overlay);
+                for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+                    w.set_anchor(edge, true);
+                }
+                w.set_exclusive_zone(-1);
+                // Only the window with the login card takes the keyboard;
+                // the others just show the wallpaper.
+                w.set_keyboard_mode(if self.keyboard.get() {
+                    KeyboardMode::Exclusive
+                } else {
+                    KeyboardMode::None
+                });
+                self.view.set_size_request(-1, -1);
+            }
             Kind::Panel => {
                 let spec = self.panel.borrow().clone().unwrap_or_else(|| PanelSpec::from(&Panel::default()));
                 let (thickness, length, full) = self.panel_box(&spec, edit_mode);
@@ -236,7 +255,7 @@ impl ShellWindow {
     /// Where this window's top-left corner sits on its output (logical px).
     pub fn origin(&self, edit_mode: bool) -> (i32, i32) {
         match self.kind {
-            Kind::Desktop | Kind::Popup | Kind::App => (0, 0),
+            Kind::Desktop | Kind::Popup | Kind::App | Kind::Greeter => (0, 0),
             Kind::Panel => {
                 let spec = self.panel.borrow().clone().unwrap_or_else(|| PanelSpec::from(&Panel::default()));
                 let (mw, mh) = self.monitor_size();

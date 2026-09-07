@@ -664,6 +664,14 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
     fn ipc_request(&mut self, client: u64, request: Request) -> Reply {
         let ok = || Reply::Ok(json!({}));
+        if self.config.session.kiosk
+            && matches!(
+                request,
+                Request::Mindbar { .. } | Request::Launch { .. } | Request::Terminal
+            )
+        {
+            return Reply::Err("not available on the login screen".into());
+        }
         match request {
             Request::Subscribe => {
                 self.ipc.subscribe(client);

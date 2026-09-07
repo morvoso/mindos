@@ -3,6 +3,7 @@
 # every app that asks the Settings portal: dark colour scheme, the MindOS fonts.
 [org.gnome.desktop.interface]
 color-scheme='prefer-dark'
+accent-color='teal'
 gtk-theme='Adwaita-dark'
 icon-theme='breeze-dark'
 cursor-theme='Adwaita'

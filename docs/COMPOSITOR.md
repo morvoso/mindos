@@ -27,7 +27,7 @@
 * **Dark glass theme.** The desktop is the MindOS void (`#05070a`) with
   off-white text (`#e6edf3`) and one electric-cyan accent (`#19e3ff`); the
   Mind bar and the title bars are rounded, translucent dark cards with a
-  light hairline and a soft accent glow (`docs/THEME.md`). Red is reserved for the kernel console, GRUB and
+  light hairline and a soft accent glow (`docs/THEME.md`). Red is reserved for the kernel console, the boot menu and
   the boot stages and never appears in the session. When no window is open
   the `MINDOS` wordmark (Orbitron) and the key hints are drawn behind
   everything.
@@ -117,8 +117,8 @@ or width changes; drag it to move the window, double-click to maximise
 (floating windows), and the glyphs on the right minimise, maximise and close
 (close only on a tile). A window that asks for
 client-side decorations gets none from the compositor; one that never asks
-gets none either, except the shell's app windows (`mindos-settings`,
-`mindos-files`), which open undecorated so they get the same bar as
+gets none either, except the shell's app windows (`mindos-settings`), which
+open undecorated so they get the same bar as
 everything else. `Super+Shift+D` toggles the decoration mode of the focused
 window.
 
@@ -226,9 +226,15 @@ background = "#05070a"   # the MindOS void
 foreground = "#e6edf3"
 accent = "#19e3ff"       # Mind bar lines, selection, wordmark glow
 show_wordmark = true
+
+[session]
+kiosk = false            # true for the login screen (mindos-greeter): no Mind bar,
+                         # no launcher, no shortcut/IPC that starts a program
 ```
 
-`MIND_SOCKET` in the environment overrides `[mind].socket`.
+`MIND_SOCKET` in the environment overrides `[mind].socket`; `MINDWM_CONFIG`
+names one more file loaded last (the greeter uses
+`/etc/mindos/greeter/mindwm.toml`).
 
 ## Layout of the sources
 
@@ -301,7 +307,12 @@ clears it before every session: the cleared console is what is visible between
 the splash and mindwm's first frame, and it is now the same dark colour as the
 desktop instead of boot red. Once greetd is up, `plymouth quit --retain-splash`
 ends plymouthd. If greetd fails, `plymouth-quit.service` runs (`OnFailure=`) so
-the text greeter (agreety) is reachable.
+the console is reachable.
+
+greetd's greeter is `mindos-greeter`: this compositor in kiosk mode showing
+`mindshell --app greeter`, the MindOS login screen (see docs/SHELL.md, *The
+login screen*). It runs as the `greeter` user, so a compositor crash there
+simply restarts the login screen.
 
 ## Debugging on the live ISO
 
@@ -311,10 +322,12 @@ the text greeter (agreety) is reachable.
   `nc -U` and a `{"type":"get_windows"}` line show what the shell sees.
 * `Ctrl+Alt+F2` is a root shell on the live ISO; in QEMU with
   `-serial file:...` anything redirected to `/dev/ttyS0` lands in that file.
-* A crash drops back to greetd, which shows the text greeter (agreety) on
-  VT 1. greetd only runs the autologin `initial_session` once per boot; to
-  re-run it after fixing something, `rm /run/greetd.run && systemctl restart
-  greetd`.
+* A crash drops back to greetd, which shows the MindOS login screen on VT 1
+  (`journalctl -t mindos-greeter` for its compositor, `journalctl -t
+  mindshell` for the page). greetd only runs the autologin `initial_session`
+  once per boot; to re-run it after fixing something, `rm /run/greetd.run &&
+  systemctl restart greetd`; without the `rm` the restart shows the login
+  screen.
 * A VT switch pauses the session: rendering stops until the VT comes back
   (no repaint retries while inactive).
 * To try a new build without rebuilding the ISO, ship the stripped binary

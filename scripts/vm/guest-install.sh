@@ -16,8 +16,11 @@ set -euo pipefail
 : "${MINDOS_DISK:=/dev/vda}" "${MINDOS_HOSTNAME:=mindos-dev}" "${MINDOS_USER:=morvoso}"
 : "${MINDOS_PASSWORD:=mindos}" "${MINDOS_TZ:=America/New_York}"
 : "${MINDOS_INSTALL_GAMING:=0}" "${MINDOS_INSTALL_DEV:=1}" "${MINDOS_SHARE_TAG:=mindos}"
+# The dev VM logs in by itself so the tooling lands on a desktop; the login
+# screen is still there after a logout (or `systemctl restart greetd`).
+: "${MINDOS_AUTOLOGIN:=1}"
 export MINDOS_AUTO=1 MINDOS_DISK MINDOS_HOSTNAME MINDOS_USER MINDOS_PASSWORD MINDOS_TZ \
-       MINDOS_INSTALL_GAMING MINDOS_INSTALL_DEV
+       MINDOS_INSTALL_GAMING MINDOS_INSTALL_DEV MINDOS_AUTOLOGIN
 T=/mnt
 
 echo "== network"
@@ -50,10 +53,9 @@ fi
 # QEMU's virtio-gpu only advertises its EDID mode, 1920x1080@75, which caps the
 # compositor at 75 fps. Add a 120 Hz mode for the virtual connector and select it
 # up front (mindwm keys modes by mHz, so 120.04 Hz is "1920x1080@120040").
-if ! grep -q 'video=Virtual-1' "$T/etc/default/grub"; then
-  sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 video=Virtual-1:1920x1080@120"/' \
-    "$T/etc/default/grub"
-  arch-chroot "$T" grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1
+if ! grep -q 'video=Virtual-1' "$T/etc/mindos/boot.conf"; then
+  sed -i 's/^CMDLINE_EXTRA=""/CMDLINE_EXTRA="video=Virtual-1:1920x1080@120"/' "$T/etc/mindos/boot.conf"
+  arch-chroot "$T" mindos-boot config >/dev/null 2>&1
 fi
 install -d -o "$uid" -g "$gid" "$T$home/.local" "$T$home/.local/state" "$T$home/.local/state/mindos"
 if [[ ! -e $T$home/.local/state/mindos/mindwm.json ]]; then

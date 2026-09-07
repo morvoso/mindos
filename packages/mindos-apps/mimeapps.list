@@ -1,0 +1,38 @@
+# MindOS default applications (mindos-apps). Users override these in
+# ~/.config/mimeapps.list; `xdg-mime default APP.desktop MIME` writes it.
+[Default Applications]
+inode/directory=org.gnome.Nautilus.desktop
+image/png=org.gnome.Loupe.desktop
+image/jpeg=org.gnome.Loupe.desktop
+image/gif=org.gnome.Loupe.desktop
+image/webp=org.gnome.Loupe.desktop
+image/bmp=org.gnome.Loupe.desktop
+image/svg+xml=org.gnome.Loupe.desktop
+image/tiff=org.gnome.Loupe.desktop
+image/avif=org.gnome.Loupe.desktop
+image/heif=org.gnome.Loupe.desktop
+image/jxl=org.gnome.Loupe.desktop
+text/plain=org.gnome.TextEditor.desktop
+text/markdown=org.gnome.TextEditor.desktop
+text/x-log=org.gnome.TextEditor.desktop
+text/x-python=org.gnome.TextEditor.desktop
+text/x-shellscript=org.gnome.TextEditor.desktop
+text/x-c=org.gnome.TextEditor.desktop
+text/x-rust=org.gnome.TextEditor.desktop
+text/csv=org.gnome.TextEditor.desktop
+application/json=org.gnome.TextEditor.desktop
+application/toml=org.gnome.TextEditor.desktop
+application/x-yaml=org.gnome.TextEditor.desktop
+application/xml=org.gnome.TextEditor.desktop
+application/zip=org.gnome.FileRoller.desktop
+application/x-tar=org.gnome.FileRoller.desktop
+application/gzip=org.gnome.FileRoller.desktop
+application/x-compressed-tar=org.gnome.FileRoller.desktop
+application/x-bzip2=org.gnome.FileRoller.desktop
+application/x-bzip-compressed-tar=org.gnome.FileRoller.desktop
+application/x-xz=org.gnome.FileRoller.desktop
+application/x-xz-compressed-tar=org.gnome.FileRoller.desktop
+application/zstd=org.gnome.FileRoller.desktop
+application/x-zstd-compressed-tar=org.gnome.FileRoller.desktop
+application/x-7z-compressed=org.gnome.FileRoller.desktop
+application/vnd.rar=org.gnome.FileRoller.desktop

@@ -2,7 +2,7 @@
 # The MindOS compositor (Smithay based, Wayland + XWayland on DRM/KMS), built from ../../mindwm.
 pkgname=mindwm
 pkgver=0.1.0
-pkgrel=13
+pkgrel=14
 pkgdesc="MindOS compositor: game-mode Wayland/XWayland compositor with the Mind bar"
 arch=(x86_64)
 url="https://mindos.local"

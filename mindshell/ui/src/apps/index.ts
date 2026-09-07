@@ -2,7 +2,6 @@
 // `mindshell --app NAME`. The app name comes from the window id.
 
 import { h } from '../dom';
-import { renderFiles } from './files';
 import { renderSettings } from './settings';
 
 export function renderApp(root: HTMLElement, name: string, arg: unknown): void {
@@ -12,9 +11,6 @@ export function renderApp(root: HTMLElement, name: string, arg: unknown): void {
   switch (name) {
     case 'settings':
       renderSettings(root, a.page);
-      break;
-    case 'files':
-      renderFiles(root, a.arg);
       break;
     default:
       root.appendChild(h('div', { class: 'app-empty' }, `There is no app called “${name}”.`));

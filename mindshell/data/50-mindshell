@@ -8,6 +8,11 @@ case "$(systemctl --user is-system-running 2>/dev/null)" in
 running|degraded)
   systemctl --user import-environment WAYLAND_DISPLAY DISPLAY MINDWM_SOCKET XDG_CURRENT_DESKTOP \
     XDG_SESSION_TYPE XDG_SESSION_DESKTOP 2>/dev/null
+  # The user manager outlives the session. When the previous session ended
+  # abruptly (compositor crash, `systemctl restart greetd`) the shell crash-looped
+  # into its start limit, and a plain restart would be refused for a minute:
+  # clear that first, or the next login through the greeter has no shell.
+  systemctl --user reset-failed mindos-shell.service 2>/dev/null
   exec systemctl --user restart mindos-shell.service ;;
 esac
 exec setsid -f mindshell >/dev/null 2>&1

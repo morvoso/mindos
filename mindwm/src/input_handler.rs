@@ -67,6 +67,12 @@ use smithay::{
 
 impl<BackendData: Backend> AnvilState<BackendData> {
     fn process_common_key_action(&mut self, action: KeyAction) {
+        if self.config.session.kiosk && !matches!(action, KeyAction::None | KeyAction::VtSwitch(_)) {
+            // The login screen: nothing starts a program, opens the Mind bar
+            // or ends the compositor from the keyboard.
+            debug!(?action, "ignored in kiosk mode");
+            return;
+        }
         match action {
             KeyAction::None => (),
 

@@ -1,23 +1,26 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-base
 pkgver=0.1.0
-pkgrel=3
-pkgdesc="MindOS base system: branding, gaming/dev kernel and system tuning, NVIDIA + Mesa stack"
+pkgrel=4
+pkgdesc="MindOS base system: branding, gaming/dev kernel and system tuning, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
 arch=(any)
 url="https://mindos.local"
 license=(MIT)
 depends=(base linux-mindos linux-mindos-headers linux-firmware amd-ucode intel-ucode
          mkinitcpio zram-generator plymouth mindos-theme
-         networkmanager bluez bluez-utils sudo grub efibootmgr btrfs-progs dosfstools e2fsprogs
+         networkmanager bluez bluez-utils sudo limine efibootmgr btrfs-progs dosfstools e2fsprogs
+         snapper snap-pac
          nvidia-open-dkms nvidia-utils lib32-nvidia-utils nvidia-settings dkms clang llvm lld
          mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader vulkan-radeon lib32-vulkan-radeon
          fastfetch flatpak)
 install=mindos-base.install
-backup=(etc/systemd/zram-generator.conf)
+backup=(etc/systemd/zram-generator.conf etc/mindos/boot.conf etc/snapper/configs/root)
 source=(os-release apply-branding 90-mindos-branding.hook 60-mindos-gaming.conf
         60-mindos-ioscheduler.rules 70-mindos-controllers.rules zram-generator.conf
-        mindos-nvidia.conf 60-mindos.conf kernel-cmdline mkinitcpio-mindos.conf)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+        mindos-nvidia.conf 60-mindos.conf kernel-cmdline mkinitcpio-mindos.conf
+        mindos-boot boot.conf snapper-root 10-mindos-boot 95-mindos-boot.hook remount-fs-snapshot.conf)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP
+            SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm644 os-release                 "$pkgdir/usr/share/mindos/os-release"
@@ -33,4 +36,12 @@ package() {
   # Installed to /etc/mkinitcpio.conf.d/mindos.conf by the installer (not on the live ISO,
   # whose initramfs is built with the archiso hooks).
   install -Dm644 mkinitcpio-mindos.conf     "$pkgdir/usr/share/mindos/mkinitcpio-mindos.conf"
+  # The boot menu (Limine) and the snapshots behind it: mindos-boot writes
+  # /boot/limine.conf, keeps a kernel copy per snapper snapshot and restores one.
+  install -Dm755 mindos-boot                "$pkgdir/usr/bin/mindos-boot"
+  install -Dm644 boot.conf                  "$pkgdir/etc/mindos/boot.conf"
+  install -Dm644 snapper-root               "$pkgdir/etc/snapper/configs/root"
+  install -Dm755 10-mindos-boot             "$pkgdir/usr/lib/snapper/plugins/10-mindos-boot"
+  install -Dm644 95-mindos-boot.hook        "$pkgdir/usr/share/libalpm/hooks/95-mindos-boot.hook"
+  install -Dm644 remount-fs-snapshot.conf   "$pkgdir/usr/lib/systemd/system/systemd-remount-fs.service.d/mindos-snapshot.conf"
 }

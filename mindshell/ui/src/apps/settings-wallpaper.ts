@@ -23,7 +23,7 @@ export function wallpaperPage(el: HTMLElement): () => void {
     pageHeader('Wallpaper', 'Pick a picture for the desktop. Anything in ~/Pictures/Wallpapers or /usr/share/backgrounds shows up here.'),
     note.el,
     card(null, grid),
-    card('More pictures', h('div', { class: 'inline-form' }, folderIn, addBtn), h('div', { class: 'row-help' }, 'Or right-click a picture in Files and choose “Set as wallpaper”.')),
+    card('More pictures', h('div', { class: 'inline-form' }, folderIn, addBtn), h('div', { class: 'row-help' }, 'Or right-click a picture in Files or Image Viewer and choose “Set as Background”.')),
   );
 
   const current = () => store.state.layout.desktop.wallpaper;

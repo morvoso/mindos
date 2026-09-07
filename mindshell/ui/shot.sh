@@ -28,4 +28,6 @@ shot app-wallpaper       'kind=app&id=settings&arg=%7B%22page%22%3A%22wallpaper%
 shot app-displays        'kind=app&id=settings&arg=%7B%22page%22%3A%22displays%22%7D' 1040,700
 shot app-desktop         'kind=app&id=settings&arg=%7B%22page%22%3A%22shell%22%7D' 1040,700
 shot app-files           'kind=app&id=files' 1040,700
+# The login screen (kind=greeter) on a full output.
+shot greeter             'kind=greeter&arg=%7B%22primary%22%3Atrue%7D'
 shot app-files-list      'kind=app&id=files&arg=%7B%22arg%22%3A%22%2Fhome%2Fmorvoso%2FDownloads%22%7D&view=list' 1040,700

@@ -1,4 +1,4 @@
-// Bits shared by the Settings and Files apps: the window frame, form rows,
+// Bits shared by the Settings app (and once the Files app): the window frame, form rows,
 // dialogs and formatting helpers.
 
 import * as bridge from '../bridge';

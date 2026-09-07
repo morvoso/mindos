@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""mindos-wallpaper: set the wallpaper of the MindOS desktop shell.
+
+    mindos-wallpaper PATH       use the image at PATH
+    mindos-wallpaper --builtin  the built-in aurora
+    mindos-wallpaper --get      print the current setting
+
+The shell keeps the wallpaper in its layout file
+(~/.config/mindos/shell/layout.json, `desktop.wallpaper`) and reloads the file
+whenever it changes, so writing it here is all it takes; the Settings app's
+Wallpaper page does the same. The system layout is the starting point when the
+user has no layout file yet.
+"""
+import json
+import os
+import sys
+
+DEFAULT = "/usr/share/mindos/shell/layout.json"
+IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".avif", ".jxl", ".bmp", ".tif", ".tiff"}
+
+
+def layout_path():
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(cfg, "mindos", "shell", "layout.json")
+
+
+def load(path):
+    for p in (path, DEFAULT):
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] in ("-h", "--help"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    path = layout_path()
+    layout = load(path)
+    desktop = layout.setdefault("desktop", {})
+    if not isinstance(desktop, dict):
+        desktop = layout["desktop"] = {}
+    if argv[1] == "--get":
+        print(json.dumps(desktop.get("wallpaper", {"mode": "builtin"})))
+        return 0
+    if argv[1] == "--builtin":
+        desktop["wallpaper"] = {"mode": "builtin"}
+    else:
+        image = os.path.abspath(argv[1])
+        if not os.path.isfile(image):
+            print(f"mindos-wallpaper: {image}: no such file", file=sys.stderr)
+            return 1
+        if os.path.splitext(image)[1].lower() not in IMAGES:
+            print(f"mindos-wallpaper: {image}: not an image", file=sys.stderr)
+            return 1
+        desktop["wallpaper"] = {"mode": "image", "path": image}
+    # Written the way the shell writes it: a temporary file renamed over the
+    # layout, so the shell's file monitor sees one complete change.
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(layout, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

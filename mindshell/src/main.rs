@@ -3,17 +3,21 @@
 //! compositor IPC client, StatusNotifier tray, and system helpers.
 //!
 //! With `--app NAME` the same binary opens one ordinary window running the
-//! UI's `NAME` app (Settings, Files) instead of the panels.
+//! UI's `NAME` app (Settings, Files) instead of the panels. `--app greeter`
+//! is the login screen: a full-screen overlay per output, started by greetd
+//! (see `mindos-greeter` in mindos-session).
 
 mod app;
 mod apps;
 mod bridge;
 mod config;
 mod fs;
+mod greeter;
 mod icons;
 mod ipc;
 mod layout;
 mod mind;
+mod portal;
 mod scheme;
 mod system;
 mod tray;
@@ -52,11 +56,11 @@ extern "C" fn on_signal(_: libc::c_int) {
 }
 
 /// The apps `--app` accepts (each is a page set in the UI bundle).
-pub const APPS: &[&str] = &["settings", "files"];
+pub const APPS: &[&str] = &["settings", "greeter"];
 
 fn usage() {
     println!(
-        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, wallpaper, displays, shell, about)\n  PATH           for the files app: the folder to open\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
+        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, wallpaper, displays, shell, about)\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
         env!("CARGO_PKG_VERSION"),
         APPS.join(", "),
         app::DEFAULT_UI_DIR
@@ -106,7 +110,7 @@ fn main() {
                 } else if let Some(page) = other.strip_prefix("--page=") {
                     opts.page = Some(page.into());
                 } else if !other.starts_with('-') && opts.app.is_some() {
-                    // `mindshell --app files ~/Downloads` (also what the desktop entry's %f passes).
+                    // A positional argument for the app (what a desktop entry's %f passes).
                     opts.arg = Some(other.to_string());
                 } else {
                     eprintln!("unknown argument '{other}'");
@@ -142,7 +146,8 @@ fn main() {
         tracing::error!(%e, "cannot initialise GTK (is WAYLAND_DISPLAY set?)");
         std::process::exit(1);
     }
-    if opts.app.is_none() && !gtk4_layer_shell::is_supported() {
+    let needs_layer_shell = opts.app.as_deref().map(|a| a == "greeter").unwrap_or(true);
+    if needs_layer_shell && !gtk4_layer_shell::is_supported() {
         tracing::error!("the compositor does not support wlr-layer-shell; mindshell cannot run here");
         std::process::exit(1);
     }

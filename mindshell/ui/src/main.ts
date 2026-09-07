@@ -2,6 +2,7 @@ import './widgets';
 import { renderApp } from './apps';
 import * as bridge from './bridge';
 import { renderDesktop } from './desktop';
+import { renderGreeter } from './greeter';
 import { installMock } from './mock';
 import { renderPanel } from './panel';
 import { renderPopupWindow } from './popups';
@@ -26,6 +27,9 @@ async function main(): Promise<void> {
       break;
     case 'app':
       renderApp(root, info.id, info.arg);
+      break;
+    case 'greeter':
+      renderGreeter(root, info.arg);
       break;
     default:
       renderPreview(root);

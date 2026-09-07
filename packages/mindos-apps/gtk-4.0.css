@@ -1,0 +1,103 @@
+/* MindOS look for GTK 4 and libadwaita applications (mindos-apps).
+   Linked from ~/.config/gtk-4.0/gtk.css by /etc/xdg/mindos/autostart/10-mindos-gtk-css.
+   The same tokens as the shell and the compositor (docs/THEME.md): void #05070a,
+   bg-0 #0a0d12, bg-1 #10151c, bg-2 #161d26, hairline #223041, fg #e6edf3,
+   accent cyan #19e3ff / #0aa7c2, danger #ff5d8f (never red), ok #3ddc97, warn #ffb454. */
+
+/* libadwaita >= 1.6 reads its named colours as CSS variables ... */
+:root {
+  --accent-bg-color: #0aa7c2;
+  --accent-fg-color: #05070a;
+  --accent-color: #19e3ff;
+  --destructive-bg-color: #ff5d8f;
+  --destructive-fg-color: #05070a;
+  --destructive-color: #ff7aa3;
+  --success-bg-color: #3ddc97;
+  --success-fg-color: #05070a;
+  --success-color: #3ddc97;
+  --warning-bg-color: #ffb454;
+  --warning-fg-color: #05070a;
+  --warning-color: #ffb454;
+  --error-bg-color: #ff5d8f;
+  --error-fg-color: #05070a;
+  --error-color: #ff7aa3;
+  --window-bg-color: #10151c;
+  --window-fg-color: #e6edf3;
+  --view-bg-color: #0a0d12;
+  --view-fg-color: #e6edf3;
+  --headerbar-bg-color: #161d26;
+  --headerbar-fg-color: #e6edf3;
+  --headerbar-border-color: #e6edf3;
+  --headerbar-backdrop-color: #10151c;
+  --headerbar-shade-color: rgb(0 0 0 / 0.36);
+  --headerbar-darker-shade-color: rgb(0 0 0 / 0.9);
+  --sidebar-bg-color: #10151c;
+  --sidebar-fg-color: #e6edf3;
+  --sidebar-backdrop-color: #0d1117;
+  --sidebar-border-color: #223041;
+  --sidebar-shade-color: rgb(0 0 0 / 0.25);
+  --secondary-sidebar-bg-color: #0d1117;
+  --secondary-sidebar-fg-color: #e6edf3;
+  --secondary-sidebar-backdrop-color: #0b0f14;
+  --secondary-sidebar-border-color: #223041;
+  --secondary-sidebar-shade-color: rgb(0 0 0 / 0.25);
+  --card-bg-color: rgb(255 255 255 / 0.06);
+  --card-fg-color: #e6edf3;
+  --card-shade-color: rgb(0 0 0 / 0.36);
+  --dialog-bg-color: #161d26;
+  --dialog-fg-color: #e6edf3;
+  --popover-bg-color: #161d26;
+  --popover-fg-color: #e6edf3;
+  --popover-shade-color: rgb(0 0 0 / 0.25);
+  --thumbnail-bg-color: #161d26;
+  --thumbnail-fg-color: #e6edf3;
+  --shade-color: rgb(0 0 0 / 0.25);
+  --scrollbar-outline-color: rgb(0 0 0 / 0.5);
+}
+
+/* ... and older libadwaita / plain GTK 4 apps the @define-color names. */
+@define-color accent_bg_color #0aa7c2;
+@define-color accent_fg_color #05070a;
+@define-color accent_color #19e3ff;
+@define-color destructive_bg_color #ff5d8f;
+@define-color destructive_fg_color #05070a;
+@define-color destructive_color #ff7aa3;
+@define-color success_bg_color #3ddc97;
+@define-color success_fg_color #05070a;
+@define-color success_color #3ddc97;
+@define-color warning_bg_color #ffb454;
+@define-color warning_fg_color #05070a;
+@define-color warning_color #ffb454;
+@define-color error_bg_color #ff5d8f;
+@define-color error_fg_color #05070a;
+@define-color error_color #ff7aa3;
+@define-color window_bg_color #10151c;
+@define-color window_fg_color #e6edf3;
+@define-color view_bg_color #0a0d12;
+@define-color view_fg_color #e6edf3;
+@define-color headerbar_bg_color #161d26;
+@define-color headerbar_fg_color #e6edf3;
+@define-color headerbar_border_color #e6edf3;
+@define-color headerbar_backdrop_color #10151c;
+@define-color headerbar_shade_color rgba(0, 0, 0, 0.36);
+@define-color headerbar_darker_shade_color rgba(0, 0, 0, 0.9);
+@define-color sidebar_bg_color #10151c;
+@define-color sidebar_fg_color #e6edf3;
+@define-color sidebar_backdrop_color #0d1117;
+@define-color sidebar_shade_color rgba(0, 0, 0, 0.25);
+@define-color secondary_sidebar_bg_color #0d1117;
+@define-color secondary_sidebar_fg_color #e6edf3;
+@define-color secondary_sidebar_backdrop_color #0b0f14;
+@define-color secondary_sidebar_shade_color rgba(0, 0, 0, 0.25);
+@define-color card_bg_color rgba(255, 255, 255, 0.06);
+@define-color card_fg_color #e6edf3;
+@define-color card_shade_color rgba(0, 0, 0, 0.36);
+@define-color dialog_bg_color #161d26;
+@define-color dialog_fg_color #e6edf3;
+@define-color popover_bg_color #161d26;
+@define-color popover_fg_color #e6edf3;
+@define-color popover_shade_color rgba(0, 0, 0, 0.25);
+@define-color thumbnail_bg_color #161d26;
+@define-color thumbnail_fg_color #e6edf3;
+@define-color shade_color rgba(0, 0, 0, 0.25);
+@define-color scrollbar_outline_color rgba(0, 0, 0, 0.5);

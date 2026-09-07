@@ -190,6 +190,17 @@ impl Layout {
                 if !w.config.is_object() {
                     w.config = Value::Object(Map::new());
                 }
+                // The shell's own Files app became Nautilus (mindos-apps);
+                // layouts saved before that still pin the old entry.
+                if w.kind == "taskbar" {
+                    if let Some(pins) = w.config.get_mut("pins").and_then(Value::as_array_mut) {
+                        for pin in pins.iter_mut() {
+                            if pin.as_str() == Some("mindos-files.desktop") {
+                                *pin = Value::String("org.gnome.Nautilus.desktop".into());
+                            }
+                        }
+                    }
+                }
             }
         }
         let mut dseen = std::collections::HashSet::new();
@@ -269,7 +280,7 @@ mod tests {
     fn sanitizes_bad_values() {
         let v = serde_json::json!({
             "panels": [
-                {"edge": "middle", "size": 9000, "widgets": [{"type": "clock"}, {"type": "clock"}]},
+                {"edge": "middle", "size": 9000, "widgets": [{"type": "clock"}, {"type": "clock"}, {"type": "taskbar", "config": {"pins": ["mindos-files.desktop", "foot.desktop"]}}]},
                 {"id": "", "edge": "top", "length": -5},
                 {"id": "x", "edge": "left", "length": 3}
             ],
@@ -279,6 +290,7 @@ mod tests {
         assert_eq!(layout.panels[0].edge, "bottom");
         assert_eq!(layout.panels[0].size, 400);
         assert_ne!(layout.panels[0].widgets[0].id, layout.panels[0].widgets[1].id);
+        assert_eq!(layout.panels[0].widgets[2].config["pins"], serde_json::json!(["org.gnome.Nautilus.desktop", "foot.desktop"]));
         assert_ne!(layout.panels[0].id, layout.panels[1].id);
         assert_eq!(layout.panels[1].length, 0);
         assert_eq!(layout.panels[2].length, 10);

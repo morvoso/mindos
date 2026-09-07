@@ -1,5 +1,5 @@
-//! File-system helpers for the Files app and the wallpaper picker: directory
-//! listings with mime types and icons, places, the basic operations, and
+//! File-system helpers for the desktop icons and the wallpaper picker: directory
+//! listings with mime types and icons, trash, opening with the default app, and
 //! the wallpaper search paths.
 
 use std::collections::HashMap;
@@ -41,14 +41,6 @@ pub fn expand(path: &str) -> PathBuf {
     } else {
         home().join(p)
     }
-}
-
-/// A file name that stays inside its directory.
-pub fn valid_name(name: &str) -> Result<(), String> {
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
-        return Err(format!("invalid name '{name}'"));
-    }
-    Ok(())
 }
 
 fn mime_of(path: &Path, is_dir: bool) -> String {
@@ -131,37 +123,6 @@ pub fn list(path: &Path, show_hidden: bool, theme: &str, icon_size: u16) -> Resu
     }))
 }
 
-/// Details for the properties dialog.
-pub fn stat(path: &Path) -> Result<Value, String> {
-    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
-    let target = std::fs::metadata(path).ok();
-    let is_dir = target.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-    let link = if meta.file_type().is_symlink() {
-        std::fs::read_link(path).ok().map(|p| p.to_string_lossy().to_string())
-    } else {
-        None
-    };
-    let items = if is_dir { std::fs::read_dir(path).map(|d| d.count()).ok() } else { None };
-    use std::os::unix::fs::PermissionsExt;
-    let mode = target.as_ref().map(|m| m.permissions().mode() & 0o777).unwrap_or(0);
-    let perms: String = [(0o400, 'r'), (0o200, 'w'), (0o100, 'x'), (0o40, 'r'), (0o20, 'w'), (0o10, 'x'), (0o4, 'r'), (0o2, 'w'), (0o1, 'x')]
-        .iter()
-        .map(|(bit, ch)| if mode & bit != 0 { *ch } else { '-' })
-        .collect();
-    Ok(json!({
-        "path": path.to_string_lossy(),
-        "name": path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-        "dir": is_dir,
-        "size": target.as_ref().map(|m| m.len()).unwrap_or(0),
-        "mtime": target.as_ref().map(mtime_secs).unwrap_or(0.0),
-        "mime": mime_of(path, is_dir),
-        "items": items,
-        "link": link,
-        "permissions": perms,
-        "mode": format!("{mode:o}"),
-    }))
-}
-
 fn special(kind: glib::UserDirectory) -> Option<PathBuf> {
     glib::user_special_dir(kind).filter(|p| p.is_dir())
 }
@@ -178,68 +139,6 @@ pub fn desktop_dir() -> PathBuf {
     path
 }
 
-/// Sidebar entries: home, the XDG folders, the root and every mounted drive.
-pub fn places() -> Value {
-    // `kind` is the UI's vocabulary (ui/src/types.ts Place): home / folder /
-    // system / mount.
-    let mut list = vec![json!({ "name": "Home", "path": home().to_string_lossy(), "icon": "user-home", "kind": "home" })];
-    let folders = [
-        (glib::UserDirectory::Desktop, "Desktop", "user-desktop"),
-        (glib::UserDirectory::Documents, "Documents", "folder-documents"),
-        (glib::UserDirectory::Downloads, "Downloads", "folder-download"),
-        (glib::UserDirectory::Pictures, "Pictures", "folder-pictures"),
-        (glib::UserDirectory::Music, "Music", "folder-music"),
-        (glib::UserDirectory::Videos, "Videos", "folder-videos"),
-    ];
-    for (kind, name, icon) in folders {
-        if let Some(path) = special(kind) {
-            if path != home() {
-                list.push(json!({ "name": name, "path": path.to_string_lossy(), "icon": icon, "kind": "folder" }));
-            }
-        }
-    }
-    list.push(json!({ "name": "System", "path": "/", "icon": "drive-harddisk", "kind": "system" }));
-    let monitor = gio::VolumeMonitor::get();
-    for mount in monitor.mounts() {
-        let Some(path) = mount.root().path() else { continue };
-        if path == Path::new("/") {
-            continue;
-        }
-        let icon = mount
-            .icon()
-            .downcast::<gio::ThemedIcon>()
-            .ok()
-            .and_then(|t| t.names().first().map(|n| n.to_string()))
-            .unwrap_or_else(|| "drive-removable-media".into());
-        list.push(json!({
-            "name": mount.name().to_string(),
-            "path": path.to_string_lossy(),
-            "icon": icon,
-            "kind": "mount",
-            "removable": mount.can_eject() || mount.can_unmount(),
-        }));
-    }
-    Value::Array(list)
-}
-
-pub fn mkdir(parent: &Path, name: &str) -> Result<PathBuf, String> {
-    valid_name(name)?;
-    let path = parent.join(name);
-    std::fs::create_dir(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    Ok(path)
-}
-
-pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
-    valid_name(name)?;
-    let parent = path.parent().ok_or("cannot rename the root")?;
-    let target = parent.join(name);
-    if target.exists() && target != path {
-        return Err(format!("'{name}' already exists"));
-    }
-    std::fs::rename(path, &target).map_err(|e| format!("cannot rename {}: {e}", path.display()))?;
-    Ok(target)
-}
-
 /// Move to the freedesktop trash (GIO handles the per-volume trash folders).
 pub fn trash(paths: &[PathBuf]) -> Result<usize, String> {
     let mut n = 0;
@@ -247,36 +146,6 @@ pub fn trash(paths: &[PathBuf]) -> Result<usize, String> {
         gio::File::for_path(path)
             .trash(gio::Cancellable::NONE)
             .map_err(|e| format!("cannot trash {}: {e}", path.display()))?;
-        n += 1;
-    }
-    Ok(n)
-}
-
-/// Copy or move into `dest` without overwriting; `cp -a`/`mv -n` handle
-/// directories, permissions and cross-device moves.
-pub fn transfer(paths: &[PathBuf], dest: &Path, moving: bool) -> Result<usize, String> {
-    if !dest.is_dir() {
-        return Err(format!("{} is not a folder", dest.display()));
-    }
-    let mut n = 0;
-    for path in paths {
-        let Some(name) = path.file_name() else { continue };
-        let target = dest.join(name);
-        if target.exists() {
-            return Err(format!("'{}' already exists in {}", name.to_string_lossy(), dest.display()));
-        }
-        if moving && dest.starts_with(path) {
-            return Err(format!("cannot move {} into itself", path.display()));
-        }
-        let mut cmd = std::process::Command::new(if moving { "mv" } else { "cp" });
-        if !moving {
-            cmd.arg("-a");
-        }
-        cmd.arg("-n").arg("--").arg(path).arg(&target);
-        let out = cmd.output().map_err(|e| format!("cannot run {}: {e}", if moving { "mv" } else { "cp" }))?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-        }
         n += 1;
     }
     Ok(n)
@@ -397,9 +266,6 @@ mod tests {
 
     #[test]
     fn names_and_paths() {
-        assert!(valid_name("a.txt").is_ok());
-        assert!(valid_name("..").is_err());
-        assert!(valid_name("a/b").is_err());
         assert!(is_image(Path::new("/x/y.PNG")));
         assert!(!is_image(Path::new("/x/y.txt")));
         std::env::set_var("HOME", "/home/test");
@@ -409,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_and_edits_a_folder() {
+    fn lists_a_folder() {
         let dir = std::env::temp_dir().join(format!("mindshell-fs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -422,19 +288,6 @@ mod tests {
         assert_eq!(listing["entries"][0]["dir"], true);
         let all = list(&dir, true, "hicolor", 32).unwrap();
         assert_eq!(all["entries"].as_array().unwrap().len(), 3);
-        let made = mkdir(&dir, "new").unwrap();
-        assert!(made.is_dir());
-        let renamed = rename(&made, "newer").unwrap();
-        assert!(renamed.is_dir() && !made.exists());
-        assert!(rename(&renamed, "sub").is_err());
-        assert_eq!(transfer(&[dir.join("b.txt")], &renamed, false).unwrap(), 1);
-        assert!(renamed.join("b.txt").is_file() && dir.join("b.txt").is_file());
-        assert!(transfer(&[dir.join("b.txt")], &renamed, false).is_err());
-        assert_eq!(transfer(&[dir.join("b.txt")], &dir.join("sub"), true).unwrap(), 1);
-        assert!(!dir.join("b.txt").exists() && dir.join("sub/b.txt").is_file());
-        let st = stat(&dir.join("sub")).unwrap();
-        assert_eq!(st["items"], 1);
-        assert_eq!(st["dir"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,0 +1,3 @@
+# The login screen remembers who signed in last (mindshell --app greeter,
+# running as the greetd `greeter` user).
+d /var/lib/mindos/greeter 0700 greeter greeter -

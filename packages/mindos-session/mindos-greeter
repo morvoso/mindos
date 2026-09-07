@@ -1,0 +1,30 @@
+#!/bin/bash
+# mindos-greeter: the MindOS login screen. greetd starts this as the
+# unprivileged `greeter` user on VT 1 (default_session in
+# /etc/mindos/greetd.toml). It is the MindOS compositor in kiosk mode
+# (/etc/mindos/greeter/mindwm.toml: no launcher, no Mind bar, no shortcuts
+# that start programs) showing `mindshell --app greeter`, which talks to
+# greetd over $GREETD_SOCK. greetd does the authenticating; once a login
+# succeeds the greeter exits and greetd starts the chosen session.
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=MindOS
+export XDG_SESSION_DESKTOP=mindos-greeter
+export XDG_CONFIG_DIRS="/etc/mindos/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
+export GDK_BACKEND=wayland
+export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
+export XCURSOR_THEME="${XCURSOR_THEME:-Adwaita}"
+
+# The greeter user has no home; give GTK, WebKit and the compositor a
+# writable, private one for the duration of the session.
+run="${XDG_RUNTIME_DIR:-/tmp/mindos-greeter-$(id -u)}"
+mkdir -p "$run/home" 2>/dev/null
+export HOME="$run/home"
+export XDG_CACHE_HOME="$HOME/.cache" XDG_DATA_HOME="$HOME/.local/share" XDG_CONFIG_HOME="$HOME/.config"
+
+export MINDWM_CONFIG=/etc/mindos/greeter/mindwm.toml
+
+if command -v systemd-cat >/dev/null 2>&1; then
+  exec systemd-cat -t mindos-greeter mindwm --tty-udev
+fi
+exec mindwm --tty-udev
