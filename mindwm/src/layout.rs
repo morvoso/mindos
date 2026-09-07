@@ -105,6 +105,11 @@ pub struct TileData {
     pub width: Cell<f32>,
     /// Geometry before the window was maximised (floating mode restores it).
     pub saved: RefCell<Option<Rectangle<i32, Logical>>>,
+    /// Geometry before the window became a tile; it goes back there when the
+    /// desktop returns to floating or the window is taken out of the tiling.
+    pub untiled: RefCell<Option<Rectangle<i32, Logical>>>,
+    /// The layout has this window in a tile slot right now.
+    pub tiled_now: Cell<bool>,
 }
 
 impl WindowElement {
@@ -522,6 +527,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 if dragging.as_ref() == Some(w) {
                     continue;
                 }
+                self.remember_untiled(w);
                 let (rect, tiled) = if w.pending_maximized() { (area, false) } else { (rect, true) };
                 let loc = self.apply_rect(w, rect, tiled);
                 targets.push((w.clone(), loc));
@@ -535,8 +541,8 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             if w.pending_maximized() {
                 let loc = self.apply_rect(w, area, false);
                 targets.push((w.clone(), loc));
-            } else {
-                self.ensure_untiled(w);
+            } else if let Some(loc) = self.ensure_untiled(w) {
+                targets.push((w.clone(), loc));
             }
         }
 
@@ -597,14 +603,63 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         rect.loc
     }
 
-    /// Clear the tiled states of a window that is not a tile (any more).
-    fn ensure_untiled(&mut self, window: &WindowElement) {
+    /// Note where a window is before its first tile slot, so that it can go
+    /// back there. A window that was maximised has just been restored by
+    /// `set_layout_mode`, so the size it was asked for counts, not the one
+    /// still on screen.
+    fn remember_untiled(&mut self, window: &WindowElement) {
+        let tile = window.tile();
+        if tile.tiled_now.replace(true) {
+            return;
+        }
+        let Some(mut geometry) = self.space.element_geometry(window) else {
+            return;
+        };
         if let Some(toplevel) = window.0.toplevel() {
-            let changed = toplevel.with_pending_state(|state| set_tiled(state, false));
-            if changed && toplevel.is_initial_configure_sent() {
-                toplevel.send_pending_configure();
+            if let Some(size) = toplevel.with_pending_state(|state| state.size) {
+                geometry.size = (size.w, size.h + window.pending_header_height()).into();
             }
         }
+        *tile.untiled.borrow_mut() = Some(geometry);
+    }
+
+    /// Clear the tiled states of a window that is not a tile (any more); one
+    /// that was a tile goes back to its floating geometry (or, when it was
+    /// born a tile, to a centred window) and the new location is returned.
+    fn ensure_untiled(&mut self, window: &WindowElement) -> Option<Point<i32, Logical>> {
+        let was_tiled = window.tile().tiled_now.replace(false);
+        let saved = window.tile().untiled.borrow_mut().take();
+        if !was_tiled {
+            if let Some(toplevel) = window.0.toplevel() {
+                let changed = toplevel.with_pending_state(|state| set_tiled(state, false));
+                if changed && toplevel.is_initial_configure_sent() {
+                    toplevel.send_pending_configure();
+                }
+            }
+            return None;
+        }
+        let rect = self.floating_rect(window, saved)?;
+        Some(self.apply_rect(window, rect, false))
+    }
+
+    /// Where a window leaving the tiling goes: `saved` if it is still on a
+    /// screen, else a window three fifths of the output, centred.
+    fn floating_rect(
+        &self,
+        window: &WindowElement,
+        saved: Option<Rectangle<i32, Logical>>,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let on_screen = |r: &Rectangle<i32, Logical>| {
+            self.space
+                .outputs()
+                .any(|o| self.space.output_geometry(o).map(|g| g.overlaps(*r)).unwrap_or(false))
+        };
+        if let Some(saved) = saved.filter(on_screen) {
+            return Some(saved);
+        }
+        let area = self.window_home(window).and_then(|o| usable_area(&self.space, &o))?;
+        let size: Size<i32, Logical> = (area.size.w * 3 / 5, area.size.h * 3 / 5).into();
+        Some(Rectangle::new(crate::shell::centered(area, size), size))
     }
 
     /// Switch the layout mode (keybinding, shell widget, IPC).
@@ -648,12 +703,13 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         let floating = !window.tile().floating.get();
         window.tile().floating.set(floating);
         if floating && self.layout.mode.is_tiling() {
-            // A floating window in a tiled desktop: a bit smaller, centred.
-            if let Some(area) = self.window_home(&window).and_then(|o| usable_area(&self.space, &o)) {
-                let size: Size<i32, Logical> = (area.size.w * 3 / 5, area.size.h * 3 / 5).into();
-                let loc = crate::shell::centered(area, size);
-                self.apply_rect(&window, Rectangle::new(loc, size), false);
-                self.space.map_element(window.clone(), loc, true);
+            // A floating window in a tiled desktop: back where it was before
+            // it became a tile, else a bit smaller and centred.
+            window.tile().tiled_now.set(false);
+            let saved = window.tile().untiled.borrow_mut().take();
+            if let Some(rect) = self.floating_rect(&window, saved) {
+                self.apply_rect(&window, rect, false);
+                self.space.map_element(window.clone(), rect.loc, true);
             }
         }
         self.layout.dirty = true;
