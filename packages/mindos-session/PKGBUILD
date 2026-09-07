@@ -4,8 +4,8 @@ pkgver=0.1.0
 pkgrel=17
 pkgdesc="MindOS session: greetd configuration and the MindOS login screen, session launcher, compositor defaults and the dark-mode defaults for GTK, the portal and Firefox"
 arch=(any)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 depends=(mindwm mindshell mindos-apps mindos-mind mindos-cursors greetd greetd-agreety seatd dbus xorg-xwayland foot polkit
          xdg-user-dirs
          ttf-jetbrains-mono noto-fonts noto-fonts-emoji inter-font
@@ -46,4 +46,7 @@ package() {
   install -Dm644 90_mindos.gschema.override  "$pkgdir/usr/share/glib-2.0/schemas/90_mindos.gschema.override"
   install -Dm644 firefox-mindos.js           "$pkgdir/usr/lib/firefox/defaults/pref/mindos.js"
   install -dm755 "$pkgdir/etc/xdg/mindos/autostart"
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

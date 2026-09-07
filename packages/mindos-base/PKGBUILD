@@ -4,8 +4,8 @@ pkgver=0.1.0
 pkgrel=8
 pkgdesc="MindOS base system: branding, gaming/dev kernel and system tuning, performance modes, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
 arch=(any)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 depends=(base linux-mindos linux-mindos-headers linux-firmware amd-ucode intel-ucode
          mkinitcpio zram-generator plymouth mindos-theme
          networkmanager wireguard-tools bluez bluez-utils sudo limine efibootmgr btrfs-progs dosfstools e2fsprogs
@@ -55,4 +55,11 @@ package() {
   install -Dm644 mindos-base.sysusers       "$pkgdir/usr/lib/sysusers.d/mindos-base.conf"
   install -dm755 "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"
   ln -s ../mindos-perf.service "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/mindos-perf.service"
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  # mindos-base is on every MindOS system, so it carries the copies a user reads:
+  # the licence and the third-party notice for the whole distribution.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/doc/mindos/LICENSE"
+  install -Dm644 "$startdir/../../THIRD-PARTY.md" "$pkgdir/usr/share/doc/mindos/THIRD-PARTY.md"
 }

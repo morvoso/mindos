@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Black Arrow Software, LLC. All rights reserved.
+// Licensed under the MindOS Software License; see LICENSE at the repository root.
+
 //! mindshell: the MindOS desktop shell host. GTK4 layer-shell windows with
 //! WebKitGTK views, a `window.mindos` bridge for the TypeScript UI, the
 //! compositor IPC client, StatusNotifier tray, and system helpers.

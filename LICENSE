@@ -1,0 +1,130 @@
+                        MindOS Software License
+                  Copyright (c) 2026 Black Arrow Software, LLC
+                            All rights reserved.
+
+MindOS is published by Black Arrow Software, LLC ("Black Arrow"). You are
+welcome to download it, install it, and use it. What you may not do is sell it
+or ship a changed version of it. Everything below says that in the words a
+licence needs.
+
+
+1. WHAT THIS LICENCE COVERS
+
+This licence covers the parts of MindOS that Black Arrow wrote: the compositor
+(`mindwm`), the desktop shell (`mindshell`), the mind daemon and CLI (`mindd`,
+`mind`), the MindOS packages under `packages/` other than `linux-mindos` and
+`paru`, the installer, the ISO profile, the artwork, the theme, the icons and
+cursors, the documentation, and the MindOS name and logo. These are the
+"Software".
+
+This licence does NOT cover the third-party software MindOS is built from or
+ships alongside: the Linux kernel, the Arch Linux packages, the fonts, the
+language model, the Rust and system libraries, and everything else listed in
+`THIRD-PARTY.md`. Each of those keeps its own licence, and nothing in this
+document adds a restriction to any of them. Where a component is licensed under
+the GNU GPL, the LGPL, or any other licence that grants you rights this one does
+not, that licence governs that component and your rights under it are untouched.
+See `THIRD-PARTY.md`, which also tells you how to get the source code for those
+components.
+
+
+2. WHAT YOU MAY DO
+
+Subject to the conditions below, Black Arrow grants you a worldwide,
+royalty-free, non-exclusive licence to:
+
+  (a) install and run the Software on any number of machines, for any purpose,
+      personal or commercial;
+
+  (b) make copies of the Software and give them to other people, provided the
+      copy is complete and unchanged and you charge nothing for it;
+
+  (c) build the Software from source, and modify your own copy for your own
+      use — to debug it, to test a fix, or to make it work on your hardware.
+
+
+3. WHAT YOU MAY NOT DO
+
+  (a) You may not sell the Software, licence it for a fee, rent it, lease it,
+      or charge anyone anything for a copy of it. You may not include it in a
+      product or a service that is sold, and you may not bundle it with
+      hardware that is sold. You may recover the actual cost of physical media
+      and shipping, and nothing more.
+
+  (b) You may not distribute a modified version of the Software, in source or
+      binary form, publicly or privately, in whole or in part. Modifications you
+      make under section 2(c) stay on your own machines. Forks, patched builds,
+      re-spins, derivative distributions and rebranded images are not permitted.
+
+  (c) You may not remove, alter or obscure this licence, the copyright notices,
+      the third-party notices, or the MindOS branding in any copy you pass on.
+
+  (d) You may not use the name "MindOS", the name "Black Arrow Software", or
+      the MindOS or Black Arrow logos to name, brand or promote anything other
+      than the unmodified Software. Trademark rights are reserved and are not
+      granted by this licence.
+
+If you want to do any of these things, ask. Black Arrow can grant a separate
+written licence.
+
+
+4. CHANGES AND BUG REPORTS
+
+Black Arrow maintains the Software. Changes to it are made by Black Arrow.
+
+If you find a bug, want a feature, or need something to work differently, open
+an issue on the project repository:
+
+    https://github.com/morvoso/mindos/issues
+
+That is the way to get the Software updated. Issues are read and acted on
+there; patches sent by other routes, and forks published elsewhere, are not
+part of this project.
+
+If you do send Black Arrow a contribution — a patch, a suggestion, a fix in an
+issue — you grant Black Arrow a perpetual, worldwide, royalty-free, irrevocable
+licence to use it in the Software and to license it under these terms. You keep
+your own copyright in what you wrote.
+
+
+5. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+MindOS is an operating system. It writes to disks, installs drivers, changes
+kernel parameters, applies system updates, and lets a language model run
+commands on your machine. Any of that can destroy data or leave a machine
+unbootable. Back up anything you care about, and do not run MindOS on a machine
+you cannot afford to lose.
+
+
+6. LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL BLACK ARROW SOFTWARE, LLC OR ITS MEMBERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE SOFTWARE, INCLUDING WITHOUT LIMITATION ANY LOSS OF
+DATA, LOSS OF PROFITS, OR DAMAGE TO HARDWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+
+7. TERMINATION
+
+This licence ends automatically if you break it. When it ends, stop using and
+distributing the Software and destroy the copies you hold. Sections 3(d), 5, 6
+and 8 survive.
+
+
+8. GENERAL
+
+This licence is governed by the laws of the state in which Black Arrow
+Software, LLC is organised, without regard to its conflict-of-laws rules. If any
+part of this licence is held unenforceable, the rest stays in force. This is the
+entire agreement between you and Black Arrow about the Software, and it can be
+changed only in writing signed by Black Arrow.
+
+
+Black Arrow Software, LLC
+https://github.com/morvoso/mindos

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "The MindOS desktop shell user interface (vanilla TypeScript, rendered by the mindshell host in WebKitGTK)",
-  "license": "MIT",
+  "license": "LicenseRef-MindOS",
   "scripts": {
     "build": "bash build.sh dist",
     "dev": "bash build.sh dist && esbuild src/main.ts --bundle --format=iife --target=es2022 --outfile=dist/app.js --watch=forever",

@@ -4,8 +4,8 @@ pkgver=0.1.0
 pkgrel=4
 pkgdesc="MindOS guided installer (run from the live ISO)"
 arch=(any)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 depends=(arch-install-scripts gptfdisk dosfstools btrfs-progs util-linux coreutils pciutils bash)
 backup=(etc/mindos/pacman-install.conf)
 source=(mindos-install pacman-install.conf)
@@ -14,4 +14,7 @@ sha256sums=(SKIP SKIP)
 package() {
   install -Dm755 mindos-install "$pkgdir/usr/bin/mindos-install"
   install -Dm644 pacman-install.conf "$pkgdir/etc/mindos/pacman-install.conf"
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

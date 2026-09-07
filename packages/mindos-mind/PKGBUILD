@@ -5,8 +5,8 @@ pkgver=0.1.0
 pkgrel=12
 pkgdesc="MindOS Mind: local LLM system daemon (mindd) and its CLI (mind)"
 arch=(x86_64)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 depends=(glibc gcc-libs llama-cpp ggml-vulkan pacman systemd pciutils coreutils util-linux
          sudo git base-devel flatpak paru curl)
 # ggml-cuda pulls the full CUDA toolkit (~4 GB); mindos-install adds it on NVIDIA systems.
@@ -53,4 +53,7 @@ package() {
   install -Dm755 "$srcdir/update-mark" "$pkgdir/usr/lib/mindos/update-mark"
   install -dm755 "$pkgdir/var/lib/mindos/models"
   install -Dm644 "$srcdir/mindd/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md" 2>/dev/null || true
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

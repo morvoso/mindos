@@ -4,8 +4,8 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="MindOS pointer: an animated dark-glass cursor theme in the MindOS colours, at four sizes"
 arch=(any)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 depends=(adwaita-cursors)
 # The XCursor files are drawn by gen-cursors.py (python-pillow) at build time:
 # ~10 MB of frames is not something to keep in the repository.
@@ -25,4 +25,7 @@ package() {
   # hashed drag-and-drop names has to land on the same file).
   cp -a "$srcdir"/MindOS/cursors/. "$t/cursors/"
   install -Dm755 gen-cursors.py "$pkgdir/usr/share/mindos/cursors/gen-cursors.py"
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

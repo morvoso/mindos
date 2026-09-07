@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Black Arrow Software, LLC. All rights reserved.
+// Licensed under the MindOS Software License; see LICENSE at the repository root.
+
 //! mindwm — the MindOS compositor.
 //!
 //! Backend selection:

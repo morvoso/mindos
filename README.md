@@ -103,3 +103,31 @@ runs in active mode, the NVIDIA open kernel modules are built by DKMS against
 * `docs/DEV.md` — the developer stack (`mindos-dev`): tools, shells, containers, Settings › Developer.
 * `docs/ROADMAP.md` — what is done and what is next.
 * `docs/DEV-VM.md` — persistent development VM on libvirt/virt-manager: shared source tree, snapshots, dev loops.
+
+## Licence
+
+MindOS is copyright © 2026 Black Arrow Software, LLC. See `LICENSE`.
+
+You may install it and run it on as many machines as you like, for anything you
+like, and pass an unchanged copy on to anyone. You may not sell it, and you may
+not publish a changed version of it — no forks, no re-spins, no rebranded
+images. Modify your own copy on your own machines all you want.
+
+That licence covers the parts Black Arrow wrote: `mindwm`, `mindshell`, `mindd`
+and `mind`, the MindOS packages, the installer, the ISO profile, the theme and
+the artwork. It covers nothing else on the image. The Linux kernel stays
+GPL-2.0, the Arch packages keep their own licences, the fonts stay under the
+SIL OFL, and Qwen3.5 stays Apache-2.0 — `THIRD-PARTY.md` lists all of it,
+including where to get the source for the GPL parts.
+
+MindOS and Black Arrow Software are names and marks of Black Arrow Software,
+LLC, and are not licensed for use on anything else.
+
+## Issues
+
+Bugs, feature requests and anything that should work differently go here:
+
+**<https://github.com/morvoso/mindos/issues>**
+
+That is the way to get MindOS changed. Black Arrow Software, LLC maintains it
+and makes the updates; the issue tracker is where the work comes from.

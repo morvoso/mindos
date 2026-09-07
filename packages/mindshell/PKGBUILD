@@ -7,8 +7,8 @@ pkgver=0.1.0
 pkgrel=34
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
-url="https://mindos.local"
-license=(MIT OFL-1.1)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS' OFL-1.1)
 # Only what the binary links against plus an icon theme; the runtime tools the
 # host shells out to (wpctl, nmcli, ip, xdg-open, systemctl) come from the
 # mindos-base / mindos-session metapackages, and those cannot be listed here:
@@ -84,4 +84,7 @@ package() {
     install -dm755 "$pkgdir/usr/share/licenses/$pkgname"
     install -m644 "$srcdir/mindshell/ui/fonts"/OFL-*.txt "$pkgdir/usr/share/licenses/$pkgname/" 2>/dev/null || true
   fi
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

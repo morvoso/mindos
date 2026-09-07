@@ -6,8 +6,8 @@ pkgver=0.1.0
 pkgrel=4
 pkgdesc="MindOS development stack: build tools, containers, editors and command-line tools, with shell prompt and git defaults"
 arch=(any)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 # A language-neutral starting set: the build tools most projects need and
 # four common runtimes. Other toolchains are installed with
 # `mindos-pkg install NAME` or from Settings > Developer, which reports
@@ -57,4 +57,7 @@ which performs the same steps. `mindos-dev-setup --status` reports every
 installed toolchain; `mindos-pkg install NAME` installs additional ones.
 Run `mindos` in a shell for a list of MindOS commands. See docs/DEV.md.
 DOC
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

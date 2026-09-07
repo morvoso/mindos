@@ -5,8 +5,8 @@ pkgver=0.1.0
 pkgrel=22
 pkgdesc="MindOS compositor: game-mode Wayland/XWayland compositor with the Mind bar"
 arch=(x86_64)
-url="https://mindos.local"
-license=(MIT OFL-1.1 Bitstream-Vera)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS' MIT OFL-1.1 Bitstream-Vera)
 depends=(glibc gcc-libs wayland libinput libxkbcommon mesa libglvnd libdrm pixman seatd
          systemd-libs xorg-xwayland glib2 libevdev libgudev)
 makedepends=(rust clang lld rsync wayland-protocols pkgconf)
@@ -38,4 +38,9 @@ package() {
   install -dm755 "$pkgdir/usr/share/licenses/$pkgname"
   install -m644 "$srcdir/mindwm/resources"/OFL-*.txt "$srcdir/mindwm/resources"/LICENSE-*.txt \
     "$pkgdir/usr/share/licenses/$pkgname/"
+  # mindwm is derived from Smithay's anvil; the MIT notice travels with the binary.
+  install -m644 "$srcdir/mindwm/LICENSE-smithay.txt" "$pkgdir/usr/share/licenses/$pkgname/"
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

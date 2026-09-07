@@ -3,7 +3,7 @@ name = "mindos-mind"
 version = "0.1.0"
 edition = "2021"
 description = "MindOS mind: the LLM daemon (mindd) and the mind CLI"
-license = "MIT"
+license = "LicenseRef-MindOS"
 default-run = "mind"
 
 [[bin]]

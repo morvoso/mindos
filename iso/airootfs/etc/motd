@@ -1,7 +1,11 @@
-
   MindOS live session.  User "mind" (sudo without password).
 
     sudo mindos-install      guided installer (needs internet for the Arch repos)
     mind chat                talk to the Mind
     Ctrl+Alt+F2              root console
 
+  MindOS is copyright (c) 2026 Black Arrow Software, LLC, and is free to use
+  but not to sell or to modify: /usr/share/doc/mindos/LICENSE. The kernel, the
+  Arch packages, the fonts and the model keep their own licences:
+  /usr/share/doc/mindos/THIRD-PARTY.md. Issues:
+  https://github.com/morvoso/mindos/issues

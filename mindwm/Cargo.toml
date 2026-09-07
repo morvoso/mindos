@@ -2,7 +2,7 @@
 name = "mindwm"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "LicenseRef-MindOS"
 description = "The MindOS compositor (Wayland + XWayland, DRM/KMS), derived from Smithay's anvil"
 publish = false
 

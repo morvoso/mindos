@@ -4,8 +4,8 @@ pkgver=0.1.0
 pkgrel=2
 pkgdesc="The MindOS standard applications (Files, Image Viewer, Archive Manager, Text Editor) in the MindOS look: libadwaita colours, default handlers, Open in Terminal in the file manager, the mindos-wallpaper command"
 arch=(any)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 # Every app is GTK 4 + libadwaita so one stylesheet themes them all; the
 # terminal stays foot (mindos-session). Trash, mounts and phones need gvfs.
 depends=(nautilus nautilus-python gvfs gvfs-mtp loupe file-roller gnome-text-editor foot python)
@@ -29,4 +29,7 @@ package() {
   # nautilus-python extension adds Open in Terminal to the Files menus.
   install -Dm755 mindos-wallpaper "$pkgdir/usr/bin/mindos-wallpaper"
   install -Dm644 mindos-nautilus.py "$pkgdir/usr/share/nautilus-python/extensions/mindos.py"
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

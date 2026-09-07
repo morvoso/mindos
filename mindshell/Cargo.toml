@@ -2,7 +2,7 @@
 name = "mindshell"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "LicenseRef-MindOS"
 description = "The MindOS desktop shell: layer-shell panels, launcher, tray and desktop widgets rendered with WebKitGTK"
 publish = false
 

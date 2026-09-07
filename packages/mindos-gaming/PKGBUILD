@@ -5,8 +5,8 @@ pkgver=0.1.0
 pkgrel=4
 pkgdesc="MindOS gaming stack: Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime, plus mindos-win for Windows programs and mindos-dlss (DLSS/FSR/XeSS DLL swapper)"
 arch=(any)
-url="https://mindos.local"
-license=(MIT)
+url="https://github.com/morvoso/mindos"
+license=('LicenseRef-MindOS')
 # lib32-openal is not in the official repos (it is pulled in by steam's runtime instead).
 depends=(steam gamescope gamemode lib32-gamemode mangohud lib32-mangohud
          lutris wine-staging winetricks protontricks
@@ -27,4 +27,7 @@ package() {
   install -Dm644 mindos-win-theme.reg "$pkgdir/usr/share/mindos/win/theme.reg"
   # DLSS Swapper for Linux: swap DLSS/FSR/XeSS DLLs in installed games (mindos-dlss --help).
   install -Dm755 mindos-dlss "$pkgdir/usr/bin/mindos-dlss"
+
+  # The MindOS licence: a custom licence, so pacman wants it under the package.
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

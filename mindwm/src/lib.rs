@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Black Arrow Software, LLC. All rights reserved.
+// Licensed under the MindOS Software License; see LICENSE at the repository root.
+
 #![warn(rust_2018_idioms)]
 // If no backend is enabled, a large portion of the codebase is unused.
 // So silence this useless warning for the CI.
