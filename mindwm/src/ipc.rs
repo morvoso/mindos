@@ -63,6 +63,12 @@ pub struct WindowInfo {
     pub output: Option<String>,
 }
 
+/// One entry of the `tray` event: an XEmbed tray icon hosted by the compositor.
+#[cfg(feature = "xwayland")]
+pub type TrayItemInfo = crate::xtray::TrayItem;
+#[cfg(not(feature = "xwayland"))]
+pub type TrayItemInfo = serde_json::Value;
+
 /// Payload of the `windows` event.
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct WindowsSnapshot {
@@ -173,6 +179,9 @@ pub enum Request {
         #[serde(flatten)]
         change: OutputChange,
     },
+    /// Replay a click on an XEmbed tray icon (`icon` is the `id` from the `tray` event;
+    /// `button` 1 left, 2 middle, 3 right, 4/5 wheel up/down, 6/7 left/right).
+    TrayClick { icon: u32, button: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -218,6 +227,10 @@ pub fn windows_event(snapshot: &WindowsSnapshot) -> String {
 
 pub fn outputs_event(outputs: &[OutputInfo]) -> String {
     json!({"event": "outputs", "outputs": outputs}).to_string()
+}
+
+pub fn tray_event(items: &[TrayItemInfo]) -> String {
+    json!({"event": "tray", "items": items}).to_string()
 }
 
 pub fn shortcut_event(name: &str) -> String {
@@ -314,6 +327,7 @@ pub struct IpcServer {
     pub last_windows: Option<WindowsSnapshot>,
     pub last_outputs: Option<Vec<OutputInfo>>,
     pub last_mindbar_open: bool,
+    pub last_tray: Option<Vec<TrayItemInfo>>,
 }
 
 impl IpcServer {
@@ -561,14 +575,17 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let open = self.mindbar.open;
         let layout_mode = layout_mode_event(self.layout.mode);
         let prefs = prefs_event(&self.prefs);
+        let tray = self.tray_snapshot();
         let ok = self.ipc.send(id, &windows_event(&windows))
             && self.ipc.send(id, &outputs_event(&outputs))
             && self.ipc.send(id, &mindbar_event(open))
             && self.ipc.send(id, &layout_mode)
-            && self.ipc.send(id, &prefs);
+            && self.ipc.send(id, &prefs)
+            && self.ipc.send(id, &tray_event(&tray));
         self.ipc.last_windows = Some(windows);
         self.ipc.last_outputs = Some(outputs);
         self.ipc.last_mindbar_open = open;
+        self.ipc.last_tray = Some(tray);
         if !ok {
             self.ipc_drop_client(id);
         }
@@ -612,6 +629,36 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         if self.ipc.last_mindbar_open != open {
             self.ipc.last_mindbar_open = open;
             self.ipc_broadcast(&mindbar_event(open));
+        }
+        if self.tray_changed() {
+            let tray = self.tray_snapshot();
+            if self.ipc.last_tray.as_ref() != Some(&tray) {
+                self.ipc_broadcast(&tray_event(&tray));
+                self.ipc.last_tray = Some(tray);
+            }
+        }
+    }
+
+    /// The XEmbed tray icons the compositor hosts (none without XWayland).
+    fn tray_snapshot(&self) -> Vec<TrayItemInfo> {
+        #[cfg(feature = "xwayland")]
+        {
+            self.xtray.as_ref().map(|t| t.snapshot()).unwrap_or_default()
+        }
+        #[cfg(not(feature = "xwayland"))]
+        {
+            Vec::new()
+        }
+    }
+
+    fn tray_changed(&mut self) -> bool {
+        #[cfg(feature = "xwayland")]
+        {
+            self.xtray.as_mut().is_some_and(|t| t.take_dirty())
+        }
+        #[cfg(not(feature = "xwayland"))]
+        {
+            false
         }
     }
 
@@ -706,6 +753,29 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 Ok(()) => Reply::Ok(json!({"outputs": self.outputs_snapshot()})),
                 Err(err) => Reply::Err(err),
             },
+            Request::TrayClick { icon, button } => self.tray_click(icon, button),
+        }
+    }
+
+    /// A click on a hosted tray icon lands where the pointer is.
+    fn tray_click(&mut self, id: u32, button: u32) -> Reply {
+        #[cfg(feature = "xwayland")]
+        {
+            let location = self.pointer.current_location();
+            let pointer = (location.x.round() as i32, location.y.round() as i32);
+            let Some(tray) = self.xtray.as_mut() else {
+                return Reply::Err("no tray host".into());
+            };
+            let button = u8::try_from(button).unwrap_or(0);
+            match tray.click(id, button, pointer) {
+                Ok(()) => Reply::Ok(json!({})),
+                Err(err) => Reply::Err(err),
+            }
+        }
+        #[cfg(not(feature = "xwayland"))]
+        {
+            let _ = (id, button);
+            Reply::Err("no tray host".into())
         }
     }
 

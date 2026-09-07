@@ -72,7 +72,11 @@ struct State {
     focused: Value,
     ipc_outputs: Vec<Value>,
     apps: Vec<AppEntry>,
+    /// StatusNotifier items from the D-Bus tray host.
     tray: Value,
+    /// XEmbed icons the compositor hosts, already in the shell's item shape
+    /// (`Null` until the first `tray` event).
+    xtray: Value,
     audio: Option<Audio>,
     mind_open: bool,
     mind_extra: Value,
@@ -721,9 +725,13 @@ impl App {
                 };
                 self.launch(&exec, terminal).await
             }
-            "tray.items" => Ok(self.state.borrow().tray.clone()),
+            "tray.items" => Ok(self.tray_items_json()),
             "tray.activate" | "tray.secondaryActivate" => {
                 let id = str_param("id")?;
+                if let Some(icon) = xembed_id(&id) {
+                    let button = if method == "tray.secondaryActivate" { 3 } else { 1 };
+                    return self.ipc.request(json!({ "type": "tray_click", "icon": icon, "button": button })).await;
+                }
                 let (x, y) = self.screen_point(win, &params);
                 self.tray()?.activate(id, x, y, method == "tray.secondaryActivate").await?;
                 Ok(Value::Null)
@@ -736,6 +744,16 @@ impl App {
                     .and_then(Value::as_str)
                     .unwrap_or("vertical")
                     .to_string();
+                if let Some(icon) = xembed_id(&id) {
+                    // X wheel buttons: 4 up, 5 down, 6 left, 7 right.
+                    let button = match (orientation.as_str(), delta > 0) {
+                        ("horizontal", true) => 7,
+                        ("horizontal", false) => 6,
+                        (_, true) => 5,
+                        (_, false) => 4,
+                    };
+                    return self.ipc.request(json!({ "type": "tray_click", "icon": icon, "button": button })).await;
+                }
                 self.tray()?.scroll(id, delta, orientation).await?;
                 Ok(Value::Null)
             }
@@ -900,6 +918,17 @@ impl App {
         }
     }
 
+    /// StatusNotifier items first, then the compositor's XEmbed icons.
+    fn tray_items_json(&self) -> Value {
+        self.tray_items_locked(&self.state.borrow())
+    }
+
+    fn tray_items_locked(&self, state: &State) -> Value {
+        let mut items = state.tray.as_array().cloned().unwrap_or_default();
+        items.extend(state.xtray.as_array().cloned().unwrap_or_default());
+        Value::Array(items)
+    }
+
     fn tray(&self) -> Result<&TrayHandle, String> {
         self.tray.as_ref().ok_or_else(|| "the tray is not available in app windows".to_string())
     }
@@ -945,7 +974,7 @@ impl App {
             "windows": if state.windows.is_array() { state.windows.clone() } else { json!([]) },
             "focused": state.focused.clone(),
             "apps": self.apps_json_locked(&state.apps),
-            "tray": if state.tray.is_array() { state.tray.clone() } else { json!([]) },
+            "tray": self.tray_items_locked(&state),
             "layout": state.layout.to_value(),
             "editMode": state.edit_mode,
             "config": {
@@ -1196,6 +1225,11 @@ impl App {
                 self.broadcast("mind", &self.mind_json());
             }
             HostEvent::Ipc(IpcEvent::Event(name, value)) => match name.as_str() {
+                "tray" => {
+                    let items = value.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+                    self.state.borrow_mut().xtray = Value::Array(items.iter().filter_map(xembed_item_json).collect());
+                    self.broadcast("tray", &json!({ "items": self.tray_items_json() }));
+                }
                 "windows" => {
                     let windows = value.get("windows").cloned().unwrap_or(json!([]));
                     let focused = value.get("focused").cloned().unwrap_or(Value::Null);
@@ -1233,8 +1267,8 @@ impl App {
                 other => self.broadcast(other, &value),
             },
             HostEvent::Tray(items) => {
-                self.state.borrow_mut().tray = items.clone();
-                self.broadcast("tray", &json!({ "items": items }));
+                self.state.borrow_mut().tray = items;
+                self.broadcast("tray", &json!({ "items": self.tray_items_json() }));
             }
             HostEvent::Apps(list) => {
                 self.state.borrow_mut().apps = list;
@@ -1360,4 +1394,33 @@ mod tests {
         assert_eq!(icon_url("steam", 48), "mindos://shell/icon/steam?size=48");
         assert_eq!(icon_url("/usr/share/pixmaps/a b.png", 32), "mindos://shell/icon/%2Fusr%2Fshare%2Fpixmaps%2Fa%20b.png?size=32");
     }
+}
+
+/// The tray item id of an XEmbed icon is `x11:<window>`.
+fn xembed_id(id: &str) -> Option<u32> {
+    id.strip_prefix("x11:")?.parse().ok()
+}
+
+/// A compositor `tray` item (`{ id, title, class, pid, width, height, pixels }`,
+/// pixels base64 RGBA) as a shell tray item with a data-URL icon.
+fn xembed_item_json(item: &Value) -> Option<Value> {
+    let id = item.get("id")?.as_u64()?;
+    let width = item.get("width")?.as_u64()? as u32;
+    let height = item.get("height")?.as_u64()? as u32;
+    let pixels = gtk4::glib::base64_decode(item.get("pixels")?.as_str()?);
+    let png = crate::tray::encode_rgba_png(width, height, &pixels)?;
+    let title = item.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+    let class = item.get("class").and_then(Value::as_str).unwrap_or("").to_string();
+    let label = if title.is_empty() { class.clone() } else { title.clone() };
+    Some(json!({
+        "id": format!("x11:{id}"),
+        "title": label,
+        "tooltip": title,
+        "icon": format!("data:image/png;base64,{}", gtk4::glib::base64_encode(&png)),
+        "status": "active",
+        "hasMenu": false,
+        "xembed": true,
+        "app": class,
+        "pid": item.get("pid").cloned().unwrap_or(Value::Null),
+    }))
 }

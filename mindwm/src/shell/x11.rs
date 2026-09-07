@@ -113,6 +113,11 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
             .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
         if !window.is_override_redirect() {
             window.set_mapped(false).unwrap();
+            // The client withdrew the window itself: say so in WM_STATE, or
+            // Wine never shows it again (see XTray::withdraw).
+            if let Some(tray) = self.xtray.as_ref() {
+                tray.withdraw(window.window_id());
+            }
         }
         self.refresh_focus();
     }

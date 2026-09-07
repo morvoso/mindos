@@ -142,7 +142,7 @@ adds widgets and re-orders them.
 | `spacer` | panel | flexible or fixed gap (`expand`, `size`) |
 | `clock` | panel | time (+ date); click opens the calendar popup. Settings: `hour24` (default false: 12-hour with AM/PM), `suffix`, `leadingZero`, `seconds`, `date`, `dateFormat` (`short` Sun 6 Sep / `long` / `numeric` / `iso` / `weekday`), `stack` (date under the time), `size` (`small`/`normal`/`large`), `weekStart` (`monday`/`sunday`, for the calendar) |
 | `layout-mode` | panel | the compositor's window layout (floating / tiles / columns) as an icon; click opens the layout picker popup. Setting: `label` |
-| `tray` | panel | StatusNotifierItems; left-click activate, right-click menu, scroll. Settings: `hidePassive`, `iconSize` |
+| `tray` | panel | StatusNotifierItems plus the compositor's XEmbed icons (Wine, older X11 programs; `xembed: true`, ids `x11:<window>`, no menu of their own: right-click is replayed as a right-click); left-click activate, right-click menu, scroll. Settings: `hidePassive`, `iconSize` |
 | `audio` | panel | default sink volume; scroll adjusts, click opens the slider popup, middle-click mutes. Settings: `percent`, `scroll`, `step`, `hideWhenMuted` |
 | `network` | panel | wired/wifi state. Settings: `name`, `ip` |
 | `battery` | panel | charge state (hidden when no battery). Settings: `percent`, `warnAt`, `alwaysShow` |
@@ -366,6 +366,7 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `get_layout_mode` | | `{ mode, label, modes: [{ mode, label, description }] }` |
 | `set_layout_mode` / `cycle_layout_mode` | `mode` / | the new `{ mode, label }`; every window is re-arranged and the choice is persisted |
 | `get_prefs` / `set_prefs` | / `prefs` (partial) | `{ prefs }`: `layout_mode`, `mind_show_tools` (show the Mind's tool lines), `primary_output`, `outputs: { name: { enabled, mode: "WxH@mHz", scale, position, transform, vrr } }`, stored in `$XDG_STATE_HOME/mindos/mindwm.json` |
+| `tray_click` | `icon` (the `id` from the `tray` event), `button` (1 left, 2 middle, 3 right, 4/5 wheel up/down, 6/7 wheel left/right) | replays the click on the XEmbed icon at the pointer's position, so the program's own menu opens under the cursor |
 | `set_output` | `name`, then any of `width` + `height` + `refresh` (mHz), `scale`, `position: [x, y]`, `transform`, `enabled`, `vrr`, `primary` | applies the mode/scale/position/rotation/VRR/primary change, persists it and sends an `outputs` event |
 
 Events (`{"event":"...", ...}`):
@@ -378,6 +379,7 @@ Events (`{"event":"...", ...}`):
 | `mindbar` | `open: bool` |
 | `layout_mode` | `mode`, `label`, `modes` (after `subscribe` and on every change) |
 | `prefs` | `prefs` (after `subscribe` and on every change) |
+| `tray` | `items: [{ id, title, class, pid, width, height, pixels }]`: the XEmbed (legacy X11) tray icons the compositor hosts, `pixels` base64 RGBA with straight alpha, `width`/`height` 24. Sent after `subscribe` and whenever an icon docks, undocks, renames or redraws (icons are read back every 400 ms) |
 
 Window ids are stable for the life of a window and follow creation order.
 Snapshots are sent whenever any listed field changes (map, unmap, title,

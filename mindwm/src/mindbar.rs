@@ -578,6 +578,7 @@ impl MindBar {
                 let app = &self.apps[idx];
                 let name = app.name.clone();
                 let exec = app.exec.clone();
+                let name_face = if selected { Face::LabelBold } else { Face::Label };
                 self.text.draw(
                     &mut canvas,
                     pad + 16 * s,
@@ -586,8 +587,19 @@ impl MindBar {
                     &name,
                     font(19.0),
                     name_color,
-                    if selected { Face::LabelBold } else { Face::Label },
+                    name_face,
                 );
+                if app.wine {
+                    // A Windows program: a small WINDOWS tag after the name,
+                    // the same signal as the badge on the dock icon.
+                    let (nw, _) = self.text.measure(&name, font(19.0), None, name_face);
+                    let tag = "WINDOWS";
+                    let (tw, th) = self.text.measure(tag, font(10.0), None, Face::Mono);
+                    let tx = pad + 16 * s + nw.min(w / 2) + 10 * s;
+                    let ty = y + 12 * s;
+                    canvas.stroke_rounded_rect(tx - 5 * s, ty - 3 * s, tw + 10 * s, th + 5 * s, 3 * s, ALL_CORNERS, alpha(accent, 0.55));
+                    self.text.draw(&mut canvas, tx, ty, None, tag, font(10.0), alpha(accent, 0.95), Face::Mono);
+                }
                 let (ew, _) = self.text.measure(&exec, font(12.0), None, Face::Mono);
                 let ex = (w - pad - 12 * s - ew).max(w / 2 + pad);
                 self.text.draw(
@@ -886,13 +898,14 @@ mod tests {
     use super::*;
 
     fn fake_apps() -> Vec<AppEntry> {
-        ["Steam", "Firefox", "Discord", "Lutris", "Kitty", "Files"]
+        ["Steam", "Firefox", "Discord", "Lutris", "Kitty", "Files", "Notepad++"]
             .iter()
             .map(|n| AppEntry {
                 id: format!("{}.desktop", n.to_lowercase()),
                 name: n.to_string(),
-                exec: n.to_lowercase(),
+                exec: if *n == "Notepad++" { "env WINEPREFIX=/home/u/.wine wine notepad++.exe".into() } else { n.to_lowercase() },
                 terminal: false,
+                wine: *n == "Notepad++",
                 haystack: n.to_lowercase(),
             })
             .collect()
@@ -940,6 +953,11 @@ mod tests {
         }
         let size = Size::from((900, panel_height(bar.body_height(900, 1080))));
         write_ppm(&dir.join("bar-launcher.ppm"), &bar.draw_panel(size, 1));
+        bar.input.clear();
+        for c in "note".chars() {
+            bar.handle_key(Keysym::a, &c.to_string(), ModifiersState::default());
+        }
+        write_ppm(&dir.join("bar-launcher-wine.ppm"), &bar.draw_panel(size, 1));
         // conversation view
         bar.input.clear();
         bar.refresh_results();

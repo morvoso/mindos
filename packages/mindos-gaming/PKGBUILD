@@ -2,8 +2,8 @@
 # Meta package: the MindOS gaming stack (Steam/Proton, gamescope, GameMode, MangoHud, Lutris/Wine).
 pkgname=mindos-gaming
 pkgver=0.1.0
-pkgrel=1
-pkgdesc="MindOS gaming stack: Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime"
+pkgrel=2
+pkgdesc="MindOS gaming stack: Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime, plus mindos-win for Windows programs"
 arch=(any)
 url="https://mindos.local"
 license=(MIT)
@@ -14,10 +14,13 @@ depends=(steam gamescope gamemode lib32-gamemode mangohud lib32-mangohud
          lib32-pipewire lib32-libpulse lib32-alsa-plugins lib32-gnutls
          sdl2-compat discord obs-studio)
 backup=(etc/gamemode.ini)
-source=(gamemode.ini 60-mindos-gaming.conf)
-sha256sums=(SKIP SKIP)
+source=(gamemode.ini 60-mindos-gaming.conf mindos-win mindos-win-theme.reg)
+sha256sums=(SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm644 gamemode.ini "$pkgdir/etc/gamemode.ini"
   install -Dm644 60-mindos-gaming.conf "$pkgdir/etc/security/limits.d/60-mindos-gaming.conf"
+  # Windows programs: one themed Wine prefix per program (see docs/WINDOWS-APPS.md).
+  install -Dm755 mindos-win "$pkgdir/usr/bin/mindos-win"
+  install -Dm644 mindos-win-theme.reg "$pkgdir/usr/share/mindos/win/theme.reg"
 }

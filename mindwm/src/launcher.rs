@@ -10,6 +10,9 @@ pub struct AppEntry {
     pub name: String,
     pub exec: String,
     pub terminal: bool,
+    /// The entry starts a Windows program through Wine (or Proton); the bar
+    /// tags it so it is not mistaken for a native one.
+    pub wine: bool,
     /// Lower-cased name, generic name, comment and keywords for matching.
     pub haystack: String,
 }
@@ -103,14 +106,35 @@ fn parse_desktop_file(path: &Path, id: &str) -> Option<AppEntry> {
     if exec.is_empty() {
         return None;
     }
-    let haystack = format!("{} {} {} {}", name, generic, comment, keywords).to_lowercase();
+    let wine = exec_is_wine(&exec);
+    let mut haystack = format!("{} {} {} {}", name, generic, comment, keywords).to_lowercase();
+    if wine {
+        haystack.push_str(" windows wine");
+    }
     Some(AppEntry {
         id: id.to_string(),
         name,
         exec,
         terminal,
+        wine,
         haystack,
     })
+}
+
+/// Does this (cleaned) Exec line run a Windows program under Wine? Wine's
+/// menu builder writes `env WINEPREFIX="..." wine C:\\...`; hand-written
+/// entries use `wine`, `wine64` or `wine start`; Proton launchers `proton run`.
+pub fn exec_is_wine(exec: &str) -> bool {
+    let mut words = exec.split_whitespace().peekable();
+    if words.peek() == Some(&"env") {
+        words.next();
+        while words.peek().is_some_and(|w| w.contains('=')) {
+            words.next();
+        }
+    }
+    let Some(program) = words.next() else { return false };
+    let program = program.rsplit('/').next().unwrap_or(program);
+    matches!(program, "wine" | "wine64" | "wine-preloader" | "wine64-preloader" | "proton")
 }
 
 /// Strip desktop-entry field codes (%f, %U, ...) so the string can be run by `sh -c`.
@@ -171,6 +195,16 @@ pub fn find_by_name<'a>(apps: &'a [AppEntry], name: &str) -> Option<&'a AppEntry
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognises_wine_exec_lines() {
+        assert!(exec_is_wine("env WINEPREFIX=/home/u/.wine wine C:\\\\x.lnk"));
+        assert!(exec_is_wine("wine64 notepad"));
+        assert!(exec_is_wine("env A=1 proton run game.exe"));
+        assert!(!exec_is_wine("winetricks"));
+        assert!(!exec_is_wine("env FOO=bar firefox"));
+        assert!(!exec_is_wine(""));
+    }
 
     #[test]
     fn strips_field_codes() {

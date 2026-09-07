@@ -188,6 +188,9 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub xwm: Option<X11Wm>,
     #[cfg(feature = "xwayland")]
     pub xdisplay: Option<u32>,
+    /// The XEmbed tray host, up once XWayland is.
+    #[cfg(feature = "xwayland")]
+    pub xtray: Option<crate::xtray::XTray>,
 
     #[cfg(feature = "debug")]
     pub renderdoc: Option<renderdoc::RenderDoc<renderdoc::V141>>,
@@ -787,6 +790,8 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             xwm: None,
             #[cfg(feature = "xwayland")]
             xdisplay: None,
+            #[cfg(feature = "xwayland")]
+            xtray: None,
             #[cfg(feature = "debug")]
             renderdoc: renderdoc::RenderDoc::new().ok(),
             show_window_preview: false,
@@ -807,6 +812,44 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     }
 
     #[cfg(feature = "xwayland")]
+    /// Own the XEmbed system tray on the XWayland display and feed its
+    /// events and a read-back timer into the loop. Failure just means no
+    /// legacy tray icons; the session goes on.
+    #[cfg(feature = "xwayland")]
+    fn start_xtray(&mut self, display: u32) {
+        use smithay::reexports::calloop::channel::Event as ChannelEvent;
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
+        let (tray, source) = match crate::xtray::XTray::start(display) {
+            Ok(x) => x,
+            Err(err) => {
+                warn!(err, "XEmbed tray host unavailable; legacy tray icons will not show");
+                return;
+            }
+        };
+        if let Err(err) = self.handle.insert_source(source, |event, _, data| {
+            if let ChannelEvent::Msg(event) = event {
+                if let Some(tray) = data.xtray.as_mut() {
+                    tray.handle_event(event);
+                }
+            }
+        }) {
+            warn!(%err, "cannot listen for tray events");
+            return;
+        }
+        let poll = Timer::from_duration(crate::xtray::POLL);
+        if let Err(err) = self.handle.insert_source(poll, |_, _, data| {
+            if let Some(tray) = data.xtray.as_mut() {
+                tray.poll();
+            }
+            TimeoutAction::ToDuration(crate::xtray::POLL)
+        }) {
+            warn!(%err, "cannot schedule tray read-back");
+            return;
+        }
+        self.xtray = Some(tray);
+    }
+
     pub fn start_xwayland(&mut self) {
         use std::process::Stdio;
 
@@ -857,6 +900,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     .expect("Failed to set xwayland default cursor");
                     data.xwm = Some(wm);
                     data.xdisplay = Some(display_number);
+                    data.start_xtray(display_number);
                     data.xwayland_ready = true;
                     data.run_startup();
                 }

@@ -100,6 +100,8 @@ export interface TrayItem {
   icon: string;
   status?: string;
   hasMenu: boolean;
+  /** A legacy X11 (XEmbed) icon hosted by the compositor: clicks are replayed on it, there is no menu protocol. */
+  xembed?: boolean;
 }
 
 export interface MenuItem {

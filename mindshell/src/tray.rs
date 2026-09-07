@@ -431,6 +431,15 @@ pub fn encode_png(p: &IconPixmap) -> Option<Vec<u8>> {
     for px in p.pixels.chunks_exact(4).take(n) {
         rgba.extend_from_slice(&[px[1], px[2], px[3], px[0]]);
     }
+    encode_rgba_png(w, h, &rgba)
+}
+
+/// Straight-alpha RGBA (what the compositor sends for XEmbed icons) to PNG.
+pub fn encode_rgba_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+        return None;
+    }
+    let rgba = &rgba[..(w * h * 4) as usize];
     let mut out = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut out, w, h);

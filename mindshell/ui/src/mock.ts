@@ -113,6 +113,8 @@ const TRAY: TrayItem[] = [
   { id: 'steam', title: 'Steam', tooltip: 'Steam — 2 friends online', icon: trayIcon('S', 210), status: 'active', hasMenu: true },
   { id: 'discord', title: 'Discord', tooltip: 'Discord', icon: trayIcon('D', 235), status: 'active', hasMenu: true },
   { id: 'nm-applet', title: 'Network', tooltip: 'Connected to Nebula-5G', icon: trayIcon('N', 160), status: 'passive', hasMenu: true },
+  // An XEmbed icon hosted by the compositor (a Windows program under Wine): no menu protocol.
+  { id: 'x11:4194305', title: 'Notepad++', tooltip: 'Notepad++', icon: trayIcon('N', 95), status: 'active', hasMenu: false, xembed: true },
 ];
 
 const TRAY_MENU: MenuItem[] = [

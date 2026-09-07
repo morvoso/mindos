@@ -35,7 +35,7 @@ features = [
 [dependencies.x11rb]
 version = "0.13"
 default-features = false
-features = ["composite"]
+features = ["composite", "xtest"]
 
 [features]
 default = ["egl", "winit", "udev", "xwayland"]

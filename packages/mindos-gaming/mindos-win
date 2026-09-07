@@ -1,0 +1,257 @@
+#!/bin/bash
+# mindos-win: Windows programs on MindOS, one Wine prefix per program.
+#
+#   mindos-win install INSTALLER [--name NAME] [--dpi N] [--silent]
+#       Create a prefix for the program, theme it, run its installer. Wine's
+#       menu builder turns the program's Start Menu shortcuts into desktop
+#       entries (~/.local/share/applications/wine/), which the dock and the
+#       Mind bar pick up with the Windows badge.
+#   mindos-win create NAME [--dpi N]      an empty themed prefix
+#   mindos-win run NAME [ENTRY|EXE ...]   start the program and wait for it (its
+#                                         first desktop entry, the entry whose
+#                                         name matches, or an .exe path)
+#   mindos-win exec NAME COMMAND...       run any Windows command in the prefix
+#   mindos-win tricks NAME ARGS...        winetricks in the prefix
+#   mindos-win theme NAME [--dpi N]       re-apply the MindOS look
+#   mindos-win list                       prefixes and their entries
+#   mindos-win remove NAME                delete the prefix and its entries
+#
+# Prefixes live in ~/.local/share/mindos/win/<name>; MINDOS_WIN_ROOT overrides.
+set -euo pipefail
+
+ROOT="${MINDOS_WIN_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/mindos/win}"
+THEME="${MINDOS_WIN_THEME:-/usr/share/mindos/win/theme.reg}"
+APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+WINE="${WINE:-wine}"
+
+die() { echo "mindos-win: $*" >&2; exit 1; }
+
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# "Notepad++ 8.9 Setup.exe" -> notepad-plus-plus-8-9-setup
+slugify() {
+  local s
+  s=$(basename -- "$1")
+  s=${s%.*}
+  s=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]' | sed -E 's/\+/-plus/g; s/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+  [ -n "$s" ] || s=windows-app
+  printf '%s' "$s"
+}
+
+prefix_of() { printf '%s/%s' "$ROOT" "$1"; }
+
+# Wine's own noise off, and no Mono/Gecko download prompts while we set up.
+setup_env() {
+  export WINEPREFIX="$1" WINEARCH="${WINEARCH:-win64}"
+  export WINEDEBUG="${WINEDEBUG:--all}"
+}
+no_prompts() { export WINEDLLOVERRIDES="mscoree=d;mshtml=d${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"; }
+
+# The desktop entries Wine generated for a prefix (their Exec names it).
+entries_of() {
+  local prefix="$1"
+  [ -d "$APPS/wine" ] || return 0
+  grep -rlF --include='*.desktop' "WINEPREFIX=$prefix" "$APPS/wine" 2>/dev/null | sort || true
+}
+
+entry_name() { sed -n 's/^Name=//p' "$1" | head -1; }
+# The Exec line with field codes dropped and desktop-entry escaping undone
+# (Wine writes C:\\\\path; the shell then sees C:\\path inside its quotes).
+entry_exec() { sed -n 's/^Exec=//p' "$1" | head -1 | sed -E 's/ %[a-zA-Z]//g; s/\\\\/\\/g'; }
+
+apply_theme() {
+  local prefix="$1" dpi="${2:-96}"
+  setup_env "$prefix"
+  [ -f "$THEME" ] && "$WINE" regedit /S "$THEME"
+  local reg
+  reg=$(mktemp --suffix=.reg)
+  printf 'REGEDIT4\n\n[HKEY_CURRENT_USER\\Control Panel\\Desktop]\n"LogPixels"=dword:%08x\n\n[HKEY_CURRENT_USER\\Software\\Wine\\Fonts]\n"LogPixels"=dword:%08x\n' "$dpi" "$dpi" > "$reg"
+  "$WINE" regedit /S "$reg"
+  rm -f "$reg"
+  wineserver -w
+}
+
+write_meta() {
+  local prefix="$1" name="$2" installer="${3:-}"
+  printf '{"name":"%s","installer":"%s","created":"%s"}\n' "$name" "$installer" "$(date -Iseconds)" > "$prefix/mindos-win.json"
+}
+
+cmd_create() {
+  local name="" dpi=96
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dpi) dpi="$2"; shift 2 ;;
+      -*) die "unknown option $1" ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+  [ -n "$name" ] || usage 1
+  local slug prefix
+  slug=$(slugify "$name")
+  prefix=$(prefix_of "$slug")
+  if [ ! -f "$prefix/system.reg" ]; then
+    mkdir -p "$prefix"
+    echo "mindos-win: creating prefix $prefix" >&2
+    (setup_env "$prefix"; no_prompts; "$WINE" wineboot -u >/dev/null 2>&1; wineserver -w)
+    write_meta "$prefix" "$name"
+  fi
+  apply_theme "$prefix" "$dpi" >&2
+  printf '%s\n' "$slug"
+}
+
+cmd_install() {
+  local installer="" name="" dpi=96 silent=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --dpi) dpi="$2"; shift 2 ;;
+      --silent) silent=1; shift ;;
+      -*) die "unknown option $1" ;;
+      *) installer="$1"; shift ;;
+    esac
+  done
+  [ -n "$installer" ] || usage 1
+  [ -f "$installer" ] || die "no such file: $installer"
+  installer=$(readlink -f -- "$installer")
+  [ -n "$name" ] || name=$(slugify "$installer")
+  local slug prefix
+  slug=$(cmd_create "$name" --dpi "$dpi")
+  prefix=$(prefix_of "$slug")
+  write_meta "$prefix" "$name" "$installer"
+  local before
+  before=$(entries_of "$prefix")
+  echo "mindos-win: running the installer in $prefix"
+  (
+    setup_env "$prefix"; no_prompts
+    case "${installer,,}" in
+      *.msi) "$WINE" msiexec /i "$installer" ${silent:+/qn} ;;
+      *) "$WINE" "$installer" ${silent:+/S} ;;
+    esac
+    wineserver -w
+  )
+  local after
+  after=$(entries_of "$prefix")
+  local new
+  new=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+  if [ -n "$new" ]; then
+    echo "mindos-win: installed; new entries:"
+    while IFS= read -r e; do printf '  %s  (%s)\n' "$(entry_name "$e")" "$e"; done <<<"$new"
+  else
+    echo "mindos-win: installed; no Start Menu entries appeared. Start it with:"
+    echo "  mindos-win run $slug 'C:\\path\\to\\program.exe'"
+  fi
+}
+
+cmd_run() {
+  local slug="${1:-}"; shift || true
+  [ -n "$slug" ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug (see mindos-win list)"
+  local target="${1:-}"
+  # wine returns as soon as the program is started; with one prefix per
+  # program, waiting for the prefix's wineserver is waiting for the program.
+  setup_env "$prefix"
+  if [ -n "$target" ] && [[ "${target,,}" == *.exe ]]; then
+    shift
+    "$WINE" start /unix "$target" "$@"
+    exec wineserver -w
+  fi
+  local entries
+  entries=$(entries_of "$prefix")
+  [ -n "$entries" ] || die "no desktop entries for $slug; give an .exe path"
+  local chosen=""
+  if [ -n "$target" ]; then
+    while IFS= read -r e; do
+      if [[ "$(entry_name "$e")" == *"$target"* ]]; then chosen="$e"; break; fi
+    done <<<"$entries"
+    [ -n "$chosen" ] || die "no entry matching '$target' in $slug"
+  else
+    chosen=$(printf '%s\n' "$entries" | head -1)
+  fi
+  local exec
+  exec=$(entry_exec "$chosen")
+  [ -n "$exec" ] || die "entry has no Exec line: $chosen"
+  echo "mindos-win: $exec"
+  sh -c "$exec"
+  exec wineserver -w
+}
+
+cmd_exec() {
+  local slug="${1:-}"; shift || true
+  [ -n "$slug" ] && [ $# -gt 0 ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug"
+  setup_env "$prefix"
+  exec "$WINE" "$@"
+}
+
+cmd_tricks() {
+  local slug="${1:-}"; shift || true
+  [ -n "$slug" ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug"
+  setup_env "$prefix"
+  exec winetricks "$@"
+}
+
+cmd_theme() {
+  local slug="" dpi=96
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dpi) dpi="$2"; shift 2 ;;
+      *) slug="$1"; shift ;;
+    esac
+  done
+  [ -n "$slug" ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug"
+  apply_theme "$prefix" "$dpi"
+}
+
+cmd_list() {
+  [ -d "$ROOT" ] || { echo "no Windows programs installed"; return; }
+  local d
+  for d in "$ROOT"/*/; do
+    [ -f "$d/system.reg" ] || continue
+    local slug name
+    slug=$(basename "$d")
+    name=$(sed -n 's/.*"name":"\([^"]*\)".*/\1/p' "$d/mindos-win.json" 2>/dev/null || true)
+    printf '%s\t%s\n' "$slug" "${name:-$slug}"
+    local e
+    while IFS= read -r e; do
+      [ -n "$e" ] && printf '\t%s\n' "$(entry_name "$e")"
+    done <<<"$(entries_of "$d")"
+  done
+}
+
+cmd_remove() {
+  local slug="${1:-}"
+  [ -n "$slug" ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug"
+  (setup_env "$prefix"; wineserver -k >/dev/null 2>&1 || true)
+  local e
+  while IFS= read -r e; do
+    [ -n "$e" ] && rm -f -- "$e"
+  done <<<"$(entries_of "$prefix")"
+  rm -rf -- "$prefix"
+  echo "mindos-win: removed $slug"
+}
+
+case "${1:-}" in
+  install) shift; cmd_install "$@" ;;
+  create) shift; cmd_create "$@" ;;
+  run) shift; cmd_run "$@" ;;
+  exec) shift; cmd_exec "$@" ;;
+  tricks) shift; cmd_tricks "$@" ;;
+  theme) shift; cmd_theme "$@" ;;
+  list) cmd_list ;;
+  remove|rm) shift; cmd_remove "$@" ;;
+  -h|--help|help|"") usage 0 ;;
+  *) die "unknown command '$1' (try --help)" ;;
+esac

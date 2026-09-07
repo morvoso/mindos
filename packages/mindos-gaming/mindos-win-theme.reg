@@ -1,0 +1,60 @@
+REGEDIT4
+
+; The MindOS look for Windows programs under Wine: the classic-control
+; colours set to the dark cyan HUD palette (Wine ships no dark msstyles
+; theme, so the classic renderer with these colours is the dark theme), the
+; system UI fonts replaced by Inter, grayscale font smoothing like the rest
+; of the desktop. Applied by mindos-win to every prefix it creates.
+
+[HKEY_CURRENT_USER\Control Panel\Colors]
+"ActiveBorder"="16 21 28"
+"ActiveTitle"="16 21 28"
+"AppWorkSpace"="10 13 18"
+"Background"="5 7 10"
+"ButtonAlternateFace"="22 29 38"
+"ButtonDkShadow"="5 7 10"
+"ButtonFace"="22 29 38"
+"ButtonHilight"="47 66 87"
+"ButtonLight"="34 48 65"
+"ButtonShadow"="10 13 18"
+"ButtonText"="230 237 243"
+"GradientActiveTitle"="16 21 28"
+"GradientInactiveTitle"="10 13 18"
+"GrayText"="85 101 122"
+"Hilight"="10 167 194"
+"HilightText"="5 7 10"
+"HotTrackingColor"="25 227 255"
+"InactiveBorder"="10 13 18"
+"InactiveTitle"="10 13 18"
+"InactiveTitleText"="139 155 176"
+"InfoText"="230 237 243"
+"InfoWindow"="22 29 38"
+"Menu"="16 21 28"
+"MenuBar"="16 21 28"
+"MenuHilight"="10 167 194"
+"MenuText"="230 237 243"
+"Scrollbar"="16 21 28"
+"TitleText"="230 237 243"
+"Window"="10 13 18"
+"WindowFrame"="34 48 65"
+"WindowText"="230 237 243"
+
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"FontSmoothing"="2"
+"FontSmoothingType"=dword:00000001
+"FontSmoothingGamma"=dword:00000578
+"FontSmoothingOrientation"=dword:00000001
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize]
+"AppsUseLightTheme"=dword:00000000
+"SystemUsesLightTheme"=dword:00000000
+
+[HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements]
+"MS Shell Dlg"="Inter"
+"MS Shell Dlg 2"="Inter"
+"MS Sans Serif"="Inter"
+"Microsoft Sans Serif"="Inter"
+"Segoe UI"="Inter"
+"Tahoma"="Inter"
+"Consolas"="JetBrains Mono"
+"Lucida Console"="JetBrains Mono"
