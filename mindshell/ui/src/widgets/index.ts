@@ -9,6 +9,8 @@ import './audio';
 import './network';
 import './battery';
 import './mind';
+import './notifications';
+import './perf';
 import './sysmon';
 import './power';
 import './desktop-clock';

@@ -1,4 +1,4 @@
-//! The `mindos://shell/` URI scheme: the UI bundle, icons, tray pixmaps,
+//! The `mindos://shell/` URI scheme: the UI bundle, icons, tray and notification pixmaps,
 //! local image files and their thumbnails.
 
 use std::collections::hash_map::DefaultHasher;
@@ -135,6 +135,10 @@ fn serve(app: &App, uri: &str) -> Served {
     if let Some(rest) = path.strip_prefix("/tray/") {
         let id = icons::percent_decode(rest);
         return now(app.tray.as_ref().and_then(|t| t.pixmap(&id)).map(|b| (b, "image/png")));
+    }
+    if let Some(rest) = path.strip_prefix("/notify/") {
+        let id: u32 = rest.parse().unwrap_or(0);
+        return now(app.notify.as_ref().and_then(|n| n.pixmap(id)).map(|b| (b, "image/png")));
     }
     if let Some(rest) = path.strip_prefix("/file/") {
         let Some(file) = image_path(rest) else { return Served::NotFound };

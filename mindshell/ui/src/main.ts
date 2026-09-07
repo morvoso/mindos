@@ -8,6 +8,7 @@ import { renderPanel } from './panel';
 import { renderPopupWindow } from './popups';
 import { renderPreview } from './preview';
 import { store } from './state';
+import { renderToasts } from './toast';
 
 async function main(): Promise<void> {
   if (!bridge.hasHost()) installMock();
@@ -30,6 +31,9 @@ async function main(): Promise<void> {
       break;
     case 'greeter':
       renderGreeter(root, info.arg);
+      break;
+    case 'toast':
+      renderToasts(root, info.output);
       break;
     default:
       renderPreview(root);

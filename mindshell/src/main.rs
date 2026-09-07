@@ -17,6 +17,8 @@ mod icons;
 mod ipc;
 mod layout;
 mod mind;
+mod mindwatch;
+mod notify;
 mod portal;
 mod scheme;
 mod system;
@@ -41,6 +43,12 @@ pub enum HostEvent {
     LayoutFile,
     /// Something in the Desktop folder changed (the desktop icons re-list).
     DesktopDir,
+    /// An application's notification (`org.freedesktop.Notifications.Notify`).
+    Notify(Value),
+    /// `CloseNotification(id)`; the second field is the close reason.
+    NotifyClosed(u32, u32),
+    /// A line from the Mind daemon subscription (`notice`, `updates`, `sleep`, ...).
+    Mind(Value),
     Quit,
 }
 
@@ -60,7 +68,7 @@ pub const APPS: &[&str] = &["settings", "greeter"];
 
 fn usage() {
     println!(
-        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, wallpaper, displays, shell, about)\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
+        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, updates, performance, games, developer, wallpaper, displays, shell, about)\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
         env!("CARGO_PKG_VERSION"),
         APPS.join(", "),
         app::DEFAULT_UI_DIR

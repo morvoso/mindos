@@ -23,6 +23,7 @@ use crate::icons;
 use crate::ipc::{IpcClient, IpcEvent};
 use crate::layout::{Layout, Panel};
 use crate::mind;
+use crate::notify::NotifyHandle;
 use crate::system::{self, Audio};
 use crate::tray::TrayHandle;
 use crate::windows::{self, Kind, PanelSpec, ShellWindow};
@@ -85,7 +86,21 @@ struct State {
     mind_extra: Value,
     gpu: Option<Value>,
     last_outputs: Option<String>,
+    /// Applications' notifications, newest last (the notification server).
+    notifications: Vec<Value>,
+    /// Do not disturb: notifications still collect, only critical ones toast.
+    dnd: bool,
+    /// The Mind daemon subscription: connected, sleeping, its notices,
+    /// update status and last health report.
+    mind_daemon: bool,
+    mind_sleeping: bool,
+    mind_notices: Vec<Value>,
+    mind_updates: Value,
+    mind_health: Value,
 }
+
+/// How many application notifications the centre keeps.
+const NOTIFICATION_LIMIT: usize = 60;
 
 pub struct App {
     pub config: Config,
@@ -98,6 +113,8 @@ pub struct App {
     pub ipc: IpcClient,
     /// The StatusNotifier host; app windows do not run one.
     pub tray: Option<TrayHandle>,
+    /// The notification server (the shell only).
+    pub notify: Option<NotifyHandle>,
     pub app_mode: Option<AppMode>,
     pub events: async_channel::Sender<HostEvent>,
     /// `--ui-dir` as given, handed to app windows this shell spawns.
@@ -170,6 +187,7 @@ impl App {
 
         let ipc = IpcClient::start(events.clone());
         let tray = if app_mode.is_some() { None } else { Some(TrayHandle::start(events.clone(), icon_theme.clone())) };
+        let notify = if app_mode.is_some() { None } else { Some(NotifyHandle::start(events.clone())) };
         if app_mode.is_none() {
             crate::portal::start();
         }
@@ -185,6 +203,7 @@ impl App {
             settings,
             ipc,
             tray,
+            notify,
             app_mode,
             events,
             ui_dir_override,
@@ -406,6 +425,11 @@ impl App {
                 let url = bridge::window_url("desktop", "desktop", name, None, None, None);
                 self.create_window(Kind::Desktop, "desktop", name, monitor, None, false, &url);
             }
+            if i == 0 && self.find_window(Kind::Toast, "toast", name).is_none() {
+                let url = bridge::window_url("toast", "toast", name, None, None, None);
+                let w = self.create_window(Kind::Toast, "toast", name, monitor, None, false, &url);
+                w.window.set_visible(false);
+            }
             // Horizontal panels first: their exclusive zones inset the vertical ones.
             let mut wanted: Vec<&Panel> = Self::panels_for(&layout, name, i == 0).collect();
             wanted.sort_by_key(|p| p.edge == "left" || p.edge == "right");
@@ -440,7 +464,10 @@ impl App {
                 .windows
                 .borrow()
                 .iter()
-                .filter(|w| w.kind == Kind::Panel && w.output == *name && !wanted.iter().any(|p| p.id == w.id))
+                .filter(|w| {
+                    (w.kind == Kind::Panel && w.output == *name && !wanted.iter().any(|p| p.id == w.id))
+                        || (w.kind == Kind::Toast && w.output == *name && i != 0)
+                })
                 .cloned()
                 .collect();
             for w in stale {
@@ -890,9 +917,96 @@ impl App {
             }
             "mind.toggle" | "mind.open" | "mind.close" => {
                 let action = method.trim_start_matches("mind.");
-                self.ipc.request(json!({ "type": "mindbar", "action": action })).await
+                let mut req = json!({ "type": "mindbar", "action": action });
+                if let Some(text) = params.get("text").and_then(Value::as_str) {
+                    req["text"] = json!(text);
+                    req["ask"] = json!(params.get("ask").and_then(Value::as_bool).unwrap_or(false));
+                }
+                self.ipc.request(req).await
             }
             "mind.status" => Ok(self.mind_json()),
+            "mind.notices" => Ok(json!({ "notices": self.state.borrow().mind_notices })),
+            "mind.dismiss" => {
+                let id = str_param("id")?;
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.mind_notices.retain(|n| id != "*" && n.get("id").and_then(Value::as_str) != Some(id.as_str()));
+                }
+                self.mind_notices_changed(None);
+                let req = json!({ "type": "dismiss_notice", "id": id });
+                blocking(move || mind::request(req)).await
+            }
+            "mind.act" => {
+                let action = params.get("action").cloned().filter(Value::is_object).ok_or("mind.act: missing 'action'")?;
+                self.mind_act(&action).await
+            }
+            // ---- notifications
+            "notify.list" => Ok(Self::notify_json_locked(&self.state.borrow())),
+            "notify.close" => {
+                let id = params.get("id").and_then(Value::as_u64).ok_or("notify.close: missing 'id'")? as u32;
+                let reason = params.get("reason").and_then(Value::as_u64).unwrap_or(2) as u32;
+                Ok(json!({ "closed": self.close_notification(id, reason) }))
+            }
+            "notify.action" => {
+                let id = params.get("id").and_then(Value::as_u64).ok_or("notify.action: missing 'id'")? as u32;
+                let key = str_param("key")?;
+                let resident = self
+                    .state
+                    .borrow()
+                    .notifications
+                    .iter()
+                    .find(|n| n.get("id").and_then(Value::as_u64) == Some(id as u64))
+                    .and_then(|n| n.get("resident").and_then(Value::as_bool))
+                    .unwrap_or(false);
+                if let Some(n) = &self.notify {
+                    n.action(id, key);
+                }
+                if !resident {
+                    self.close_notification(id, 2);
+                }
+                Ok(Value::Null)
+            }
+            "notify.clear" => {
+                let ids: Vec<u32> = self.state.borrow().notifications.iter().filter_map(|n| n.get("id").and_then(Value::as_u64)).map(|i| i as u32).collect();
+                for id in ids {
+                    self.close_notification(id, 2);
+                }
+                Ok(Value::Null)
+            }
+            "notify.setDnd" => {
+                let enabled = params.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+                self.state.borrow_mut().dnd = enabled;
+                self.notify_changed(None, None);
+                Ok(json!({ "enabled": enabled }))
+            }
+            "toast.fit" => {
+                if win.kind != Kind::Toast {
+                    return Err("toast.fit: not the toast window".into());
+                }
+                let w = params.get("w").and_then(Value::as_f64).unwrap_or(0.0).ceil() as i32;
+                let h = params.get("h").and_then(Value::as_f64).unwrap_or(0.0).ceil() as i32;
+                let show = w > 1 && h > 1;
+                let size = if show { (w, h) } else { windows::TOAST_DEFAULT };
+                if win.toast.get() != size {
+                    win.toast.set(size);
+                    win.apply_geometry(self.state.borrow().edit_mode);
+                }
+                if win.window.is_visible() != show {
+                    win.window.set_visible(show);
+                }
+                Ok(json!({ "visible": show }))
+            }
+            "shell.run" => {
+                let argv: Vec<String> = params
+                    .get("argv")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                    .unwrap_or_default();
+                if argv.is_empty() {
+                    return Err("shell.run: missing 'argv'".into());
+                }
+                self.run_helper(argv).await
+            }
             "system.power" => {
                 let action = str_param("action")?;
                 if action == "logout" {
@@ -1093,6 +1207,7 @@ impl App {
             "app": self.app_mode.as_ref().map(|m| json!({ "name": m.name, "page": m.page, "arg": m.arg })),
             "version": env!("CARGO_PKG_VERSION"),
             "mind": self.mind_json_locked(&state),
+            "notify": Self::notify_json_locked(&state),
             "audio": system::audio_value(&state.audio),
             "compositor": self.ipc.is_connected(),
             "devtools": self.devtools,
@@ -1175,7 +1290,125 @@ impl App {
                 v[k] = val.clone();
             }
         }
+        v["daemon"] = json!(state.mind_daemon);
+        v["sleeping"] = json!(state.mind_sleeping);
+        v["notices"] = json!(state.mind_notices);
+        v["updates"] = state.mind_updates.clone();
+        v["health"] = state.mind_health.clone();
         v
+    }
+
+    fn notify_json_locked(state: &State) -> Value {
+        json!({ "items": state.notifications, "dnd": state.dnd })
+    }
+
+    /// Tell every view the notification list changed. `added` is the new
+    /// notification (the toast window shows it), `closed` an id that went.
+    fn notify_changed(&self, added: Option<&Value>, closed: Option<u32>) {
+        let mut v = Self::notify_json_locked(&self.state.borrow());
+        v["added"] = added.cloned().unwrap_or(Value::Null);
+        v["closed"] = closed.map(|id| json!(id)).unwrap_or(Value::Null);
+        self.broadcast("notify", &v);
+    }
+
+    /// Drop notification `id` and tell its application why
+    /// (1 expired, 2 dismissed by the user, 3 closed by a call).
+    fn close_notification(&self, id: u32, reason: u32) -> bool {
+        let removed = {
+            let mut state = self.state.borrow_mut();
+            let before = state.notifications.len();
+            state.notifications.retain(|n| n.get("id").and_then(Value::as_u64) != Some(id as u64));
+            state.notifications.len() != before
+        };
+        if let Some(n) = &self.notify {
+            n.closed(id, reason);
+        }
+        if removed {
+            self.notify_changed(None, Some(id));
+        }
+        removed
+    }
+
+    fn mind_notices_changed(&self, added: Option<&Value>) {
+        let notices = self.state.borrow().mind_notices.clone();
+        self.broadcast("mind_notices", &json!({ "notices": notices, "added": added.cloned().unwrap_or(Value::Null) }));
+    }
+
+    /// Run one of the system helpers for the UI and return its output.
+    /// Only a fixed set of read-mostly commands is allowed; anything that
+    /// changes the system goes through the helper's own sudo rules.
+    async fn run_helper(&self, argv: Vec<String>) -> Result<Value, String> {
+        let bare: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (sudo, cmd) = match bare.as_slice() {
+            ["sudo", "-n", rest @ ..] => (true, rest),
+            rest => (false, rest),
+        };
+        let allowed = match cmd {
+            ["mindos-perf", verb, ..] => matches!(*verb, "status" | "get" | "modes" | "set" | "config" | "apply"),
+            ["mindos-dlss", ..] => !sudo,
+            ["mindos-dev-setup", ..] => true,
+            ["mindos-boot", "list", ..] => true,
+            ["pacman", flag, ..] => !sudo && flag.starts_with("-Q"),
+            ["checkupdates", ..] => !sudo,
+            ["nvidia-smi", ..] => !sudo,
+            _ => false,
+        };
+        if !allowed {
+            return Err(format!("shell.run: '{}' is not allowed", argv.join(" ")));
+        }
+        let argv2 = argv.clone();
+        let out = blocking(move || {
+            std::process::Command::new(&argv2[0])
+                .args(&argv2[1..])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|e| format!("{}: {e}", argv2[0]))
+        })
+        .await?;
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let json = serde_json::from_str::<Value>(stdout.trim()).unwrap_or(Value::Null);
+        // A mode switch from one window (the popup) should show in every
+        // other window (the bar widget, Settings) at once.
+        if out.status.success() && matches!(cmd, ["mindos-perf", "set" | "config" | "apply", ..]) {
+            self.broadcast("perf_changed", &json!({ "argv": argv }));
+        }
+        Ok(json!({
+            "status": out.status.code().unwrap_or(-1),
+            "ok": out.status.success(),
+            "stdout": stdout,
+            "stderr": stderr,
+            "json": json,
+        }))
+    }
+
+    /// Carry out a notice action: open the Mind bar with a question, send a
+    /// daemon request, run a command, or open a Settings page.
+    async fn mind_act(self: &Rc<Self>, action: &Value) -> Result<Value, String> {
+        let kind = action.get("kind").and_then(Value::as_str).unwrap_or("");
+        let arg = action.get("arg").cloned().unwrap_or(Value::Null);
+        match kind {
+            "chat" => {
+                let text = arg.as_str().unwrap_or("").to_string();
+                self.ipc.request(json!({ "type": "mindbar", "action": "open", "text": text, "ask": true })).await
+            }
+            "request" => {
+                let request = arg.clone();
+                if !request.is_object() {
+                    return Err("mind.act: 'request' needs an object".into());
+                }
+                blocking(move || mind::request(request)).await
+            }
+            "command" => {
+                let cmd = arg.as_str().ok_or("mind.act: 'command' needs a string")?.to_string();
+                self.launch(&cmd, false).await
+            }
+            "settings" => {
+                let page = arg.as_str().unwrap_or("");
+                self.open_app("settings", page, "")
+            }
+            other => Err(format!("mind.act: unknown action kind '{other}'")),
+        }
     }
 
     fn set_edit_mode(&self, enabled: bool) {
@@ -1385,6 +1618,24 @@ impl App {
             HostEvent::Gpu(gpu) => self.state.borrow_mut().gpu = gpu,
             HostEvent::LayoutFile => self.layout_file_changed(),
             HostEvent::DesktopDir => self.desktop_dir_changed(),
+            HostEvent::Notify(mut n) => {
+                let id = n.get("id").and_then(Value::as_u64).unwrap_or(0);
+                {
+                    let mut state = self.state.borrow_mut();
+                    let quiet = state.dnd && n.get("urgency").and_then(Value::as_u64).unwrap_or(1) < 2;
+                    n["quiet"] = json!(quiet);
+                    state.notifications.retain(|x| x.get("id").and_then(Value::as_u64) != Some(id));
+                    state.notifications.push(n.clone());
+                    while state.notifications.len() > NOTIFICATION_LIMIT {
+                        state.notifications.remove(0);
+                    }
+                }
+                self.notify_changed(Some(&n), None);
+            }
+            HostEvent::NotifyClosed(id, reason) => {
+                self.close_notification(id, reason);
+            }
+            HostEvent::Mind(v) => self.mind_event(v),
             HostEvent::Quit => {
                 tracing::info!("shutting down");
                 let mut all: Vec<Rc<ShellWindow>> = self.windows.borrow_mut().drain(..).collect();
@@ -1398,8 +1649,64 @@ impl App {
         }
     }
 
-    /// Background samplers: desktop entries, audio, GPU (the shell only).
+    /// A line from the Mind daemon subscription.
+    fn mind_event(&self, v: Value) {
+        match v.get("type").and_then(Value::as_str).unwrap_or("") {
+            "connected" => {
+                self.state.borrow_mut().mind_daemon = true;
+                self.broadcast("mind", &self.mind_json());
+            }
+            "disconnected" => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.mind_daemon = false;
+                    state.mind_sleeping = false;
+                }
+                self.broadcast("mind", &self.mind_json());
+            }
+            "notices" => {
+                let list = v.get("notices").and_then(Value::as_array).cloned().unwrap_or_default();
+                self.state.borrow_mut().mind_notices = list;
+                self.mind_notices_changed(None);
+            }
+            "notice" => {
+                let id = v.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.mind_notices.retain(|n| n.get("id").and_then(Value::as_str) != Some(id.as_str()));
+                    state.mind_notices.insert(0, v.clone());
+                }
+                self.mind_notices_changed(Some(&v));
+            }
+            "notice_gone" => {
+                let id = v.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                self.state.borrow_mut().mind_notices.retain(|n| n.get("id").and_then(Value::as_str) != Some(id.as_str()));
+                self.mind_notices_changed(None);
+            }
+            "updates" => {
+                self.state.borrow_mut().mind_updates = v.clone();
+                self.broadcast("mind_updates", &v);
+            }
+            "health" => {
+                self.state.borrow_mut().mind_health = v.clone();
+                self.broadcast("mind_health", &v);
+            }
+            "sleep" => {
+                self.state.borrow_mut().mind_sleeping = v.get("sleeping").and_then(Value::as_bool).unwrap_or(false);
+                self.broadcast("mind", &self.mind_json());
+            }
+            _ => {}
+        }
+    }
+
+    /// Background samplers: desktop entries, audio, GPU (the shell only),
+    /// plus the standing connection to the Mind daemon.
     pub fn start_background(&self) {
+        // Settings (Updates, Mind) shows the daemon's notices, update
+        // status and health, so an --app window subscribes too.
+        if !self.is_greeter() {
+            crate::mindwatch::start(self.events.clone());
+        }
         if self.app_mode.is_some() {
             return;
         }

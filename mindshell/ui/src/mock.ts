@@ -7,7 +7,7 @@ import { parseWindowInfo, setApi, type MindosGlobal } from './bridge';
 import { letterIcon, hashHue } from './icons';
 import { defaultLayout } from './layout';
 import * as mfs from './mock-fs';
-import type { AppInfo, AudioState, CatalogEntry, Layout, MenuItem, ModelEntry, ModelsInfo, Prefs, ShellState, Stats, TrayItem, WindowInfo, WmOutput } from './types';
+import type { AppInfo, AudioState, CatalogEntry, DlssGame, DlssLibraryEntry, HealthReport, Layout, MenuItem, MindNotice, ModelEntry, ModelsInfo, Notification, PerfStatus, Prefs, ShellState, Stats, TrayItem, UpdateStatus, WindowInfo, WmOutput } from './types';
 
 type Listener = (payload: unknown) => void;
 
@@ -150,7 +150,132 @@ export function installMock(): MindosGlobal {
     win(6, 'Lutris', 'lutris', { minimized: true }),
   ];
   const audio: AudioState = { volume: 0.62, muted: false, sink: 'Starship/Matisse HD Audio' };
-  const mind = { connected: true, ready: false, model: 'Qwen3.5-4B-Q4_K_M.gguf' };
+  const now = () => Math.floor(Date.now() / 1000);
+  // ----- notices, updates, health (the Mind daemon subscription) -----
+  const notices: MindNotice[] = [
+    { id: 'updates:available', level: 'warn', title: '14 updates, one of them the NVIDIA driver', body: 'nvidia-utils 580.65 → 580.82 and linux-mindos 6.17.3 → 6.17.4. The driver and kernel change together, so expect a reboot; nothing in the news mentions manual steps. A snapshot is taken first.', source: 'updates', time: now() - 1800, actions: [{ label: 'Update now', kind: 'request', arg: { type: 'apply_updates' } }, { label: 'What changes?', kind: 'chat', arg: 'What is in the pending update and could it break my games?' }, { label: 'Details', kind: 'settings', arg: 'updates' }] },
+    { id: 'health:pacnew', level: 'info', title: 'A config file wants a look', body: '/etc/pacman.conf.pacnew arrived with the last update. Your file is untouched; the new one may have new defaults.', source: 'health', time: now() - 7200, actions: [{ label: 'Show the difference', kind: 'chat', arg: 'Show me what changed in /etc/pacman.conf.pacnew versus my /etc/pacman.conf' }] },
+  ];
+  let autoApply = false;
+  const updates: UpdateStatus = {
+    checked_at: now() - 1800,
+    packages: [
+      { name: 'linux-mindos', from: '6.17.3-1', to: '6.17.4-1', tag: 'kernel' }, { name: 'nvidia-utils', from: '580.65.06-2', to: '580.82.07-1', tag: 'gpu' }, { name: 'lib32-nvidia-utils', from: '580.65.06-2', to: '580.82.07-1', tag: 'gpu' },
+      { name: 'mesa', from: '25.2.3-1', to: '25.2.4-1', tag: 'gpu' }, { name: 'steam', from: '1.0.0.82-1', to: '1.0.0.83-1', tag: 'gaming' }, { name: 'pipewire', from: '1.4.7-1', to: '1.4.8-1', tag: 'gaming' },
+      { name: 'firefox', from: '143.0-1', to: '143.0.1-1', tag: '' }, { name: 'curl', from: '8.16.0-1', to: '8.16.0-2', tag: '' }, { name: 'gtk4', from: '4.20.1-1', to: '4.20.2-1', tag: 'graphics' },
+      { name: 'mindshell', from: '0.2.0-15', to: '0.2.0-16', tag: 'mindos' }, { name: 'python', from: '3.13.7-1', to: '3.13.7-2', tag: '' }, { name: 'zsh', from: '5.9-6', to: '5.9-7', tag: '' }, { name: 'git', from: '2.51.0-1', to: '2.51.1-1', tag: '' }, { name: 'openssl', from: '3.5.2-1', to: '3.5.3-1', tag: 'core' },
+    ],
+    news: [{ title: 'linux-firmware split into several packages', date: '2026-08-21', url: 'https://archlinux.org/news/' }, { title: 'Manual intervention for pacman 7.1', date: '2026-07-02', url: 'https://archlinux.org/news/' }],
+    risk: 'medium',
+    summary: 'A routine driver and kernel bump. The NVIDIA release notes list fixes for frame pacing under Wayland and nothing that removes a feature; the kernel is a stable patch. Update when you are not about to play, and reboot after.',
+    warnings: ['The NVIDIA driver and the kernel change together: reboot right after.', 'openssl updates; long-running programs keep the old library until restarted.'],
+    manual_intervention: false, reboot: true, assessed_by_model: true, assessing: false, checking: false, applying: false, auto_apply: autoApply,
+    last_update: { time: now() - 86400 * 3, packages: ['firefox', 'foot', 'mesa', 'lib32-mesa', 'vulkan-radeon', 'libx11', 'harfbuzz'], pre_snapshot: 42, ok: true, verified: 'ok', report: 'All services up, the kernel matches the running one, the GPU driver loaded, 412 GB free.' },
+    error: '',
+  };
+  const health: HealthReport = { checked_at: now() - 600, findings: [
+    { id: 'pacnew', level: 'info', title: '/etc/pacman.conf.pacnew', body: 'A new default config arrived with an update. Yours is untouched.', actions: [{ label: 'Show the difference', kind: 'chat', arg: 'Show me the difference between /etc/pacman.conf and /etc/pacman.conf.pacnew' }] },
+    { id: 'failed-units', level: 'ok', title: 'No failed services', body: '', actions: [] },
+    { id: 'kernel', level: 'ok', title: 'Kernel 6.17.3 is the installed one', body: '', actions: [] },
+    { id: 'nvidia', level: 'ok', title: 'NVIDIA 580.65.06 loaded', body: '', actions: [] },
+    { id: 'disk', level: 'ok', title: '412 GB free on /', body: '', actions: [] },
+    { id: 'snapshots', level: 'ok', title: '12 boot snapshots', body: '', actions: [] },
+  ] };
+  const notifications: Notification[] = [
+    { id: 1, app: 'Steam', desktop: 'steam', icon: APPS.find((a) => a.id === 'steam.desktop')?.icon ?? '', summary: 'Cyberpunk 2077 updated', body: 'Patch 2.3 installed (4.1 GB).', actions: [{ key: 'default', label: 'Open' }], urgency: 1, resident: false, transient: false, category: '', timeout: -1, time: now() - 300, replaced: false },
+    { id: 2, app: 'Firefox', desktop: 'firefox', icon: APPS.find((a) => a.id === 'firefox.desktop')?.icon ?? '', summary: 'Download finished', body: 'proton-ge-10-12.tar.gz', actions: [{ key: 'default', label: 'Open' }, { key: 'show', label: 'Show in folder' }], urgency: 1, resident: false, transient: false, category: 'transfer.complete', timeout: -1, time: now() - 2400, replaced: false },
+  ];
+  let nextNotification = 3;
+  let dnd = false;
+  const notifyState = () => ({ items: notifications.map((n) => ({ ...n })), dnd });
+  const pushNotify = (added?: Notification, closed?: number) => emit('notify', { ...notifyState(), added: added ?? null, closed: closed ?? null });
+  const pushNotices = (added?: MindNotice) => emit('mind_notices', { notices: notices.map((n) => ({ ...n })), added: added ?? null });
+  const perf: PerfStatus = { mode: 'balanced', effective: 'balanced', game: 0, gameMode: 'performance', mindSleeps: true, cpu: 'AMD Ryzen 7 9800X3D 8-Core Processor', driver: 'amd-pstate-epp', governor: 'schedutil', epp: 'balance_performance', boost: true, platformProfile: 'balanced', thp: 'always', scheduler: 'EEVDF+BORE', scx: '', nvidia: false, gpu: 'NVIDIA GeForce RTX 4090', powerLimit: 'default' };
+  const dlssGames: DlssGame[] = [
+    { id: 'steam:1091500', name: 'Cyberpunk 2077', source: 'steam', path: `${mfs.HOME}/.local/share/Steam/steamapps/common/Cyberpunk 2077`, dlls: [{ kind: 'dlss', label: 'DLSS Super Resolution', file: 'bin/x64/nvngx_dlss.dll', version: '3.7.10.0', swapped: false }, { kind: 'dlss_g', label: 'DLSS Frame Generation', file: 'bin/x64/nvngx_dlssg.dll', version: '3.7.10.0', swapped: false }, { kind: 'dlss_d', label: 'DLSS Ray Reconstruction', file: 'bin/x64/nvngx_dlssd.dll', version: '3.7.10.0', swapped: false }] },
+    { id: 'steam:2358720', name: 'Black Myth: Wukong', source: 'steam', path: `${mfs.HOME}/.local/share/Steam/steamapps/common/BlackMythWukong`, dlls: [{ kind: 'dlss', label: 'DLSS Super Resolution', file: 'b1/Binaries/Win64/nvngx_dlss.dll', version: '310.2.1.0', swapped: true, backup_version: '3.7.20.0' }, { kind: 'fsr_31_dx12', label: 'FSR 3.1 (DX12)', file: 'b1/Binaries/Win64/amd_fidelityfx_dx12.dll', version: '3.1.4.0', swapped: false }] },
+    { id: 'heroic:alan-wake-2', name: 'Alan Wake 2', source: 'heroic', path: `${mfs.HOME}/Games/Heroic/AlanWake2`, dlls: [{ kind: 'dlss', label: 'DLSS Super Resolution', file: 'nvngx_dlss.dll', version: '3.5.10.0', swapped: false }, { kind: 'xess', label: 'XeSS', file: 'libxess.dll', version: '1.3.1.0', swapped: false }] },
+  ];
+  const dlssLibrary: DlssLibraryEntry[] = [
+    { kind: 'dlss', label: 'DLSS Super Resolution', version: '310.2.1.0', path: `${mfs.HOME}/.local/share/mindos/dlss/dlss/310.2.1.0/nvngx_dlss.dll`, source: 'download', size: 45 * 1048576 },
+    { kind: 'dlss_g', label: 'DLSS Frame Generation', version: '310.2.1.0', path: '/usr/lib/nvidia/wine/nvngx_dlssg.dll', source: 'driver', size: 28 * 1048576 },
+    { kind: 'dlss', label: 'DLSS Super Resolution', version: '3.8.10.0', path: `${mfs.HOME}/.local/share/mindos/dlss/dlss/3.8.10.0/nvngx_dlss.dll`, source: 'download', size: 44 * 1048576 },
+  ];
+  const KINDS = [['dlss', 'nvngx_dlss.dll', 'DLSS Super Resolution'], ['dlss_d', 'nvngx_dlssd.dll', 'DLSS Ray Reconstruction'], ['dlss_g', 'nvngx_dlssg.dll', 'DLSS Frame Generation'], ['fsr_31_dx12', 'amd_fidelityfx_dx12.dll', 'FSR 3.1 (DX12)'], ['fsr_31_vk', 'amd_fidelityfx_vk.dll', 'FSR 3.1 (Vulkan)'], ['xess', 'libxess.dll', 'XeSS'], ['xess_fg', 'libxess_fg.dll', 'XeSS Frame Generation']].map(([kind, dll, label]) => ({ kind, dll, label }));
+  const runHelper = (argv: string[]): unknown => {
+    const ok = (json: unknown, stdout = '') => ({ status: 0, ok: true, stdout: stdout || JSON.stringify(json), stderr: '', json });
+    const [a0, a1, a2, a3, a4] = argv[0] === 'sudo' ? argv.slice(2) : argv;
+    if (a0 === 'mindos-perf') {
+      if (a1 === 'status') return ok({ ...perf });
+      if (a1 === 'set') {
+        perf.mode = a2 as PerfStatus['mode'];
+        if (!perf.game) perf.effective = perf.mode;
+        perf.scx = perf.effective === 'performance' ? 'scx_lavd' : '';
+        perf.governor = perf.effective === 'performance' ? 'performance' : perf.effective === 'quiet' ? 'powersave' : 'schedutil';
+        perf.nvidia = perf.effective === 'performance';
+        return ok(null, perf.game ? `mode ${a2} saved; ${perf.gameMode} stays in effect until the game ends` : `mode ${a2}`);
+      }
+      if (a1 === 'config') {
+        if (a2 === 'GAME_MODE') perf.gameMode = a3 as PerfStatus['gameMode'];
+        if (a2 === 'MIND_SLEEPS_WHILE_GAMING') perf.mindSleeps = a3 === '1';
+        if (a2 === 'SCX_SCHEDULER') perf.scheduler = a3 || 'EEVDF+BORE';
+        if (a2 === 'NVIDIA_POWER_LIMIT') perf.powerLimit = a3;
+        return ok(null, `${a2}=${a3}`);
+      }
+    }
+    if (a0 === 'mindos-dlss') {
+      const cmd = a1 === '--json' ? a2 : a1;
+      const rest = a1 === '--json' ? [a3, a4] : [a2, a3];
+      if (cmd === 'scan' || cmd === 'games') return ok(dlssGames);
+      if (cmd === 'library') return ok(dlssLibrary);
+      if (cmd === 'kinds') return ok(KINDS);
+      if (cmd === 'versions') return ok(['310.2.1.0', '310.1.0.0', '3.8.10.0', '3.7.20.0', '3.7.10.0', '3.5.10.0'].map((v, i) => ({ version: v, installed: dlssLibrary.some((e) => e.kind === rest[0] && e.version === v), label: i === 0 ? 'latest' : '', dev: false, signed: `2025-0${(i % 8) + 1}-1${i}`, size: 44 * 1048576, description: 'NVIDIA DLSS' })));
+      if (cmd === 'download') {
+        dlssLibrary.push({ kind: rest[0], label: KINDS.find((k) => k.kind === rest[0])?.label ?? rest[0], version: rest[1] === 'latest' ? '310.2.1.0' : rest[1], path: `${mfs.HOME}/.local/share/mindos/dlss/${rest[0]}/${rest[1]}/x.dll`, source: 'download', size: 44 * 1048576 });
+        return ok({});
+      }
+      if (cmd === 'delete') {
+        const i = dlssLibrary.findIndex((e) => e.kind === rest[0] && e.version === rest[1]);
+        if (i >= 0) dlssLibrary.splice(i, 1);
+        return ok({});
+      }
+      if (cmd === 'swap' || cmd === 'restore') {
+        const g = dlssGames.find((x) => x.id === rest[0]);
+        const d = g?.dlls.find((x) => x.kind === rest[1]);
+        if (d) {
+          if (cmd === 'swap') {
+            if (!d.swapped) d.backup_version = d.version;
+            d.version = argv[argv.length - 1];
+            d.swapped = true;
+          } else {
+            d.version = d.backup_version ?? d.version;
+            d.swapped = false;
+            delete d.backup_version;
+          }
+        }
+        return ok({});
+      }
+    }
+    if (a0 === 'mindos-dev-setup') return ok({ tools: [['gcc', '15.2.1'], ['clang', '20.1.8'], ['rustc', '1.90.0'], ['go', '1.25.1'], ['node', '24.8.0'], ['python', '3.13.7'], ['uv', '0.8.17'], ['docker', '28.4.0'], ['podman', '5.6.1'], ['distrobox', '1.8.1.2'], ['git', '2.51.0'], ['lazygit', '0.55.0'], ['just', '1.43.0'], ['mold', '2.40.4'], ['sccache', '0.10.0'], ['perf', '6.17'], ['gdb', '16.3'], ['hyperfine', '1.19.0'], ['starship', '1.23.0'], ['zoxide', '0.9.8'], ['shellcheck', null]].map(([name, version]) => ({ name, version })), docker: { active: true, enabled: true, member: false } });
+    if (a0 === 'mindos-boot') return ok(null, `    #  date              kind    kernel        description
+   44* 2026-09-07 09:12  single  6.17.3-1      boot
+   43  2026-09-04 18:40  post    6.17.3-1      pacman -Syu
+   42  2026-09-04 18:39  pre     6.17.3-1      pacman -Syu  [important]
+   41  2026-09-01 11:02  single  6.17.2-1      before mindos-dlss swap
+   40  2026-08-28 20:15  post    6.17.2-1      pacman -S mindos-dev
+   39  2026-08-28 20:14  pre     6.17.2-1      pacman -S mindos-dev
+* booted right now (changes stay in RAM); 'mindos-boot restore' makes it the system`);
+    return { status: 127, ok: false, stdout: '', stderr: `mock: ${argv.join(' ')} not available`, json: null };
+  };
+  // A game "starts" after a while so the perf widget shows GameMode at work.
+  setTimeout(() => {
+    perf.game = 1;
+    perf.effective = perf.gameMode || perf.mode;
+    perf.scx = perf.effective === 'performance' ? 'scx_lavd' : '';
+    perf.nvidia = perf.effective === 'performance';
+    emit('mind', { ...mind, sleeping: true });
+  }, 40000);
+  const mind = { connected: true, ready: false, model: 'Qwen3.5-4B-Q4_K_M.gguf', daemon: true, sleeping: false, notices, updates, health };
   const popups = new Set<string>();
   let nextWin = 7;
   const t0 = Date.now();
@@ -250,6 +375,57 @@ export function installMock(): MindosGlobal {
         }, 500);
         return modelsReply();
       }
+      case 'notices':
+        return { type: 'notices', notices: notices.map((n) => ({ ...n })) };
+      case 'dismiss_notice': {
+        const i = notices.findIndex((n) => n.id === req.id);
+        if (i >= 0) notices.splice(i, 1);
+        pushNotices();
+        return { type: 'notices', notices: notices.map((n) => ({ ...n })) };
+      }
+      case 'updates':
+        if (req.check) {
+          updates.checking = true;
+          emit('mind_updates', { ...updates });
+          setTimeout(() => {
+            updates.checking = false;
+            updates.checked_at = now();
+            emit('mind_updates', { ...updates });
+          }, 1500);
+        }
+        return { type: 'updates', ...updates };
+      case 'apply_updates':
+        updates.applying = true;
+        emit('mind_updates', { ...updates });
+        setTimeout(() => {
+          updates.last_update = { time: now(), packages: updates.packages.map((p) => p.name), pre_snapshot: 45, ok: true, verified: '', report: '' };
+          updates.packages = [];
+          updates.applying = false;
+          updates.risk = '';
+          updates.summary = '';
+          updates.warnings = [];
+          updates.reboot = false;
+          emit('mind_updates', { ...updates });
+          const i = notices.findIndex((n) => n.id === 'updates:available');
+          if (i >= 0) notices.splice(i, 1);
+          const done: MindNotice = { id: 'updates:reboot', level: 'warn', title: 'Updated; reboot when you can', body: 'The kernel and the NVIDIA driver changed. Until the reboot, new games may fail to start.', source: 'updates', time: now(), actions: [{ label: 'Reboot', kind: 'request', arg: { type: 'power', action: 'reboot' } }, { label: 'Later', kind: 'request', arg: { type: 'dismiss_notice', id: 'updates:reboot' } }] };
+          notices.unshift(done);
+          pushNotices(done);
+        }, 4000);
+        return { type: 'updates', ...updates };
+      case 'set_auto_update':
+        autoApply = !!req.enabled;
+        updates.auto_apply = autoApply;
+        emit('mind_updates', { ...updates });
+        return { type: 'updates', ...updates };
+      case 'health':
+        health.checked_at = now();
+        emit('mind_health', { ...health });
+        return { type: 'health', ...health };
+      case 'rollback':
+        return { type: 'ok' };
+      case 'power':
+        return { type: 'ok' };
       case 'cancel_download':
         if (dlTimer) clearInterval(dlTimer);
         if (models.download && !models.download.done) models.download = { ...models.download, done: true, error: 'cancelled' };
@@ -280,6 +456,11 @@ export function installMock(): MindosGlobal {
     mind.ready = true;
     emit('mind', { ...mind });
   }, 1500);
+  setTimeout(() => {
+    const n: Notification = { id: nextNotification++, app: 'Steam', desktop: 'steam', icon: APPS.find((a) => a.id === 'steam.desktop')?.icon ?? '', summary: 'A friend is online', body: 'morvoso started playing Hades II.', actions: [{ key: 'default', label: 'Open' }, { key: 'join', label: 'Join' }], urgency: 1, resident: false, transient: false, category: 'presence.online', timeout: -1, time: now(), replaced: false };
+    notifications.push(n);
+    pushNotify(n);
+  }, 2500);
 
   const methods: Record<string, (p: Record<string, unknown>) => unknown> = {
     'shell.state': (): ShellState => ({
@@ -295,6 +476,7 @@ export function installMock(): MindosGlobal {
       editMode,
       config: { icon_theme: 'breeze-dark', hardware_acceleration: 'always', terminal: 'foot', icon_size: 48 },
       mind: { ...mind },
+      notify: notifyState(),
       audio: { ...audio },
       app: info.kind === 'app' ? { name: info.id, page: appArg.page, arg: appArg.arg } : null,
       version: '0.2.0 (mock)',
@@ -472,6 +654,43 @@ export function installMock(): MindosGlobal {
       return { prefs: { ...prefs } };
     },
     'mind.request': (p) => mindRequest((p.request as Record<string, unknown>) ?? {}),
+    'mind.notices': () => ({ notices: notices.map((n) => ({ ...n })) }),
+    'mind.dismiss': (p) => mindRequest({ type: 'dismiss_notice', id: p.id }),
+    'mind.act': (p) => {
+      const a = p.action as { kind: string; arg: unknown };
+      if (a.kind === 'request') return mindRequest(a.arg as Record<string, unknown>);
+      if (a.kind === 'settings') mockHooks.openApp?.('settings', String(a.arg ?? ''));
+      if (a.kind === 'chat') console.log('mock: Mind bar would open with', a.arg);
+      return null;
+    },
+    'notify.list': () => notifyState(),
+    'notify.close': (p) => {
+      const i = notifications.findIndex((n) => n.id === p.id);
+      if (i >= 0) notifications.splice(i, 1);
+      pushNotify(undefined, Number(p.id));
+      return { closed: i >= 0 };
+    },
+    'notify.action': (p) => {
+      console.log('mock: notification action', p.id, p.key);
+      const i = notifications.findIndex((n) => n.id === p.id);
+      if (i >= 0 && !notifications[i].resident) {
+        notifications.splice(i, 1);
+        pushNotify(undefined, Number(p.id));
+      }
+      return null;
+    },
+    'notify.clear': () => {
+      notifications.splice(0);
+      pushNotify();
+      return null;
+    },
+    'notify.setDnd': (p) => {
+      dnd = !!p.enabled;
+      pushNotify();
+      return { enabled: dnd };
+    },
+    'toast.fit': () => ({ visible: true }),
+    'shell.run': (p) => runHelper((p.argv as string[]) ?? []),
     'wallpaper.list': () => mfs.wallpapers(),
     'fs.desktop': () => ({ path: `${mfs.HOME}/Desktop` }),
     'fs.list': (p) => mfs.list(String(p.path ?? mfs.HOME), !!p.hidden),

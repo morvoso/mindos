@@ -127,6 +127,12 @@ export function renderPreview(root: HTMLElement): void {
         case 'power':
           click('.w-power');
           break;
+        case 'notifications':
+          click('.w-notifications');
+          break;
+        case 'perf':
+          click('.w-perf');
+          break;
         case 'tray-menu':
           context('.tray-item');
           break;

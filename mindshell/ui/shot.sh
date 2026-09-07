@@ -27,7 +27,12 @@ shot app-settings        'kind=app&id=settings&arg=%7B%22page%22%3A%22mind%22%7D
 shot app-wallpaper       'kind=app&id=settings&arg=%7B%22page%22%3A%22wallpaper%22%7D' 1040,700
 shot app-displays        'kind=app&id=settings&arg=%7B%22page%22%3A%22displays%22%7D' 1040,700
 shot app-desktop         'kind=app&id=settings&arg=%7B%22page%22%3A%22shell%22%7D' 1040,700
-shot app-files           'kind=app&id=files' 1040,700
+shot app-updates         'kind=app&id=settings&arg=%7B%22page%22%3A%22updates%22%7D' 1040,760
+shot app-performance     'kind=app&id=settings&arg=%7B%22page%22%3A%22performance%22%7D' 1040,760
+shot app-games           'kind=app&id=settings&arg=%7B%22page%22%3A%22games%22%7D' 1040,760
+shot app-developer       'kind=app&id=settings&arg=%7B%22page%22%3A%22developer%22%7D' 1040,760
+shot preview-notifications 'kind=preview&popup=notifications'
+shot preview-perf        'kind=preview&popup=perf'
+shot toast               'kind=toast&id=toast&output=Virtual-1' 400,300
 # The login screen (kind=greeter) on a full output.
 shot greeter             'kind=greeter&arg=%7B%22primary%22%3Atrue%7D'
-shot app-files-list      'kind=app&id=files&arg=%7B%22arg%22%3A%22%2Fhome%2Fmorvoso%2FDownloads%22%7D&view=list' 1040,700

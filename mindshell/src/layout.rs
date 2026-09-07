@@ -25,7 +25,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Layout {
-            version: 1,
+            version: 2,
             panels: Vec::new(),
             desktop: Desktop::default(),
             extra: Map::new(),
@@ -88,6 +88,12 @@ pub struct Widget {
     pub extra: Map<String, Value>,
 }
 
+impl Widget {
+    fn new(id: &str, kind: &str) -> Widget {
+        Widget { id: id.into(), kind: kind.into(), config: Value::Object(Map::new()), extra: Map::new() }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Desktop {
@@ -147,10 +153,30 @@ impl Layout {
             .map_err(|e| format!("invalid layout: {e}"))
     }
 
+    /// Version 2 added the performance-mode and notification widgets to the
+    /// bar; a layout saved by an older shell gets them beside its Mind widget.
+    fn migrate_v2(&mut self) {
+        for panel in &mut self.panels {
+            let has = |kind: &str| panel.widgets.iter().any(|w| w.kind == kind);
+            let Some(mind) = panel.widgets.iter().position(|w| w.kind == "mind") else { continue };
+            let (perf, notify) = (has("perf"), has("notifications"));
+            if !notify {
+                panel.widgets.insert(mind + 1, Widget::new("notify", "notifications"));
+            }
+            if !perf {
+                panel.widgets.insert(mind, Widget::new("perf", "perf"));
+            }
+        }
+        self.version = 2;
+    }
+
     /// Clamp values to something the host can build windows from.
     pub fn sanitized(mut self) -> Layout {
         if self.version == 0 {
             self.version = 1;
+        }
+        if self.version < 2 {
+            self.migrate_v2();
         }
         let mut seen = std::collections::HashSet::new();
         let mut n = 0;
@@ -256,7 +282,8 @@ mod tests {
     fn builtin_layout_parses() {
         let layout: Layout = serde_json::from_str(BUILTIN_LAYOUT).unwrap();
         // One Windows-style bar along the bottom: the task bar centred
-        // between two expanding spacers, the tray, Mind and the clock after.
+        // between two expanding spacers, then the tray, performance mode,
+        // Mind, the bell and the clock.
         assert_eq!(layout.panels.len(), 1);
         let bar = &layout.panels[0];
         assert_eq!(bar.edge, "bottom");
@@ -269,11 +296,28 @@ mod tests {
         assert!(!names.contains(&"start"));
         assert_eq!(names.iter().filter(|n| **n == "spacer").count(), 2, "two expanding spacers centre the apps");
         let pos = |k: &str| names.iter().position(|n| *n == k).unwrap();
-        assert!(pos("taskbar") < pos("tray") && pos("tray") < pos("mind") && pos("mind") + 1 == pos("clock"), "Mind sits right, just left of the clock");
+        assert!(pos("taskbar") < pos("tray") && pos("tray") < pos("perf") && pos("perf") + 1 == pos("mind"), "performance mode, then Mind, on the right");
+        assert!(pos("mind") + 1 == pos("notifications") && pos("notifications") + 1 == pos("clock"), "the bell sits between Mind and the clock");
         assert!(layout.desktop.widgets.is_empty(), "no desktop widgets by default");
         assert_eq!(layout.desktop.extra.get("icons"), Some(&Value::Bool(true)), "desktop icons on");
         let round: Value = layout.to_value();
         assert_eq!(round["panels"][0]["widgets"][0]["type"], layout.panels[0].widgets[0].kind);
+    }
+
+    #[test]
+    fn old_layout_gains_perf_and_bell() {
+        let v = serde_json::json!({
+            "version": 1,
+            "panels": [{ "id": "bar", "widgets": [
+                { "id": "tray", "type": "tray" }, { "id": "mind", "type": "mind" }, { "id": "clock", "type": "clock" }
+            ]}]
+        });
+        let layout = Layout::from_value(v).unwrap();
+        assert_eq!(layout.version, 2);
+        let names: Vec<&str> = layout.panels[0].widgets.iter().map(|w| w.kind.as_str()).collect();
+        assert_eq!(names, ["tray", "perf", "mind", "notifications", "clock"]);
+        let again = Layout::from_value(layout.to_value()).unwrap();
+        assert_eq!(again.panels[0].widgets.len(), 5, "migrating twice adds nothing");
     }
 
     #[test]

@@ -1,9 +1,14 @@
-// The Settings app: Mind, wallpaper, displays, the desktop shell and about.
+// The Settings app: Mind, updates, performance, games, developer, wallpaper,
+// displays, the desktop shell and about.
 
 import { h } from '../dom';
 import { appFrame, setTitle } from './shared';
+import { devPage } from './settings-dev';
 import { displaysPage } from './settings-displays';
+import { gamesPage } from './settings-games';
 import { mindPage } from './settings-mind';
+import { performancePage } from './settings-performance';
+import { updatesPage } from './settings-updates';
 import { aboutPage, shellPage } from './settings-shell';
 import { wallpaperPage } from './settings-wallpaper';
 
@@ -11,6 +16,10 @@ type PageFn = (el: HTMLElement, root: HTMLElement) => (() => void) | void;
 
 const PAGES: { id: string; label: string; icon: string; render: PageFn }[] = [
   { id: 'mind', label: 'Mind', icon: 'mind', render: mindPage },
+  { id: 'updates', label: 'Updates', icon: 'package', render: updatesPage },
+  { id: 'performance', label: 'Performance', icon: 'rocket', render: performancePage },
+  { id: 'games', label: 'Games', icon: 'gamepad', render: gamesPage },
+  { id: 'developer', label: 'Developer', icon: 'code', render: devPage },
   { id: 'wallpaper', label: 'Wallpaper', icon: 'image', render: wallpaperPage },
   { id: 'displays', label: 'Displays', icon: 'display', render: displaysPage },
   { id: 'shell', label: 'Desktop', icon: 'layout', render: shellPage },

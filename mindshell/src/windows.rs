@@ -17,6 +17,12 @@ use crate::layout::Panel;
 /// (room for the panel settings strip).
 pub const EDIT_STRIP: i32 = 140;
 
+/// Gap between the toast stack and the screen corner (logical px).
+pub const TOAST_MARGIN: i32 = 12;
+
+/// The toast window's size until the UI measures its content.
+pub const TOAST_DEFAULT: (i32, i32) = (380, 1);
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Desktop,
@@ -27,6 +33,9 @@ pub enum Kind {
     /// The login screen (`mindshell --app greeter`): one full-screen overlay
     /// per output with the keyboard to itself.
     Greeter,
+    /// Notification toasts: a small overlay in the top-right corner of the
+    /// primary output, sized by the UI (`toast.fit`), hidden when empty.
+    Toast,
 }
 
 impl Kind {
@@ -37,6 +46,7 @@ impl Kind {
             Kind::Popup => "popup",
             Kind::App => "app",
             Kind::Greeter => "greeter",
+            Kind::Toast => "toast",
         }
     }
 }
@@ -94,6 +104,8 @@ pub struct ShellWindow {
     pub view: webkit::WebView,
     pub panel: RefCell<Option<PanelSpec>>,
     pub keyboard: Cell<bool>,
+    /// Toast window size as measured by the UI (`toast.fit`).
+    pub toast: Cell<(i32, i32)>,
     pub ready: Cell<bool>,
     pub url: RefCell<String>,
     /// Popup argument as passed to `popup.open`, echoed in `popup_state`.
@@ -134,6 +146,7 @@ impl ShellWindow {
             view,
             panel: RefCell::new(None),
             keyboard: Cell::new(false),
+            toast: Cell::new(TOAST_DEFAULT),
             ready: Cell::new(false),
             url: RefCell::new(String::new()),
             arg: RefCell::new(Value::Null),
@@ -212,6 +225,18 @@ impl ShellWindow {
                 });
                 self.view.set_size_request(-1, -1);
             }
+            Kind::Toast => {
+                w.set_layer(Layer::Overlay);
+                w.set_anchor(Edge::Top, true);
+                w.set_anchor(Edge::Right, true);
+                w.set_margin(Edge::Top, TOAST_MARGIN);
+                w.set_margin(Edge::Right, TOAST_MARGIN);
+                w.set_exclusive_zone(0);
+                w.set_keyboard_mode(KeyboardMode::None);
+                let (tw, th) = self.toast.get();
+                self.view.set_size_request(tw, th);
+                w.set_default_size(tw, th);
+            }
             Kind::Panel => {
                 let spec = self.panel.borrow().clone().unwrap_or_else(|| PanelSpec::from(&Panel::default()));
                 let (thickness, length, full) = self.panel_box(&spec, edit_mode);
@@ -256,6 +281,10 @@ impl ShellWindow {
     pub fn origin(&self, edit_mode: bool) -> (i32, i32) {
         match self.kind {
             Kind::Desktop | Kind::Popup | Kind::App | Kind::Greeter => (0, 0),
+            Kind::Toast => {
+                let (mw, _) = self.monitor_size();
+                (mw - TOAST_MARGIN - self.toast.get().0, TOAST_MARGIN)
+            }
             Kind::Panel => {
                 let spec = self.panel.borrow().clone().unwrap_or_else(|| PanelSpec::from(&Panel::default()));
                 let (mw, mh) = self.monitor_size();

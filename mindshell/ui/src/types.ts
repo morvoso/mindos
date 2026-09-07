@@ -4,7 +4,7 @@ export type Edge = 'top' | 'bottom' | 'left' | 'right';
 export type Align = 'start' | 'center' | 'end';
 export type PanelLayer = 'top' | 'bottom';
 export type Container = 'panel' | 'desktop';
-export type WindowKind = 'desktop' | 'panel' | 'popup' | 'preview' | 'app' | 'greeter';
+export type WindowKind = 'desktop' | 'panel' | 'popup' | 'preview' | 'app' | 'greeter' | 'toast';
 
 export type Config = Record<string, unknown>;
 
@@ -43,7 +43,7 @@ export interface Wallpaper {
 }
 
 export interface Layout {
-  version: 1;
+  version: number;
   panels: PanelDef[];
   desktop: {
     wallpaper: Wallpaper;
@@ -149,6 +149,217 @@ export interface MindStatus {
   connected: boolean;
   ready: boolean;
   model?: string;
+  /** The shell's own subscription to mindd is up. */
+  daemon?: boolean;
+  /** The model is unloaded (a game is running, or `mind sleep on`). */
+  sleeping?: boolean;
+  notices?: MindNotice[];
+  updates?: UpdateStatus | null;
+  health?: HealthReport | null;
+}
+
+/* ----- the Mind daemon: notices, updates, health ----- */
+
+/** A button on a notice: `chat` opens the Mind bar with `arg`, `request`
+ * sends the daemon request in `arg`, `command` runs `arg`, `settings` opens
+ * the Settings page named by `arg`. */
+export interface NoticeAction {
+  label: string;
+  kind: 'chat' | 'request' | 'command' | 'settings';
+  arg: unknown;
+}
+
+export type NoticeLevel = 'info' | 'warn' | 'danger' | 'ok';
+
+export interface MindNotice {
+  id: string;
+  level: NoticeLevel;
+  title: string;
+  body: string;
+  source: 'updates' | 'health' | 'mind' | string;
+  time: number;
+  actions: NoticeAction[];
+}
+
+export interface PackageUpdate {
+  name: string;
+  from: string;
+  to: string;
+  tag: 'kernel' | 'gpu' | 'graphics' | 'core' | 'mindos' | 'gaming' | '';
+}
+
+export interface NewsItem {
+  title: string;
+  date: string;
+  url: string;
+}
+
+export interface LastUpdate {
+  time: number;
+  packages: string[];
+  pre_snapshot: number | null;
+  ok: boolean;
+  verified: '' | 'ok' | 'problems';
+  report: string;
+}
+
+export interface UpdateStatus {
+  checked_at: number;
+  packages: PackageUpdate[];
+  news: NewsItem[];
+  risk: 'low' | 'medium' | 'high' | '';
+  summary: string;
+  warnings: string[];
+  manual_intervention: boolean;
+  reboot: boolean;
+  assessed_by_model: boolean;
+  assessing: boolean;
+  checking: boolean;
+  applying: boolean;
+  auto_apply: boolean;
+  last_update: LastUpdate | null;
+  error: string;
+}
+
+export interface Finding {
+  id: string;
+  level: NoticeLevel;
+  title: string;
+  body: string;
+  actions: NoticeAction[];
+}
+
+export interface HealthReport {
+  checked_at: number;
+  findings: Finding[];
+}
+
+export interface Snapshot {
+  number: number;
+  type: string;
+  date: string;
+  description: string;
+  cleanup?: string;
+}
+
+/* ----- notifications (org.freedesktop.Notifications) ----- */
+
+export interface NotificationAction {
+  key: string;
+  label: string;
+}
+
+export interface Notification {
+  id: number;
+  app: string;
+  /** Desktop entry id without `.desktop`, when the app said. */
+  desktop: string;
+  /** Resolved icon URL, or empty. */
+  icon: string;
+  summary: string;
+  body: string;
+  actions: NotificationAction[];
+  /** 0 low, 1 normal, 2 critical. */
+  urgency: number;
+  resident: boolean;
+  transient: boolean;
+  category: string;
+  /** ms; -1 = server default, 0 = never. */
+  timeout: number;
+  time: number;
+  replaced: boolean;
+  /** Arrived while Do not disturb was on: kept, not shown as a toast. */
+  quiet?: boolean;
+}
+
+export interface NotifyState {
+  items: Notification[];
+  dnd: boolean;
+}
+
+/* ----- performance modes (mindos-perf) ----- */
+
+export type PerfMode = 'balanced' | 'performance' | 'quiet';
+
+export interface PerfStatus {
+  mode: PerfMode;
+  effective: PerfMode | '';
+  game: number;
+  gameMode: PerfMode | '';
+  mindSleeps: boolean;
+  cpu: string;
+  driver: string;
+  governor: string;
+  epp: string;
+  boost: boolean | null;
+  platformProfile: string;
+  thp: string;
+  scheduler: string;
+  scx: string;
+  nvidia: boolean;
+  gpu: string;
+  powerLimit: string;
+}
+
+/* ----- shell.run ----- */
+
+export interface RunResult {
+  status: number;
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  json: unknown;
+}
+
+/* ----- DLSS swapper (mindos-dlss) ----- */
+
+export interface DlssDll {
+  kind: string;
+  label: string;
+  file: string;
+  version: string;
+  swapped: boolean;
+  backup_version?: string;
+}
+
+export interface DlssGame {
+  id: string;
+  name: string;
+  source: 'steam' | 'heroic' | 'lutris' | 'dir' | string;
+  path: string;
+  dlls: DlssDll[];
+}
+
+export interface DlssLibraryEntry {
+  kind: string;
+  label: string;
+  version: string;
+  path: string;
+  source: string;
+  size: number;
+}
+
+export interface DlssVersion {
+  version: string;
+  installed: boolean;
+  label: string;
+  dev: boolean;
+  signed: string;
+  size: number;
+  description: string;
+}
+
+export interface DlssKind {
+  kind: string;
+  dll: string;
+  label: string;
+}
+
+/* ----- developer stack (mindos-dev-setup) ----- */
+
+export interface DevStatus {
+  tools: { name: string; version: string | null }[];
+  docker: { active: boolean; enabled: boolean; member: boolean };
 }
 
 export interface ShellConfig {
@@ -178,6 +389,7 @@ export interface ShellState {
   editMode: boolean;
   config: ShellConfig;
   mind?: MindStatus;
+  notify?: NotifyState;
   audio?: AudioState;
   app?: AppMode | null;
   version?: string;

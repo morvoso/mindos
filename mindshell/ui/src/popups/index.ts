@@ -10,6 +10,8 @@ import { audioPopup } from './audio';
 import { calendarPopup } from './calendar';
 import { contextMenuPopup } from './context-menu';
 import { layoutModePopup } from './layout-mode';
+import { notificationsPopup } from './notifications';
+import { perfPopup } from './perf';
 import { powerPopup } from './power';
 import type { PopupContent, PopupCtx, PopupFactory } from './shared';
 import { trayMenuPopup } from './tray-menu';
@@ -21,6 +23,8 @@ export const POPUPS: Record<string, PopupFactory> = {
   'layout-mode': layoutModePopup,
   audio: audioPopup,
   power: powerPopup,
+  notifications: notificationsPopup,
+  perf: perfPopup,
   'context-menu': contextMenuPopup,
   'tray-menu': trayMenuPopup,
   'widget-catalog': widgetCatalogPopup,

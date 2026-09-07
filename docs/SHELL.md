@@ -64,11 +64,14 @@ bottom edge, Windows-style — the task bar centred on the screen; the tray,
 status widgets, Mind and the clock at the right; the Desktop folder as icons
 on the wallpaper and no desktop widgets. It is only a default: edit mode
 moves panels to any edge, adds a dock (a fit-to-content panel) or a top bar,
-adds widgets and re-orders them.
+adds widgets and re-orders them. `version` is the layout format: a saved
+layout from before version 2 gains the `perf` and `notifications` widgets
+beside its `mind` widget when it loads (`Layout::sanitized` migrates, and
+the next save writes version 2).
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "panels": [
     {
       "id": "bar",
@@ -147,6 +150,8 @@ adds widgets and re-orders them.
 | `network` | panel | wired/wifi state. Settings: `name`, `ip` |
 | `battery` | panel | charge state (hidden when no battery). Settings: `percent`, `warnAt`, `alwaysShow` |
 | `mind` | panel | Mind (mindd) status; click toggles the Mind bar. Settings: `label`, `model` |
+| `notifications` | panel | the bell: applications' notifications plus the Mind's notices that need attention, with a count badge (do-not-disturb crosses the bell out); click opens the notification centre popup. Setting: `count` |
+| `perf` | panel | the performance mode (`mindos-perf`: balanced / performance / quiet) as an icon, pulsing while GameMode has a game running; click opens the mode picker popup. Setting: `label` |
 | `sysmon` | panel | compact CPU / memory / GPU bars. Settings: `cpu`, `memory`, `gpu`, `interval` |
 | `power` | panel | power menu button. Setting: `label` |
 | `desktop-clock` | desktop | large clock + date. Settings: the clock's time/date ones plus `year`, `size` (px), `align`, `glow` |
@@ -174,7 +179,10 @@ and one `mindos://shell/` origin.
 | `panel` (one per panel × output) | `top`/`bottom` per layout, anchored to the panel edge (+ both sides when `length` = 100), exclusive zone = `size` + `margin`, keyboard `none` | the panel and its widgets; in edit mode the window is enlarged by 140 px toward the screen centre (exclusive zone unchanged) to show the panel settings strip |
 | `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus. Clicking the transparent area or pressing Escape closes it |
 | `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings app; one process per window, `app.close` ends it |
+| `toast` (one, on the primary output) | `overlay`, anchored top + right with a 12 px margin, exclusive zone 0, keyboard `none`; sized by the UI (`toast.fit`) and hidden while empty | the notification toasts: new application notifications and Mind notices slide in here and expire (never for critical ones) |
 | `greeter` (`mindshell --app greeter`, one per output) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output and `none` on the others | the login screen: wallpaper and clock everywhere, the login card, the other accounts, the session and the power buttons on the first output. Started by greetd through `mindos-greeter` (see *The login screen* below) |
+
+![Toasts in the dev VM: three `notify-send` notifications, the critical one in the danger colour](img/toasts.png)
 
 Every window loads `mindos://shell/app/index.html?kind=<kind>&id=<id>&output=<name>`
 (`&popup=<name>&arg=<json>` for popups). `?kind=preview` renders every
@@ -223,9 +231,19 @@ data so the UI can be developed in Chromium/Firefox.
 | `tray.scroll` | `{ id, delta, orientation }` |
 | `tray.menu` | `{ id }` → `[{ id, label, enabled, type: "item" \| "separator" \| "submenu", toggle?: "checkmark" \| "radio", checked?, icon?, children? }]` |
 | `tray.menuClick` | `{ id, item }` |
-| `mind.toggle` | opens/closes the compositor's Mind bar |
-| `mind.status` | → `{ connected, ready, model }` |
-| `mind.request` | `{ request }` (a `{ type, ... }` object for mindd: `models`, `set_model`, `set_thinking`, `download_model`, `cancel_download`, `status`) → the first event the daemon answers with (the Settings page polls `models` while a download runs) |
+| `mind.toggle` / `mind.open` / `mind.close` | opens/closes the compositor's Mind bar; `open` takes `{ text?, ask? }` to prefill the field (and, with `ask`, send it as a question at once) |
+| `mind.status` | → `{ connected, ready, model, daemon, sleeping, notices, updates, health }` (`daemon`: the shell's own subscription to mindd is up; `sleeping`: the model is unloaded, GameMode does that while a game runs) |
+| `mind.request` | `{ request }` (a `{ type, ... }` object for mindd: `models`, `set_model`, `set_thinking`, `download_model`, `cancel_download`, `status`, `notices`, `dismiss_notice`, `updates { check }`, `apply_updates`, `set_auto_update { enabled }`, `health`, `set_sleep { sleeping }`, `power { action }`, `rollback { snapshot }`) → the first event the daemon answers with (the Settings page polls `models` while a download runs) |
+| `mind.notices` | → `{ notices: [{ id, level: "info" \| "warn" \| "danger" \| "ok", title, body, source: "updates" \| "health" \| "mind", time, actions: [{ label, kind, arg }] }] }` |
+| `mind.dismiss` | `{ id }` (`"*"` = all) → drops the notice locally and in mindd |
+| `mind.act` | `{ action: { kind, arg } }` carries out a notice action: `chat` opens the Mind bar with `arg` as the question, `request` sends the mindd request in `arg`, `command` runs `arg` in the session, `settings` opens the Settings page named by `arg` |
+| `notify.list` | → `{ items: [{ id, app, desktop, icon, summary, body, actions: [{ key, label }], urgency, resident, transient, category, timeout, time, replaced, quiet }], dnd }` (the freedesktop notification server the host runs on the session bus; `icon` is a URL — `mindos://shell/notify/<id>` for `image-data`) |
+| `notify.close` | `{ id, reason? }` (1 expired, 2 dismissed — the default —, 3 closed by a call) → `{ closed }`; the application gets `NotificationClosed` |
+| `notify.action` | `{ id, key }` → the application gets `ActionInvoked`; the notification closes unless it is `resident` |
+| `notify.clear` | closes every notification |
+| `notify.setDnd` | `{ enabled }`: do not disturb — notifications still collect, only critical ones toast |
+| `toast.fit` | `{ w, h }` from the toast window: the host resizes it (and hides it when `h` ≤ 1) |
+| `shell.run` | `{ argv }` runs one of the system helpers and → `{ status, ok, stdout, stderr, json }` (`json` is the parsed stdout when it is JSON). Allowed: `mindos-perf status\|get\|modes\|set\|config\|apply` (also behind `sudo -n`), `mindos-dlss …`, `mindos-dev-setup …`, `mindos-boot list`, `pacman -Q…`, `checkupdates`, `nvidia-smi …` |
 | `panel.fit` | `{ length }` (content length in logical pixels) from a `length: 0` panel: the host resizes the panel window and answers `{ length }` |
 | `wm.layoutMode` | → `{ mode, label, modes: [{ mode, label, description }] }` |
 | `wm.setLayoutMode` / `wm.cycleLayoutMode` | `{ mode }` / none → the new `{ mode, label }`; also broadcast as `layout_mode` |
@@ -263,7 +281,12 @@ data so the UI can be developed in Chromium/Firefox.
 | `layout` | `{ layout }` |
 | `edit_mode` | `{ enabled }` |
 | `popup_state` | `{ name, open, output }` |
-| `mind` | `{ connected, ready, model }` |
+| `mind` | `{ connected, ready, model, daemon, sleeping, notices, updates, health }` |
+| `mind_notices` | `{ notices, added? }` whenever a Mind notice arrives, changes or goes (`added` is the new one; the toast window shows it) |
+| `mind_updates` | the mindd `updates` status (`{ checked_at, packages: [{ name, from, to, tag }], news, risk, summary, warnings, manual_intervention, reboot, assessed_by_model, assessing, checking, applying, auto_apply, last_update, error }`) whenever it changes |
+| `mind_health` | `{ checked_at, findings: [{ id, level, title, body, actions }] }` after a health check |
+| `notify` | `{ items, dnd, added?, closed? }` on every notification change (`added`: the new notification, `closed`: the id that went) |
+| `perf_changed` | `{ argv }` after a `shell.run` of `mindos-perf set\|config\|apply` succeeded in any window; read the status again |
 | `audio` | `{ volume, muted }` |
 | `shortcut` | `{ name }` forwarded from the compositor (`overview`) |
 | `layout_mode` | `{ mode, label, modes? }` whenever the compositor's window layout changes |
@@ -273,6 +296,7 @@ data so the UI can be developed in Chromium/Firefox.
 `mindos://shell/icon/<name>?size=N` serves an icon from the configured theme
 (`hicolor` fallback, SVG or PNG); an absolute path in place of `<name>` serves
 that file. `mindos://shell/tray/<id>` serves a tray item's pixmap.
+`mindos://shell/notify/<id>` serves the pixmap a notification carried as `image-data`.
 `mindos://shell/file/<absolute path>` serves a file from disk (wallpapers,
 image previews) and `mindos://shell/thumb/<absolute path>?size=N` a scaled
 thumbnail of an image.
