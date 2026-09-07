@@ -53,11 +53,20 @@ WebKit inspector, `mindshell --devtools` does the same).
 
 ```toml
 [shell]
-icon_theme = "breeze-dark"      # any installed XDG icon theme; hicolor is the fallback
+# icon_theme = "breeze-dark"     # unset: follow the desktop's icon pack (see below)
 hardware_acceleration = "always" # always | never (WebKit compositing policy)
 terminal = "foot"
 icon_size = 48                   # dock / taskbar icon size in logical pixels
 ```
+
+Icons — the applications, the tray and the desktop — come from the icon pack
+the desktop is set to: GTK's `gtk-icon-theme-name`, which it takes from the
+settings portal (`org.gnome.desktop.interface icon-theme`, defaulted to
+`breeze-dark` by `90_mindos.gschema.override`) and from the `settings.ini`
+files in `/etc/mindos/xdg`. Change it (`gsettings set
+org.gnome.desktop.interface icon-theme Papirus-Dark`) and the shell re-draws
+its icons with the applications', without a restart. `icon_theme` in
+`shell.toml` pins one theme instead and stops the shell following.
 
 ## Layout (`layout.json`)
 
@@ -317,7 +326,7 @@ data so the UI can be developed in Chromium/Firefox.
 | `prefs` | `{ prefs }` whenever a compositor preference changes |
 | `desktop.changed` | `{ path }` when something in the Desktop folder changed (debounced) |
 
-`mindos://shell/icon/<name>?size=N` serves an icon from the configured theme
+`mindos://shell/icon/<name>?size=N` serves an icon from the icon theme in force
 (`hicolor` fallback, SVG or PNG); an absolute path in place of `<name>` serves
 that file. `mindos://shell/tray/<id>` serves a tray item's pixmap.
 `mindos://shell/notify/<id>` serves the pixmap a notification carried as `image-data`.
@@ -678,6 +687,13 @@ the same field; so does the `mindos-wallpaper PATH` command from
 
 **Widget settings.** Widgets declare `settings: { key: { label, type, min?,
 max?, step?, unit?, slider?, options?, segmented?, help?, placeholder?,
+The backend name is claimed in `main`, *before* `gtk::init()`. It has to be:
+`xdg-desktop-portal` does not finish starting until every backend it was
+configured with is on the bus, and GTK's first act is to ask that same portal
+for the colour scheme. Claiming the name after GTK starts makes the two wait
+for each other until D-Bus gives up 25 seconds later, which is 25 seconds of
+the startup screen on every boot.
+
 when? } }` with `type` one of `boolean | number | string | text | enum |
 list`; `widget-settings` builds its form from that (falling back to the
 types of `defaults`). A `number` with `min` and `max` gets a slider next to

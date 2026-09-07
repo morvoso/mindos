@@ -22,6 +22,9 @@ pub enum TrayCommand {
     Scroll { id: String, delta: i32, orientation: String, reply: Reply<()> },
     Menu { id: String, reply: Reply<Value> },
     MenuClick { id: String, item: i32, reply: Reply<()> },
+    /// Publish the items again although nothing about them changed (the icon
+    /// theme did, so their icons resolve to other files).
+    Refresh,
 }
 
 /// Encoded PNG pixmaps by item id, with a version that busts the view cache.
@@ -34,7 +37,7 @@ pub struct TrayHandle {
 }
 
 impl TrayHandle {
-    pub fn start(events: async_channel::Sender<HostEvent>, icon_theme: String) -> TrayHandle {
+    pub fn start(events: async_channel::Sender<HostEvent>, icon_theme: icons::ThemeRef) -> TrayHandle {
         let (cmd_tx, cmd_rx) = async_channel::unbounded::<TrayCommand>();
         let pixmaps: Pixmaps = Arc::new(Mutex::new(HashMap::new()));
         let worker_pixmaps = pixmaps.clone();
@@ -52,6 +55,11 @@ impl TrayHandle {
             })
             .expect("spawn tray thread");
         TrayHandle { cmd: cmd_tx, pixmaps }
+    }
+
+    /// Re-publish the items (after an icon theme change).
+    pub fn refresh(&self) {
+        let _ = self.send(TrayCommand::Refresh);
     }
 
     pub fn pixmap(&self, id: &str) -> Option<Vec<u8>> {
@@ -91,7 +99,7 @@ async fn run(
     events: async_channel::Sender<HostEvent>,
     cmd_rx: async_channel::Receiver<TrayCommand>,
     pixmaps: Pixmaps,
-    icon_theme: String,
+    icon_theme: icons::ThemeRef,
 ) {
     let mut versions: HashMap<String, u64> = HashMap::new();
     let mut last_snapshot: Option<String> = None;
@@ -107,6 +115,7 @@ async fn run(
                     tokio::select! {
                         _ = &mut wait => break,
                         cmd = cmd_rx.recv() => match cmd {
+                            Ok(TrayCommand::Refresh) => {}
                             Ok(cmd) => fail(cmd, "system tray unavailable"),
                             Err(_) => return,
                         },
@@ -136,6 +145,10 @@ async fn run(
                     Err(_) => break,
                 },
                 cmd = cmd_rx.recv() => match cmd {
+                    Ok(TrayCommand::Refresh) => {
+                        last_snapshot = None;
+                        publish(&client, &pixmaps, &mut versions, &icon_theme, &events, &mut last_snapshot);
+                    }
                     Ok(cmd) => handle(&client, bus.as_ref(), cmd).await,
                     Err(_) => return,
                 },
@@ -159,11 +172,14 @@ fn fail(cmd: TrayCommand, why: &str) {
         TrayCommand::Menu { reply, .. } => {
             let _ = reply.try_send(Err(why.into()));
         }
+        TrayCommand::Refresh => {}
     }
 }
 
 async fn handle(client: &Client, bus: Option<&zbus::Connection>, cmd: TrayCommand) {
     match cmd {
+        // Handled where the snapshot lives (`run`).
+        TrayCommand::Refresh => {}
         TrayCommand::Activate { id, x, y, secondary, reply } => {
             let req = if secondary {
                 ActivateRequest::Secondary { address: id, x, y }
@@ -300,17 +316,18 @@ fn publish(
     client: &Client,
     pixmaps: &Pixmaps,
     versions: &mut HashMap<String, u64>,
-    icon_theme: &str,
+    icon_theme: &icons::ThemeRef,
     events: &async_channel::Sender<HostEvent>,
     last: &mut Option<String>,
 ) {
     let items = client.items();
+    let theme = icon_theme.get();
     let snapshot: Vec<Value> = {
         let Ok(map) = items.lock() else { return };
         let mut list: Vec<(&String, &(StatusNotifierItem, Option<TrayMenu>))> = map.iter().collect();
         list.sort_by(|a, b| a.0.cmp(b.0));
         list.into_iter()
-            .map(|(id, (item, menu))| item_json(id, item, menu.is_some(), pixmaps, versions, icon_theme))
+            .map(|(id, (item, menu))| item_json(id, item, menu.is_some(), pixmaps, versions, &theme))
             .collect()
     };
     let value = Value::Array(snapshot);
@@ -352,8 +369,8 @@ fn item_json(
                 icon = Some(format!("mindos://shell/icon/{}", icons::percent_encode(&p.to_string_lossy())));
             }
         }
-        if icon.is_none() && icons::resolve(name, 32, icon_theme).is_some() {
-            icon = Some(icon_url(name, 32));
+        if let (None, Some(p)) = (&icon, icons::resolve(name, 32, icon_theme)) {
+            icon = Some(icon_url(&p.to_string_lossy(), 32));
         }
     }
     if icon.is_none() {

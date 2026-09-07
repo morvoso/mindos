@@ -39,8 +39,6 @@ const GREETER_ALLOWED: &[&str] = &["shell.state", "shell.ready", "shell.reload",
 /// How long a closed window keeps its view alive for late bridge requests.
 const RETIRE_GRACE: Duration = Duration::from_millis(1500);
 
-#[derive(Debug, Default, Clone)]
-pub struct Options {
 /// Settings > Developer: the services, groups and packages its buttons may
 /// act on. Each command still goes through pkexec, so the user sees and
 /// authorises it; these lists fix the set the UI can request.
@@ -67,6 +65,8 @@ fn is_ssh_pub_path(path: &str) -> bool {
         && !path.contains("..")
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct Options {
     pub devtools: bool,
     pub ui_dir: Option<PathBuf>,
     /// `--app NAME`: one ordinary window running that UI app instead of the shell.
@@ -142,7 +142,9 @@ const NOTIFICATION_LIMIT: usize = 60;
 
 pub struct App {
     pub config: Config,
-    pub icon_theme: String,
+    /// The icon theme in force; it follows the desktop's icon pack unless the
+    /// config pins one (see `watch_icon_theme`).
+    pub icon_theme: icons::ThemeRef,
     pub ui_dir: PathBuf,
     pub devtools: bool,
     pub web_context: webkit::WebContext,
@@ -155,10 +157,10 @@ pub struct App {
     pub notify: Option<NotifyHandle>,
     /// The polkit authentication agent (the shell only).
     pub polkit: Option<PolkitHandle>,
-    pub app_mode: Option<AppMode>,
-    pub events: async_channel::Sender<HostEvent>,
     /// The pending re-read of the network state (NetworkManager's changes come in bursts).
     network_refresh: RefCell<Option<glib::SourceId>>,
+    pub app_mode: Option<AppMode>,
+    pub events: async_channel::Sender<HostEvent>,
     /// `--ui-dir` as given, handed to app windows this shell spawns.
     ui_dir_override: Option<PathBuf>,
     main_loop: glib::MainLoop,
@@ -173,22 +175,22 @@ pub struct App {
     sync_pending: Cell<bool>,
     layout_monitor: RefCell<Option<gio::FileMonitor>>,
     desktop_monitor: RefCell<Option<gio::FileMonitor>>,
+    game_monitor: RefCell<Option<gio::FileMonitor>>,
     desktop_notify_pending: Cell<bool>,
     layout_reload_pending: Cell<bool>,
-    game_monitor: RefCell<Option<gio::FileMonitor>>,
     /// The login conversation in progress (`--app greeter` only).
     greeter: RefCell<Option<greeter::Login>>,
-}
-
     /// Whether to lock when the machine suspends, as the sleep watcher on its
     /// own thread reads it.
     lock_on_sleep: Arc<AtomicBool>,
     /// An unlock attempt is with PAM right now (one at a time).
     unlocking: Cell<bool>,
+}
+
 impl App {
     pub fn new(opts: Options, events: async_channel::Sender<HostEvent>, main_loop: glib::MainLoop) -> Rc<App> {
         let config = Config::load();
-        let icon_theme = icons::pick_theme(&config.shell.icon_theme);
+        let icon_theme = icons::ThemeRef::new(icons::theme_for(&config.shell.icon_theme));
         let ui_dir_override = opts.ui_dir.clone();
         let ui_dir = opts
             .ui_dir
@@ -203,7 +205,7 @@ impl App {
             page: opts.page.unwrap_or_default(),
             arg: opts.arg.unwrap_or_default(),
         });
-        tracing::info!(ui = %ui_dir.display(), icon_theme, devtools, hw = config.hardware_acceleration(), app = ?app_mode.as_ref().map(|m| &m.name), "mindshell starting");
+        tracing::info!(ui = %ui_dir.display(), icon_theme = %icon_theme.get(), devtools, hw = config.hardware_acceleration(), app = ?app_mode.as_ref().map(|m| &m.name), "mindshell starting");
 
         let web_context = webkit::WebContext::new();
         web_context.set_cache_model(webkit::CacheModel::DocumentViewer);
@@ -226,6 +228,8 @@ impl App {
             webkit::HardwareAccelerationPolicy::Never
         });
         settings.set_enable_webgl(true);
+        // Canvas 2D on the GPU as well (the glass layers are drawn there).
+        settings.set_enable_2d_canvas_acceleration(true);
         settings.set_enable_smooth_scrolling(true);
         settings.set_enable_back_forward_navigation_gestures(false);
         settings.set_enable_page_cache(false);
@@ -237,9 +241,6 @@ impl App {
         let tray = if app_mode.is_some() { None } else { Some(TrayHandle::start(events.clone(), icon_theme.clone())) };
         let notify = if app_mode.is_some() { None } else { Some(NotifyHandle::start(events.clone())) };
         let polkit = if app_mode.is_some() { None } else { Some(PolkitHandle::start(events.clone())) };
-        if app_mode.is_none() {
-            crate::portal::start();
-        }
         let layout = Layout::load();
 
         let app = Rc::new(App {
@@ -254,8 +255,8 @@ impl App {
             tray,
             notify,
             polkit,
-            app_mode,
             network_refresh: RefCell::new(None),
+            app_mode,
             events,
             ui_dir_override,
             main_loop,
@@ -268,20 +269,20 @@ impl App {
             sync_pending: Cell::new(false),
             layout_monitor: RefCell::new(None),
             desktop_monitor: RefCell::new(None),
-            desktop_notify_pending: Cell::new(false),
             game_monitor: RefCell::new(None),
+            desktop_notify_pending: Cell::new(false),
             layout_reload_pending: Cell::new(false),
             greeter: RefCell::new(None),
-        });
             lock_on_sleep: Arc::new(AtomicBool::new(true)),
             unlocking: Cell::new(false),
+        });
         crate::scheme::register(&app.web_context, Rc::downgrade(&app));
         windows::install_css();
         app.watch_layout();
         app.watch_desktop();
-        if let Some(display) = gdk::Display::default() {
         app.watch_icon_theme();
         app.watch_game();
+        if let Some(display) = gdk::Display::default() {
             let weak = Rc::downgrade(&app);
             display.monitors().connect_items_changed(move |_, _, _, _| {
                 if let Some(app) = weak.upgrade() {
@@ -338,53 +339,52 @@ impl App {
         }
     }
 
-    /// Tell the desktop views when the Desktop folder changes so the icons
-    /// follow (a download landing there, a file renamed in the file manager).
-    fn watch_desktop(self: &Rc<Self>) {
-        let path = fs::desktop_dir();
-        let dir = gio::File::for_path(&path);
-        match dir.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+    /// While a game is running the shell goes quiet: the UI drops its
+    /// animations and slows its samplers so the frames belong to the game.
+    /// The GameMode hooks (`mindos-perf game-start` / `game-end`) count the
+    /// games in `/run/mindos/perf/game`.
+    fn watch_game(self: &Rc<Self>) {
+        self.state.borrow_mut().game = game_running();
+        let file = gio::File::for_path(GAME_FILE);
+        match file.monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
             Ok(monitor) => {
                 let events = self.events.clone();
                 monitor.connect_changed(move |_, _, _, event| {
                     use gio::FileMonitorEvent as E;
-                    if matches!(event, E::ChangesDoneHint | E::Created | E::Deleted | E::Renamed | E::MovedIn | E::MovedOut | E::AttributeChanged) {
-                        let _ = events.send_blocking(HostEvent::DesktopDir);
+                    if matches!(event, E::ChangesDoneHint | E::Changed | E::Created | E::Deleted | E::Renamed) {
+                        let _ = events.send_blocking(HostEvent::Game);
                     }
                 });
-                *self.desktop_monitor.borrow_mut() = Some(monitor);
+                *self.game_monitor.borrow_mut() = Some(monitor);
             }
-            Err(e) => tracing::warn!(path = %path.display(), %e, "cannot watch the Desktop folder"),
+            Err(e) => tracing::warn!(path = GAME_FILE, %e, "cannot watch the GameMode counter"),
         }
     }
 
-    fn desktop_dir_changed(self: &Rc<Self>) {
-        if self.desktop_notify_pending.replace(true) {
+    fn game_changed(&self) {
+        let running = game_running();
+        if self.state.borrow().game == running {
             return;
         }
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(250), move || {
-            let Some(app) = weak.upgrade() else { return };
-            app.desktop_notify_pending.set(false);
-            app.broadcast("desktop.changed", &json!({ "path": fs::desktop_dir().to_string_lossy() }));
-        });
+        self.state.borrow_mut().game = running;
+        if running {
+            tracing::info!("a game is running; the shell goes quiet");
+        } else {
+            tracing::info!("the game ended; the shell comes back");
+        }
+        self.broadcast("game", &json!({ "running": running }));
+        // Nothing idles while a game is running: no screensaver over the game,
+        // no lock in the middle of a cut scene, no display switching off on a
+        // controller-only session that the compositor never sees a key from.
+        let _ = self.ipc.send(json!({ "type": "inhibit_idle", "on": running }));
     }
 
-    fn layout_file_changed(self: &Rc<Self>) {
-        if self.layout_reload_pending.replace(true) {
-            return;
-        }
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(300), move || {
-            let Some(app) = weak.upgrade() else { return };
-            app.layout_reload_pending.set(false);
-            let layout = Layout::load();
-            if app.state.borrow().layout != layout {
-                tracing::info!("layout changed on disk, reloading");
-                app.set_layout(layout);
-            }
-        });
-    /// While a game is running the shell goes quiet: the UI drops its
+    // -----------------------------------------------------------------
+    // The screensaver and the lock screen
+    // -----------------------------------------------------------------
+
+    /// The compositor's `idle` event: put the lock windows up or take them
+    /// down and tell the pages where the session stands.
     fn idle_changed(self: &Rc<Self>, idle: Value) {
         let was = self.state.borrow().idle.clone();
         if was == idle {
@@ -593,51 +593,6 @@ impl App {
                 app.set_layout(layout);
             }
         });
-    /// animations and slows its samplers so the frames belong to the game.
-    /// The GameMode hooks (`mindos-perf game-start` / `game-end`) count the
-    /// games in `/run/mindos/perf/game`.
-    fn watch_game(self: &Rc<Self>) {
-        self.state.borrow_mut().game = game_running();
-        let file = gio::File::for_path(GAME_FILE);
-        match file.monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
-            Ok(monitor) => {
-                let events = self.events.clone();
-                monitor.connect_changed(move |_, _, _, event| {
-                    use gio::FileMonitorEvent as E;
-                    if matches!(event, E::ChangesDoneHint | E::Changed | E::Created | E::Deleted | E::Renamed) {
-                        let _ = events.send_blocking(HostEvent::Game);
-                    }
-                });
-                *self.game_monitor.borrow_mut() = Some(monitor);
-            }
-            Err(e) => tracing::warn!(path = GAME_FILE, %e, "cannot watch the GameMode counter"),
-        }
-    }
-
-    fn game_changed(&self) {
-        let running = game_running();
-        if self.state.borrow().game == running {
-            return;
-        }
-        self.state.borrow_mut().game = running;
-        if running {
-            tracing::info!("a game is running; the shell goes quiet");
-        } else {
-            tracing::info!("the game ended; the shell comes back");
-        }
-        self.broadcast("game", &json!({ "running": running }));
-        // Nothing idles while a game is running: no screensaver over the game,
-        // no lock in the middle of a cut scene, no display switching off on a
-        // controller-only session that the compositor never sees a key from.
-        let _ = self.ipc.send(json!({ "type": "inhibit_idle", "on": running }));
-    }
-
-    // -----------------------------------------------------------------
-    // The screensaver and the lock screen
-    // -----------------------------------------------------------------
-
-    /// The compositor's `idle` event: put the lock windows up or take them
-    /// down and tell the pages where the session stands.
     }
 
     /// `--app greeter`?
@@ -739,17 +694,6 @@ impl App {
                 let url = bridge::window_url("toast", "toast", name, None, None, None);
                 let w = self.create_window(Kind::Toast, "toast", name, monitor, None, false, &url);
                 w.window.set_visible(false);
-        // A display coming or going while the screen is locked needs a lock
-        // window of its own; the locked session must never show a desktop.
-        let (locked, stage) = {
-            let idle = &self.state.borrow().idle;
-            (
-                idle.get("locked").and_then(Value::as_bool).unwrap_or(false),
-                idle.get("stage").and_then(Value::as_str).unwrap_or("active").to_string(),
-            )
-        };
-        self.sync_lock_windows(locked, &stage);
-
             }
             // Horizontal panels first: their exclusive zones inset the vertical ones.
             let mut wanted: Vec<&Panel> = Self::panels_for(&layout, name, i == 0).collect();
@@ -795,6 +739,17 @@ impl App {
                 self.remove_window(&w);
             }
         }
+        // A display coming or going while the screen is locked needs a lock
+        // window of its own; the locked session must never show a desktop.
+        let (locked, stage) = {
+            let idle = &self.state.borrow().idle;
+            (
+                idle.get("locked").and_then(Value::as_bool).unwrap_or(false),
+                idle.get("stage").and_then(Value::as_str).unwrap_or("active").to_string(),
+            )
+        };
+        self.sync_lock_windows(locked, &stage);
+
         let outputs = self.outputs_json();
         let text = outputs.to_string();
         let changed = self.state.borrow().last_outputs.as_deref() != Some(text.as_str());
@@ -1100,8 +1055,14 @@ impl App {
                 blocking(move || system::power(&action)).await.map(|_| Value::Null)
             }
             "shell.ready" => {
+                let first_desktop = win.kind == Kind::Desktop && !win.ready.get();
                 win.ready.set(true);
                 tracing::debug!(kind = win.kind.as_str(), id = win.id, output = win.output, "view ready");
+                // The moment the desktop is actually on screen: the compositor
+                // takes its startup screen down as this view maps.
+                if first_desktop {
+                    tracing::info!(ms = crate::STARTED.elapsed().as_millis() as u64, output = win.output, "desktop up");
+                }
                 Ok(Value::Null)
             }
             "shell.setEditMode" => {
@@ -1330,40 +1291,6 @@ impl App {
                 }
                 Ok(Value::Null)
             }
-            // ---- WireGuard tunnels (NetworkManager connections of type wireguard)
-            "vpn.list" => Ok(blocking(system::vpn_list).await),
-            "vpn.connect" | "vpn.disconnect" => {
-                let id = str_param("id")?;
-                let up = method == "vpn.connect";
-                blocking(move || system::vpn_set_active(&id, up)).await?;
-                Ok(self.network_changed().await)
-            }
-            "vpn.autoconnect" => {
-                let id = str_param("id")?;
-                let on = params.get("on").and_then(Value::as_bool).ok_or("vpn.autoconnect: missing 'on'")?;
-                blocking(move || system::vpn_set_autoconnect(&id, on)).await?;
-                Ok(self.network_changed().await)
-            }
-            "vpn.remove" => {
-                let id = str_param("id")?;
-                blocking(move || system::vpn_remove(&id)).await?;
-                Ok(self.network_changed().await)
-            }
-            "vpn.import" => {
-                // A file chooser for a wg-quick configuration; `path` skips it.
-                let path = match params.get("path").and_then(Value::as_str) {
-                    Some(p) => PathBuf::from(p),
-                    None => match self.pick_file("Import a WireGuard configuration", &[("WireGuard configuration", "*.conf")]).await {
-                        Some(p) => p,
-                        None => return Ok(json!({ "imported": false })),
-                    },
-                };
-                let id = blocking(move || system::vpn_import(&path)).await?;
-                let mut v = self.network_changed().await;
-                v["imported"] = json!(true);
-                v["id"] = json!(id);
-                Ok(v)
-            }
             "shell.run" => {
                 let argv: Vec<String> = params
                     .get("argv")
@@ -1403,11 +1330,45 @@ impl App {
                 Ok(system::audio_value(&self.state.borrow().audio))
             }
             "network.status" => Ok(blocking(system::network_status).await),
+            // ---- WireGuard tunnels (NetworkManager connections of type wireguard)
+            "vpn.list" => Ok(blocking(system::vpn_list).await),
+            "vpn.connect" | "vpn.disconnect" => {
+                let id = str_param("id")?;
+                let up = method == "vpn.connect";
+                blocking(move || system::vpn_set_active(&id, up)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.autoconnect" => {
+                let id = str_param("id")?;
+                let on = params.get("on").and_then(Value::as_bool).ok_or("vpn.autoconnect: missing 'on'")?;
+                blocking(move || system::vpn_set_autoconnect(&id, on)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.remove" => {
+                let id = str_param("id")?;
+                blocking(move || system::vpn_remove(&id)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.import" => {
+                // A file chooser for a wg-quick configuration; `path` skips it.
+                let path = match params.get("path").and_then(Value::as_str) {
+                    Some(p) => PathBuf::from(p),
+                    None => match self.pick_file("Import a WireGuard configuration", &[("WireGuard configuration", "*.conf")]).await {
+                        Some(p) => p,
+                        None => return Ok(json!({ "imported": false })),
+                    },
+                };
+                let id = blocking(move || system::vpn_import(&path)).await?;
+                let mut v = self.network_changed().await;
+                v["imported"] = json!(true);
+                v["id"] = json!(id);
+                Ok(v)
+            }
             "battery.status" => Ok(blocking(system::battery_status).await),
             "icons.resolve" => {
                 let name = str_param("name")?;
                 let size = params.get("size").and_then(Value::as_u64).unwrap_or(self.config.shell.icon_size as u64) as u16;
-                Ok(match icons::resolve(&name, size, &self.icon_theme) {
+                Ok(match icons::resolve(&name, size, &self.icon_theme.get()) {
                     Some(_) => Value::String(icon_url(&name, size)),
                     None => Value::Null,
                 })
@@ -1491,7 +1452,7 @@ impl App {
             "fs.list" => {
                 let path = fs::expand(&str_param("path").unwrap_or_default());
                 let hidden = params.get("hidden").and_then(Value::as_bool).unwrap_or(false);
-                let theme = self.icon_theme.clone();
+                let theme = self.icon_theme.get();
                 let size = self.config.shell.icon_size;
                 blocking(move || fs::list(&path, hidden, &theme, size)).await
             }
@@ -1574,8 +1535,6 @@ impl App {
         let mut cmd = format!("{} --app {}", shell_quote(&exe.to_string_lossy()), shell_quote(name));
         if !page.is_empty() {
             cmd.push_str(&format!(" --page {}", shell_quote(page)));
-            "game": state.game,
-            "lock": state.idle.clone(),
         }
         if !arg.is_empty() {
             cmd.push_str(&format!(" {}", shell_quote(arg)));
@@ -1598,7 +1557,6 @@ impl App {
             .ok()
             .and_then(|t| t.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
             .unwrap_or_else(|| self.started.elapsed().as_secs_f64());
-        let c = &self.config;
         json!({
             "user": system::user_name(),
             "host": system::host_name(),
@@ -1610,20 +1568,28 @@ impl App {
             "tray": self.tray_items_locked(&state),
             "layout": state.layout.to_value(),
             "editMode": state.edit_mode,
-            "config": {
-                "icon_theme": self.icon_theme,
-                "hardware_acceleration": c.shell.hardware_acceleration,
-                "terminal": c.shell.terminal,
-                "icon_size": c.shell.icon_size,
-            },
+            "config": self.config_json(),
             "app": self.app_mode.as_ref().map(|m| json!({ "name": m.name, "page": m.page, "arg": m.arg })),
             "version": env!("CARGO_PKG_VERSION"),
             "mind": self.mind_json_locked(&state),
             "notify": Self::notify_json_locked(&state),
             "polkit": state.polkit.clone(),
+            "game": state.game,
+            "lock": state.idle.clone(),
             "audio": system::audio_value(&state.audio),
             "compositor": self.ipc.is_connected(),
             "devtools": self.devtools,
+        })
+    }
+
+    /// What the UI is told about the host configuration (Settings > Shell).
+    fn config_json(&self) -> Value {
+        let c = &self.config;
+        json!({
+            "icon_theme": self.icon_theme.get(),
+            "hardware_acceleration": c.shell.hardware_acceleration,
+            "terminal": c.shell.terminal,
+            "icon_size": c.shell.icon_size,
         })
     }
 
@@ -1858,6 +1824,40 @@ impl App {
     }
 
     fn set_layout(self: &Rc<Self>, layout: Layout) {
+        self.state.borrow_mut().layout = layout.clone();
+        self.sync_windows();
+        self.broadcast("layout", &json!({ "layout": layout.to_value() }));
+    }
+
+    /// Translate a point in the calling window into global screen coordinates.
+    fn screen_point(&self, win: &ShellWindow, params: &Value) -> (i32, i32) {
+        let edit = self.state.borrow().edit_mode;
+        let (ox, oy) = win.origin(edit);
+        let g = win.monitor.geometry();
+        let x = params.get("x").and_then(Value::as_f64).unwrap_or(0.0) as i32;
+        let y = params.get("y").and_then(Value::as_f64).unwrap_or(0.0) as i32;
+        (g.x() + ox + x, g.y() + oy + y)
+    }
+
+    async fn launch(&self, exec: &str, terminal: bool) -> Result<Value, String> {
+        if self.ipc.is_connected() {
+            match self
+                .ipc
+                .request(json!({ "type": "launch", "exec": exec, "terminal": terminal }))
+                .await
+            {
+                Ok(v) => return Ok(v),
+                Err(e) => tracing::debug!(%e, "compositor launch failed; spawning locally"),
+            }
+        }
+        let cmd = if terminal {
+            format!("{} -e sh -c {}", self.config.shell.terminal, shell_quote(exec))
+        } else {
+            exec.to_string()
+        };
+        apps::spawn_detached(&cmd, &[]).map(|_| Value::Null)
+    }
+
     /// Re-read the network state once the burst of change events has settled:
     /// a tunnel going down is several lines from `nmcli monitor`, and only the
     /// last one shows the final state.
@@ -1918,40 +1918,6 @@ impl App {
                 None
             }
         }
-    }
-
-        self.state.borrow_mut().layout = layout.clone();
-        self.sync_windows();
-        self.broadcast("layout", &json!({ "layout": layout.to_value() }));
-    }
-
-    /// Translate a point in the calling window into global screen coordinates.
-    fn screen_point(&self, win: &ShellWindow, params: &Value) -> (i32, i32) {
-        let edit = self.state.borrow().edit_mode;
-        let (ox, oy) = win.origin(edit);
-        let g = win.monitor.geometry();
-        let x = params.get("x").and_then(Value::as_f64).unwrap_or(0.0) as i32;
-        let y = params.get("y").and_then(Value::as_f64).unwrap_or(0.0) as i32;
-        (g.x() + ox + x, g.y() + oy + y)
-    }
-
-    async fn launch(&self, exec: &str, terminal: bool) -> Result<Value, String> {
-        if self.ipc.is_connected() {
-            match self
-                .ipc
-                .request(json!({ "type": "launch", "exec": exec, "terminal": terminal }))
-                .await
-            {
-                Ok(v) => return Ok(v),
-                Err(e) => tracing::debug!(%e, "compositor launch failed; spawning locally"),
-            }
-        }
-        let cmd = if terminal {
-            format!("{} -e sh -c {}", self.config.shell.terminal, shell_quote(exec))
-        } else {
-            exec.to_string()
-        };
-        apps::spawn_detached(&cmd, &[]).map(|_| Value::Null)
     }
 
     async fn refresh_audio(&self) {
@@ -2031,22 +1997,6 @@ impl App {
         }
         let monitors = windows::monitors();
         let Some(monitor) = monitors.first() else { return };
-                    // Where the session stands: the shell may have been
-                    // restarted with the screen already locked.
-                    if let Ok(idle) = app.ipc.request(json!({ "type": "get_idle" })).await {
-                        app.idle_changed(idle);
-                    }
-                    if let Ok(prefs) = app.ipc.request(json!({ "type": "get_prefs" })).await {
-                        let on = prefs
-                            .pointer("/prefs/idle/lock_on_sleep")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(true);
-                        app.lock_on_sleep.store(on, Ordering::Relaxed);
-                    }
-                    // A game may already have been running before the shell started.
-                    if app.state.borrow().game {
-                        let _ = app.ipc.send(json!({ "type": "inhibit_idle", "on": true }));
-                    }
         let name = windows::monitor_name(monitor, 0);
         let url = bridge::window_url("popup", "auth", &name, Some("auth"), Some(&json!({})), None);
         self.create_window(Kind::Popup, "auth", &name, monitor, None, true, &url);
@@ -2081,6 +2031,22 @@ impl App {
                         app.state.borrow_mut().mind_extra = v;
                         app.broadcast("mind", &app.mind_json());
                     }
+                    // Where the session stands: the shell may have been
+                    // restarted with the screen already locked.
+                    if let Ok(idle) = app.ipc.request(json!({ "type": "get_idle" })).await {
+                        app.idle_changed(idle);
+                    }
+                    if let Ok(prefs) = app.ipc.request(json!({ "type": "get_prefs" })).await {
+                        let on = prefs
+                            .pointer("/prefs/idle/lock_on_sleep")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true);
+                        app.lock_on_sleep.store(on, Ordering::Relaxed);
+                    }
+                    // A game may already have been running before the shell started.
+                    if app.state.borrow().game {
+                        let _ = app.ipc.send(json!({ "type": "inhibit_idle", "on": true }));
+                    }
                 });
             }
             HostEvent::Ipc(IpcEvent::Disconnected) => {
@@ -2096,21 +2062,6 @@ impl App {
             }
             HostEvent::Ipc(IpcEvent::Event(name, value)) => match name.as_str() {
                 "tray" => {
-                "idle" => {
-                    let mut idle = value.clone();
-                    if let Value::Object(map) = &mut idle {
-                        map.remove("event");
-                    }
-                    self.idle_changed(idle);
-                }
-                "prefs" => {
-                    let lock_on_sleep = value
-                        .pointer("/prefs/idle/lock_on_sleep")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(true);
-                    self.lock_on_sleep.store(lock_on_sleep, Ordering::Relaxed);
-                    self.broadcast("prefs", &value);
-                }
                     let items = value.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
                     self.state.borrow_mut().xtray = Value::Array(items.iter().filter_map(xembed_item_json).collect());
                     self.broadcast("tray", &json!({ "items": self.tray_items_json() }));
@@ -2126,11 +2077,9 @@ impl App {
                     self.broadcast("windows", &json!({ "windows": windows, "focused": focused }));
                 }
                 "outputs" => {
-            HostEvent::Network => self.schedule_network_refresh(),
                     let outputs = value
                         .get("outputs")
                         .and_then(Value::as_array)
-            HostEvent::Game => self.game_changed(),
                         .cloned()
                         .unwrap_or_default();
                     self.state.borrow_mut().ipc_outputs = outputs;
@@ -2147,6 +2096,21 @@ impl App {
                     self.state.borrow_mut().mind_open = value.get("open").and_then(Value::as_bool).unwrap_or(false);
                     self.broadcast("mind", &self.mind_json());
                 }
+                "idle" => {
+                    let mut idle = value.clone();
+                    if let Value::Object(map) = &mut idle {
+                        map.remove("event");
+                    }
+                    self.idle_changed(idle);
+                }
+                "prefs" => {
+                    let lock_on_sleep = value
+                        .pointer("/prefs/idle/lock_on_sleep")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    self.lock_on_sleep.store(lock_on_sleep, Ordering::Relaxed);
+                    self.broadcast("prefs", &value);
+                }
                 "mind_status" | "mind" => {
                     self.state.borrow_mut().mind_extra = value.clone();
                     self.broadcast("mind", &self.mind_json());
@@ -2162,9 +2126,11 @@ impl App {
                 self.broadcast("apps", &json!({ "apps": self.apps_json() }));
             }
             HostEvent::Audio(audio) => self.set_audio(audio),
+            HostEvent::Network => self.schedule_network_refresh(),
             HostEvent::Gpu(gpu) => self.state.borrow_mut().gpu = gpu,
             HostEvent::LayoutFile => self.layout_file_changed(),
             HostEvent::DesktopDir => self.desktop_dir_changed(),
+            HostEvent::Game => self.game_changed(),
             HostEvent::Notify(mut n) => {
                 let id = n.get("id").and_then(Value::as_u64).unwrap_or(0);
                 {
@@ -2250,8 +2216,6 @@ impl App {
                     state.mind_notices.retain(|n| n.get("id").and_then(Value::as_str) != Some(id.as_str()));
                     state.mind_notices.insert(0, v.clone());
                 }
-        // Lock the screen before the machine suspends (a logind delay inhibitor).
-        crate::sleepwatch::start(self.ipc.clone(), self.lock_on_sleep.clone());
                 self.mind_notices_changed(Some(&v));
             }
             "notice_gone" => {
@@ -2286,11 +2250,47 @@ impl App {
         if self.app_mode.is_some() {
             return;
         }
+        // Lock the screen before the machine suspends (a logind delay inhibitor).
+        crate::sleepwatch::start(self.ipc.clone(), self.lock_on_sleep.clone());
         let events = self.events.clone();
         let theme = self.icon_theme.clone();
         let size = self.config.shell.icon_size;
         std::thread::Builder::new()
             .name("mindshell-apps".into())
+            .spawn(move || {
+                let mut fingerprint = apps::fingerprint();
+                let _ = events.send_blocking(HostEvent::Apps(apps::load_apps(&theme.get(), size)));
+                loop {
+                    std::thread::sleep(Duration::from_secs(5));
+                    let now = apps::fingerprint();
+                    if now != fingerprint {
+                        fingerprint = now;
+                        if events.send_blocking(HostEvent::Apps(apps::load_apps(&theme.get(), size))).is_err() {
+                            return;
+                        }
+                    }
+                }
+            })
+            .expect("spawn apps thread");
+
+        let events = self.events.clone();
+        std::thread::Builder::new()
+            .name("mindshell-audio".into())
+            .spawn(move || {
+                let mut last: Option<Option<Audio>> = None;
+                loop {
+                    let now = system::audio_get();
+                    if last.as_ref() != Some(&now) {
+                        last = Some(now.clone());
+                        if events.send_blocking(HostEvent::Audio(now)).is_err() {
+                            return;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(1500));
+                }
+            })
+            .expect("spawn audio thread");
+
         // NetworkManager's own change feed: one line per event, which is the
         // cue to read the connection and tunnel state again.
         let events = self.events.clone();
@@ -2321,52 +2321,6 @@ impl App {
             })
             .expect("spawn network thread");
 
-            .spawn(move || {
-                let mut fingerprint = apps::fingerprint();
-                let _ = events.send_blocking(HostEvent::Apps(apps::load_apps(&theme, size)));
-                loop {
-                    std::thread::sleep(Duration::from_secs(5));
-                    let now = apps::fingerprint();
-                    if now != fingerprint {
-                        fingerprint = now;
-                        if events.send_blocking(HostEvent::Apps(apps::load_apps(&theme, size))).is_err() {
-                            return;
-                        }
-                    }
-                }
-            })
-            .expect("spawn apps thread");
-
-        let events = self.events.clone();
-/// The GameMode counter kept by `mindos-perf game-start` / `game-end`.
-const GAME_FILE: &str = "/run/mindos/perf/game";
-
-/// True while at least one game is running.
-fn game_running() -> bool {
-    std::fs::read_to_string(GAME_FILE)
-        .ok()
-        .and_then(|t| t.split_whitespace().next().and_then(|n| n.parse::<u32>().ok()))
-        .map(|n| n > 0)
-        .unwrap_or(false)
-}
-
-        std::thread::Builder::new()
-            .name("mindshell-audio".into())
-            .spawn(move || {
-                let mut last: Option<Option<Audio>> = None;
-                loop {
-                    let now = system::audio_get();
-                    if last.as_ref() != Some(&now) {
-                        last = Some(now.clone());
-                        if events.send_blocking(HostEvent::Audio(now)).is_err() {
-                            return;
-                        }
-                    }
-                    std::thread::sleep(Duration::from_millis(1500));
-                }
-            })
-            .expect("spawn audio thread");
-
         let events = self.events.clone();
         std::thread::Builder::new()
             .name("mindshell-gpu".into())
@@ -2382,6 +2336,18 @@ fn game_running() -> bool {
             })
             .expect("spawn gpu thread");
     }
+}
+
+/// The GameMode counter kept by `mindos-perf game-start` / `game-end`.
+const GAME_FILE: &str = "/run/mindos/perf/game";
+
+/// True while at least one game is running.
+fn game_running() -> bool {
+    std::fs::read_to_string(GAME_FILE)
+        .ok()
+        .and_then(|t| t.split_whitespace().next().and_then(|n| n.parse::<u32>().ok()))
+        .map(|n| n > 0)
+        .unwrap_or(false)
 }
 
 pub fn icon_url(name: &str, size: u16) -> String {

@@ -2,6 +2,34 @@
 //! `IconThemePath` directories StatusNotifierItems point at.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+use gtk4 as gtk;
+
+/// The icon theme in force, shared with the threads that resolve icons (the
+/// desktop entry scanner, the tray host) so a change reaches them too.
+#[derive(Clone)]
+pub struct ThemeRef(Arc<RwLock<String>>);
+
+impl ThemeRef {
+    pub fn new(name: impl Into<String>) -> ThemeRef {
+        ThemeRef(Arc::new(RwLock::new(name.into())))
+    }
+
+    pub fn get(&self) -> String {
+        self.0.read().map(|t| t.clone()).unwrap_or_default()
+    }
+
+    /// Store `name`; true when it is not the theme we already had.
+    pub fn set(&self, name: String) -> bool {
+        let Ok(mut current) = self.0.write() else { return false };
+        if *current == name {
+            return false;
+        }
+        *current = name;
+        true
+    }
+}
 
 pub fn mime_for(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
@@ -35,14 +63,16 @@ pub fn resolve(name: &str, size: u16, theme: &str) -> Option<PathBuf> {
     let size = size.max(8);
     let themes: Vec<&str> = if theme.is_empty() { vec!["hicolor"] } else { vec![theme, "hicolor"] };
     for t in themes {
-        if let Some(p) = freedesktop_icons::lookup(bare)
-            .with_size(size)
-            .with_theme(t)
-            .with_cache()
-            .find()
-        {
-            if p.is_file() {
-                return Some(p);
+        for s in size_ladder(size) {
+            if let Some(p) = freedesktop_icons::lookup(bare)
+                .with_size(s)
+                .with_theme(t)
+                .with_cache()
+                .find()
+            {
+                if p.is_file() && !hidpi_dir(&p) {
+                    return Some(p);
+                }
             }
         }
     }
@@ -56,6 +86,29 @@ pub fn resolve(name: &str, size: u16, theme: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// The sizes a theme usually ships, for walking out from the size asked for.
+const STOCK_SIZES: [u16; 10] = [16, 22, 24, 32, 48, 64, 96, 128, 256, 512];
+
+/// Sizes to look the icon up at, best first: the one asked for, then the larger
+/// stock sizes (scaling artwork down beats scaling it up), then the smaller ones.
+fn size_ladder(size: u16) -> Vec<u16> {
+    let mut sizes = vec![size];
+    sizes.extend(STOCK_SIZES.iter().copied().filter(|s| *s > size));
+    sizes.extend(STOCK_SIZES.iter().rev().copied().filter(|s| *s < size));
+    sizes
+}
+
+/// True for a file in a HiDPI directory (`16@3x`, `scalable@2x`). The lookup
+/// crate matches those on their nominal size and ignores the scale, so a 48 px
+/// request lands in Breeze's `16@3x` - small monochrome artwork blown up - when
+/// the theme has no 48 px directory for that context. Skipping them sends the
+/// search on to the real 64 px icon.
+fn hidpi_dir(path: &Path) -> bool {
+    path.components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .any(|c| c.rsplit_once('@').and_then(|(_, s)| s.strip_suffix('x')).is_some_and(|n| n.parse::<u8>().is_ok()))
 }
 
 /// Look for `<name>.{svg,png}` under a custom icon directory (StatusNotifierItem
@@ -118,6 +171,24 @@ pub fn theme_installed(name: &str) -> bool {
     !name.is_empty() && theme_dirs().iter().any(|d| d.join(name).join("index.theme").is_file())
 }
 
+/// The icon pack the desktop is set to: GTK's `gtk-icon-theme-name`, which it
+/// takes from the settings portal (`org.gnome.desktop.interface icon-theme`)
+/// and from the `gtk-3.0/settings.ini` files, so the shell shows whatever the
+/// user picked for their applications. Empty before GTK is initialised.
+pub fn desktop_theme() -> String {
+    gtk::Settings::default()
+        .and_then(|s| s.gtk_icon_theme_name())
+        .map(|n| n.to_string())
+        .unwrap_or_default()
+}
+
+/// The theme to draw icons in: the `shell.icon_theme` override when the config
+/// sets one, else the desktop's own icon pack; either way something installed.
+pub fn theme_for(configured: &str) -> String {
+    let wanted = if configured.trim().is_empty() { desktop_theme() } else { configured.to_string() };
+    pick_theme(wanted.trim())
+}
+
 /// The best installed theme among the preferred ones (directory names, as
 /// `Icon=` lookups use them; `freedesktop_icons::list_themes` reports display names).
 pub fn pick_theme(preferred: &str) -> String {
@@ -173,6 +244,21 @@ mod tests {
         assert_eq!(percent_decode(&percent_encode(s)), s);
         assert_eq!(percent_encode("a b"), "a%20b");
         assert_eq!(percent_decode("a%2Fb%"), "a/b%");
+    }
+
+    #[test]
+    fn sizes_walk_up_before_down() {
+        let ladder = size_ladder(48);
+        assert_eq!(&ladder[..5], &[48, 64, 96, 128, 256]);
+        assert_eq!(ladder.last(), Some(&16));
+    }
+
+    #[test]
+    fn hidpi_directories_are_skipped() {
+        assert!(hidpi_dir(Path::new("/usr/share/icons/breeze-dark/mimetypes/16@3x/text-plain.svg")));
+        assert!(hidpi_dir(Path::new("/usr/share/icons/x/scalable@2x/places/folder.svg")));
+        assert!(!hidpi_dir(Path::new("/usr/share/icons/breeze-dark/places/64/folder.svg")));
+        assert!(!hidpi_dir(Path::new("/usr/share/icons/x/apps/mail@home.png")));
     }
 
     #[test]

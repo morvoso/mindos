@@ -15,7 +15,10 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ShellSection {
-    /// XDG icon theme used for application and tray icons; hicolor is the fallback.
+    /// XDG icon theme for application, tray and desktop icons. Empty (the
+    /// default) follows the desktop's own icon pack — GTK's
+    /// `gtk-icon-theme-name`, which the settings portal reports as
+    /// `org.gnome.desktop.interface icon-theme`; set it to pin one instead.
     pub icon_theme: String,
     /// WebKit compositing policy: "always" or "never".
     pub hardware_acceleration: String,
@@ -28,7 +31,7 @@ pub struct ShellSection {
 impl Default for ShellSection {
     fn default() -> Self {
         ShellSection {
-            icon_theme: "breeze-dark".into(),
+            icon_theme: String::new(),
             hardware_acceleration: "always".into(),
             terminal: "foot".into(),
             icon_size: 48,
@@ -98,6 +101,7 @@ mod tests {
     fn defaults_and_overlay() {
         let cfg: Config = toml::from_str("[shell]\nicon_theme = \"Papirus\"\n").unwrap();
         assert_eq!(cfg.shell.icon_theme, "Papirus");
+        assert_eq!(Config::default().shell.icon_theme, "", "the icon theme follows the desktop by default");
         assert_eq!(cfg.shell.terminal, "foot");
         assert!(cfg.hardware_acceleration());
         let cfg: Config = toml::from_str("[shell]\nhardware_acceleration = \"never\"\n").unwrap();

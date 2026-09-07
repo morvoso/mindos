@@ -72,6 +72,8 @@ function pointerCard(note: ReturnType<typeof notice>): HTMLElement {
 export function shellPage(el: HTMLElement): () => void {
   const note = notice();
   const cfg = store.state.config;
+  // The icon theme follows the desktop's icon pack, so it can change while the page is open.
+  const themeName = h('span', { class: 'mono' }, cfg.icon_theme ?? 'default');
   const resetBtn = h('button', { class: 'btn danger' }, icon('refresh', 14), 'Reset the layout');
   let armed = false;
   resetBtn.addEventListener('click', () => {
@@ -121,7 +123,9 @@ export function shellPage(el: HTMLElement): () => void {
       row('Hardware acceleration', null, h('span', { class: 'mono' }, cfg.hardware_acceleration ?? 'auto')),
     ),
   );
-  return () => undefined;
+  return store.on('config', () => {
+    themeName.textContent = store.state.config.icon_theme ?? 'default';
+  });
 }
 
 export function aboutPage(el: HTMLElement): () => void {

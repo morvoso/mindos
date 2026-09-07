@@ -2,8 +2,11 @@
 # Every key is optional; these are the defaults.
 
 [shell]
-# XDG icon theme for application and tray icons (hicolor is always a fallback).
-icon_theme = "breeze-dark"
+# XDG icon theme for the application, tray and desktop icons. Unset, the shell
+# follows the icon pack the desktop is set to (gtk-icon-theme-name, which the
+# settings portal reports as org.gnome.desktop.interface icon-theme); set a
+# name here to pin one instead. hicolor is always a fallback.
+# icon_theme = "breeze-dark"
 # WebKit compositing: "always" or "never" (try "never" on a GPU without working GL).
 hardware_acceleration = "always"
 # Terminal emulator for desktop entries with Terminal=true.

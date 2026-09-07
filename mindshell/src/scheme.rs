@@ -128,7 +128,7 @@ fn serve(app: &App, uri: &str) -> Served {
         let size = query_param(&query, "size")
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(app.config.shell.icon_size);
-        let Some(file) = icons::resolve(&name, size, &app.icon_theme) else { return Served::NotFound };
+        let Some(file) = icons::resolve(&name, size, &app.icon_theme.get()) else { return Served::NotFound };
         let mime = icons::mime_for(&file);
         return now(std::fs::read(&file).ok().map(|b| (b, mime)));
     }

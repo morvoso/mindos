@@ -53,19 +53,27 @@ fn mime_of(path: &Path, is_dir: bool) -> String {
 }
 
 /// The first icon of the mime type's themed icon that the icon theme has.
+/// The URL names the file the theme resolved to, not the icon name, so the
+/// icons re-load by themselves when the user changes their icon pack.
 fn mime_icon(mime: &str, cache: &mut HashMap<String, String>, theme: &str, size: u16) -> String {
     if let Some(url) = cache.get(mime) {
         return url.clone();
     }
     let mut names: Vec<String> = Vec::new();
+    // A file manager draws a directory with the theme's Places "folder"; GIO
+    // puts its "inode-directory" mime icon first, which Breeze draws as a small
+    // monochrome outline, so ask for "folder" before the mime type's own names.
+    if mime == "inode/directory" {
+        names.push("folder".into());
+    }
     if let Ok(themed) = gio::content_type_get_icon(mime).downcast::<gio::ThemedIcon>() {
-        names.extend(themed.names().iter().map(|n| n.to_string()));
+        // The symbolic variants are monochrome; the desktop wants the full-colour art.
+        names.extend(themed.names().iter().filter(|n| !n.ends_with("-symbolic")).map(|n| n.to_string()));
     }
     names.push(if mime == "inode/directory" { "folder".into() } else { "text-x-generic".into() });
     let name = names
         .iter()
-        .find(|n| icons::resolve(n, size, theme).is_some())
-        .cloned()
+        .find_map(|n| icons::resolve(n, size, theme).map(|p| p.to_string_lossy().into_owned()))
         .unwrap_or_else(|| names.last().cloned().unwrap_or_default());
     let url = icon_url(&name, size);
     cache.insert(mime.to_string(), url.clone());

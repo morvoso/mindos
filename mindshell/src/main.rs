@@ -42,11 +42,15 @@ pub enum HostEvent {
     Tray(Value),
     Apps(Vec<apps::AppEntry>),
     Audio(Option<system::Audio>),
+    /// NetworkManager reported a change (`nmcli monitor`): connections, tunnels, devices.
+    Network,
     Gpu(Option<Value>),
     /// The user layout file changed on disk (another shell process saved it).
     LayoutFile,
     /// Something in the Desktop folder changed (the desktop icons re-list).
     DesktopDir,
+    /// A game started or ended (the GameMode counter in /run/mindos/perf).
+    Game,
     /// An application's notification (`org.freedesktop.Notifications.Notify`).
     Notify(Value),
     /// `CloseNotification(id)`; the second field is the close reason.
@@ -74,14 +78,19 @@ pub const APPS: &[&str] = &["settings", "greeter"];
 
 fn usage() {
     println!(
-        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, updates, performance, games, developer, wallpaper, displays, shell, about)\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
+        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, updates, performance, games, developer, wallpaper, displays, screen, shell, about)\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
         env!("CARGO_PKG_VERSION"),
         APPS.join(", "),
         app::DEFAULT_UI_DIR
     );
 }
 
+/// When the process started: the desktop's first view logs how long it took to
+/// come up, which is the number to watch when the boot feels slow.
+pub static STARTED: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+
 fn main() {
+    std::sync::LazyLock::force(&STARTED);
     let mut opts = app::Options::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -153,6 +162,16 @@ fn main() {
         // Colour codes only when a person is watching, not in the journal.
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
+
+    // The Wallpaper portal backend, claimed before GTK says a word on the bus.
+    // xdg-desktop-portal will not finish starting until this name is on the
+    // session bus, and GTK's first act is to ask that same portal for the
+    // colour scheme: claiming the name after GTK is up means both sides wait
+    // for each other, and the desktop appears only when D-Bus gives up 25
+    // seconds later.
+    if opts.app.is_none() {
+        portal::start();
+    }
 
     // GTK must talk to a Wayland compositor with the layer-shell protocol.
     std::env::set_var("GDK_BACKEND", "wayland");
