@@ -1,0 +1,60 @@
+# MindOS system-wide git defaults (mindos-dev). Included from /etc/gitconfig;
+# anything in ~/.gitconfig wins. `git config --global` never touches this file.
+
+[init]
+	defaultBranch = main
+
+[core]
+	pager = delta
+
+[interactive]
+	diffFilter = delta --color-only
+
+[delta]
+	dark = true
+	navigate = true
+	line-numbers = true
+	side-by-side = false
+	hyperlinks = true
+	syntax-theme = TwoDark
+	# MindOS glass colours: pink for removed (never red), green for added.
+	file-style = bold "#19e3ff"
+	file-decoration-style = "#223041" ul
+	hunk-header-style = file line-number syntax
+	hunk-header-decoration-style = "#223041" box
+	minus-style = syntax "#2a1220"
+	minus-emph-style = syntax "#4a1f38"
+	plus-style = syntax "#0f2a22"
+	plus-emph-style = syntax "#164a3a"
+	line-numbers-minus-style = "#ff5d8f"
+	line-numbers-plus-style = "#3ddc97"
+	line-numbers-zero-style = "#55657a"
+	line-numbers-left-style = "#223041"
+	line-numbers-right-style = "#223041"
+
+[merge]
+	conflictstyle = zdiff3
+
+[diff]
+	colorMoved = default
+	algorithm = histogram
+
+# `git dft` shows a structural diff (difftastic) instead of a line diff.
+[difftool]
+	prompt = false
+[difftool "difftastic"]
+	cmd = difft \"$LOCAL\" \"$REMOTE\"
+[alias]
+	dft = difftool --tool=difftastic
+
+[pull]
+	rebase = true
+
+[rerere]
+	enabled = true
+
+[push]
+	autoSetupRemote = true
+
+[fetch]
+	prune = true

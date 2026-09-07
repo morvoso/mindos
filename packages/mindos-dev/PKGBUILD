@@ -1,21 +1,52 @@
 # Maintainer: MindOS <build@mindos.local>
-# Meta package: the MindOS development toolchain.
+# Meta package: the MindOS development toolchain, plus the shell, git and
+# editor defaults that make it pleasant out of the box (docs/DEV.md).
 pkgname=mindos-dev
 pkgver=0.1.0
-pkgrel=1
-pkgdesc="MindOS development stack: compilers, Rust, Node, Python, Docker, editors and CLI tools"
+pkgrel=2
+pkgdesc="MindOS development stack: compilers, Rust, Node, Python, Go, Docker/Podman, editors and CLI tools with a themed shell prompt and git setup"
 arch=(any)
 url="https://mindos.local"
 license=(MIT)
 depends=(base-devel git git-lfs github-cli rustup clang llvm lld cmake ninja
          python python-pip nodejs npm docker docker-compose
-         neovim code kitty zsh fish tmux ripgrep fd bat eza fzf jq btop nvtop htop)
+         neovim code kitty zsh fish tmux ripgrep fd bat eza fzf jq btop nvtop htop
+         # git, debugging, profiling
+         lazygit git-delta difftastic gdb lldb strace ltrace perf valgrind hyperfine tokei
+         # shell
+         starship zoxide direnv just shellcheck man-db man-pages tldr
+         # faster builds, more languages
+         mold sccache uv go
+         # system views
+         bottom dust duf sd
+         # containers: Docker for compose workflows, Podman + distrobox for other distros' toolchains
+         podman distrobox)
+backup=(etc/gitconfig etc/mindos/dev/gitconfig etc/mindos/dev/starship.toml
+        etc/mindos/dev/zshrc etc/fish/conf.d/mindos-dev.fish)
+source=(starship.toml mindos-dev.fish zshrc gitconfig gitconfig-include
+        61-mindos-dev.conf mindos-dev-setup)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
+  # Prompt, shell integration (fish is sourced automatically; zsh users source
+  # /etc/mindos/dev/zshrc from ~/.zshrc) and the git defaults, all under /etc so
+  # they can be edited and are kept as .pacsave/.pacnew across upgrades.
+  install -Dm644 starship.toml      "$pkgdir/etc/mindos/dev/starship.toml"
+  install -Dm644 mindos-dev.fish    "$pkgdir/etc/fish/conf.d/mindos-dev.fish"
+  install -Dm644 zshrc              "$pkgdir/etc/mindos/dev/zshrc"
+  install -Dm644 gitconfig          "$pkgdir/etc/mindos/dev/gitconfig"
+  # git itself ships no /etc/gitconfig; ours only includes the file above.
+  install -Dm644 gitconfig-include  "$pkgdir/etc/gitconfig"
+  # inotify limits for editors and watchers, perf for unprivileged profiling.
+  install -Dm644 61-mindos-dev.conf "$pkgdir/usr/lib/sysctl.d/61-mindos-dev.conf"
+  # One-time setup (rustup, Docker, VS Code, git identity) and the status the
+  # Settings app's Developer page reads (mindos-dev-setup --status --json).
+  install -Dm755 mindos-dev-setup   "$pkgdir/usr/bin/mindos-dev-setup"
+
   install -dm755 "$pkgdir/usr/share/doc/$pkgname"
   cat > "$pkgdir/usr/share/doc/$pkgname/README" <<'DOC'
-mindos-dev pulls in the MindOS development toolchain. Rust is managed with
-rustup: run `rustup default stable` once. Docker: `sudo systemctl enable --now docker`
-and add yourself to the docker group.
+mindos-dev pulls in the MindOS development toolchain. Run `mindos-dev-setup`
+once to install the stable Rust toolchain, enable Docker and write the VS Code
+defaults; `mindos` in a shell lists the MindOS commands. See docs/DEV.md.
 DOC
 }

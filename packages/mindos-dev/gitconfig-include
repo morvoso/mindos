@@ -1,0 +1,4 @@
+# /etc/gitconfig — system-wide git defaults on MindOS live in the included
+# file (shipped by mindos-dev). Per-user settings in ~/.gitconfig override it.
+[include]
+	path = /etc/mindos/dev/gitconfig

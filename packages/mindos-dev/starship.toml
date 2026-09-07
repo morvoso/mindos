@@ -1,0 +1,96 @@
+# MindOS prompt (starship). Two lines: where you are and what git says, then a
+# single prompt character. Language versions only appear inside a project of
+# that kind. Colours are the MindOS glass palette: cyan directory, violet
+# branch, amber for anything that needs attention, pink for errors, green when
+# the last command succeeded. Copy to ~/.config/starship.toml to customise.
+
+"$schema" = "https://starship.rs/config-schema.json"
+
+format = """
+$username$hostname$container$directory$git_branch$git_state$git_status$rust$nodejs$python$golang$cmd_duration$status
+$character"""
+
+add_newline = true
+command_timeout = 500
+
+[character]
+success_symbol = "[❯](bold #3ddc97)"
+error_symbol = "[❯](bold #ff5d8f)"
+vimcmd_symbol = "[❮](bold #a78bfa)"
+
+[directory]
+style = "bold #19e3ff"
+truncation_length = 4
+truncate_to_repo = true
+read_only = " ro"
+read_only_style = "#ff5d8f"
+format = "[$path]($style)[$read_only]($read_only_style) "
+
+[git_branch]
+symbol = ""
+style = "#a78bfa"
+format = "[$branch(:$remote_branch)]($style) "
+
+[git_state]
+style = "bold #ffb454"
+format = "[$state( $progress_current/$progress_total)]($style) "
+
+[git_status]
+style = "#ffb454"
+format = "([$all_status$ahead_behind]($style) )"
+conflicted = "="
+ahead = "⇡${count}"
+behind = "⇣${count}"
+diverged = "⇕⇡${ahead_count}⇣${behind_count}"
+untracked = "?"
+stashed = "$"
+modified = "!"
+staged = "+"
+renamed = "»"
+deleted = "×"
+
+[rust]
+symbol = "rs "
+style = "#8b9bb0"
+format = "[$symbol$version]($style) "
+
+[nodejs]
+symbol = "node "
+style = "#8b9bb0"
+format = "[$symbol$version]($style) "
+detect_files = ["package.json", ".node-version", ".nvmrc"]
+detect_extensions = []
+
+[python]
+symbol = "py "
+style = "#8b9bb0"
+format = "[$symbol$version( $virtualenv)]($style) "
+
+[golang]
+symbol = "go "
+style = "#8b9bb0"
+format = "[$symbol$version]($style) "
+
+[cmd_duration]
+min_time = 2000
+style = "#8b9bb0"
+format = "[$duration]($style) "
+
+[status]
+disabled = false
+style = "#ff5d8f"
+format = "[exit $status]($style) "
+
+# Only shown over ssh or as root (starship's defaults), in the theme colours.
+[username]
+style_user = "#8b9bb0"
+style_root = "bold #ff5d8f"
+format = "[$user]($style)@"
+
+[hostname]
+style = "#8b9bb0"
+format = "[$hostname]($style) "
+
+[container]
+style = "#ffb454"
+format = "[$name]($style) "
