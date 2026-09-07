@@ -1,0 +1,16 @@
+# MindOS defaults for GSettings (/usr/share/glib-2.0/schemas/, compiled by the
+# glib-compile-schemas pacman hook). xdg-desktop-portal-gtk reports these to
+# every app that asks the Settings portal: dark colour scheme, the MindOS fonts.
+[org.gnome.desktop.interface]
+color-scheme='prefer-dark'
+gtk-theme='Adwaita-dark'
+icon-theme='breeze-dark'
+cursor-theme='Adwaita'
+font-name='Inter 11'
+document-font-name='Inter 11'
+monospace-font-name='JetBrains Mono 11'
+font-antialiasing='grayscale'
+font-hinting='slight'
+
+[org.gnome.desktop.wm.preferences]
+button-layout=':minimize,maximize,close'

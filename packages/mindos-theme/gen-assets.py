@@ -26,6 +26,8 @@ FG_DIM = (0x8B, 0x9B, 0xB0)
 FG_FAINT = (0x55, 0x65, 0x7A)
 ACCENT = (0x19, 0xE3, 0xFF)
 ACCENT_DIM = (0x0A, 0xA7, 0xC2)
+MIND = (0xA7, 0x8B, 0xFA)
+OK = (0x3D, 0xDC, 0x97)
 
 
 def font(name, px):
@@ -215,46 +217,63 @@ def compose_boot(w, h, progress=0.6, frame=40):
 
 
 def wallpaper(w=2560, h=1440):
-    img = gradient(w, h, VOID, (0x0B, 0x11, 0x19)).convert("RGBA")
-    # faint 48 px grid, strongest at the bottom, gone at the top
-    grid = Image.new("L", (w, h), 0)
-    d = ImageDraw.Draw(grid)
-    for x in range(0, w, 48):
-        d.line((x, 0, x, h), fill=255)
-    for y in range(h % 48, h, 48):
-        d.line((0, y, w, y), fill=255)
-    fade = Image.linear_gradient("L").resize((w, h))            # black top → white bottom
-    fade = fade.point(lambda v: int(v * 0.30))
-    from PIL import ImageChops
-    grid = ImageChops.multiply(grid, fade)
-    img.alpha_composite(tint(grid, LINE))
-    # soft cyan glow rising from the bottom centre (exact elliptical falloff)
+    """The aurora: a deep navy void with soft cyan, violet and blue light
+    behind everything (mirrors --aurora in mindshell/ui/src/app.css so the
+    built-in and the PNG wallpaper look the same)."""
     import numpy as np
-    gw, gh = int(w * 0.9), int(h * 0.55)
-    ys, xs = np.mgrid[0:gh, 0:gw]
-    d2 = ((xs - gw / 2) / (gw / 2)) ** 2 + ((ys - gh / 2) / (gh / 2)) ** 2
-    fall = np.clip(1.0 - d2, 0.0, 1.0) ** 2
-    glow = Image.fromarray((fall * 255 * 0.16).astype("uint8"), "L")
-    img.alpha_composite(tint(glow, ACCENT), (int(w / 2 - gw / 2), int(h - gh * 0.45)))
+    ys, xs = np.mgrid[0:h, 0:w]
+    u = xs / (w - 1)
+    v = ys / (h - 1)
+    # base: diagonal gradient #0d1526 -> #080c15 -> #05070c
+    t = np.clip(0.5 * u + 0.5 * v, 0, 1)
+    stops = [(0.0, (0x0D, 0x15, 0x26)), (0.48, (0x08, 0x0C, 0x15)), (1.0, (0x05, 0x07, 0x0C))]
+    base = np.zeros((h, w, 3), dtype="float32")
+    for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+        k = np.clip((t - t0) / (t1 - t0), 0, 1)
+        seg = (t >= t0) & (t <= t1)
+        for i in range(3):
+            base[..., i] = np.where(seg, c0[i] + (c1[i] - c0[i]) * k, base[..., i])
+
+    def blob(cx, cy, rx, ry, color, alpha):
+        d2 = ((u - cx) / rx) ** 2 + ((v - cy) / ry) ** 2
+        fall = np.clip(1.0 - np.sqrt(d2) / 0.72, 0, 1) ** 1.4 * alpha
+        for i in range(3):
+            base[..., i] += (color[i] - base[..., i]) * fall
+
+    blob(0.16, 0.22, 0.58, 0.60, ACCENT, 0.50)
+    blob(0.85, 0.80, 0.52, 0.62, MIND, 0.56)
+    blob(0.62, 0.38, 0.34, 0.40, (0x3B, 0x82, 0xF6), 0.42)
+    blob(0.34, 0.96, 0.44, 0.40, OK, 0.20)
+    blob(0.92, 0.08, 0.30, 0.34, ACCENT, 0.24)
+    # a faint, wide diagonal light streak
+    d = np.abs((u * 0.47 + v * 0.53) - 0.5)
+    streak = np.clip(1.0 - d / 0.22, 0, 1) ** 3 * 0.03 * 255
+    base += streak[..., None]
+    # vignette
+    vig = np.clip((np.sqrt(((u - 0.5) / 0.6) ** 2 + ((v - 0.5) / 0.45) ** 2) - 0.58) / 0.42, 0, 1)
+    base *= (1.0 - 0.38 * vig)[..., None]
+    # ordered dither + fine grain so the gradients do not band
+    rng = np.random.default_rng(6)
+    base += rng.normal(0.0, 1.1, size=(h, w, 1)).astype("float32")
+    img = Image.fromarray(np.clip(base + 0.5, 0, 255).astype("uint8"), "RGB").convert("RGBA")
     # wordmark, bottom right, quiet
     fnt = font("Orbitron-Bold.ttf", 26)
     m = text_mask("MINDOS", fnt, 6, 4)
-    img.alpha_composite(tint(m, FG, 0.22), (w - 72 - m.width, h - 72 - m.height))
+    img.alpha_composite(tint(m, FG, 0.16), (w - 72 - m.width, h - 72 - m.height))
     return img.convert("RGB")
 
 
 def icon(size=256):
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    c = size * 0.14  # chamfer
-    poly = [(c, 0), (size - 1, 0), (size - 1, size - 1 - c), (size - 1 - c, size - 1), (0, size - 1), (0, c)]
-    d.polygon(poly, fill=BG1 + (255,), outline=LINE_STRONG + (255,), width=4)
+    r = size * 0.22  # corner radius
+    d.rounded_rectangle((0, 0, size - 1, size - 1), radius=r, fill=BG1 + (255,), outline=(255, 255, 255, 40), width=3)
     # inner cyan glow at the bottom edge
     glow = Image.new("L", (size, size), 0)
     ImageDraw.Draw(glow).rectangle((0, size * 0.78, size, size), fill=255)
     glow = glow.filter(ImageFilter.GaussianBlur(size * 0.12)).point(lambda v: int(v * 0.35))
     shape = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(shape).polygon(poly, fill=255)
+    ImageDraw.Draw(shape).rounded_rectangle((0, 0, size - 1, size - 1), radius=r, fill=255)
     from PIL import ImageChops
     img.alpha_composite(tint(ImageChops.multiply(glow, shape), ACCENT))
     # the M

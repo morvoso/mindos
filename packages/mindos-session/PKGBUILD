@@ -1,8 +1,8 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-session
 pkgver=0.1.0
-pkgrel=8
-pkgdesc="MindOS session: greetd configuration, session launcher and compositor defaults"
+pkgrel=10
+pkgdesc="MindOS session: greetd configuration, session launcher, compositor defaults and the dark-mode defaults for GTK, the portal and Firefox"
 arch=(any)
 url="https://mindos.local"
 license=(MIT)
@@ -10,14 +10,14 @@ depends=(mindwm mindos-mind greetd greetd-agreety seatd dbus xorg-xwayland foot 
          xdg-user-dirs
          ttf-jetbrains-mono noto-fonts noto-fonts-emoji inter-font
          wl-clipboard grim slurp pipewire wireplumber pipewire-pulse pipewire-alsa pipewire-jack
-         pamixer brightnessctl util-linux)
-optdepends=('xdg-desktop-portal: desktop portal framework (screen sharing not yet supported by mindwm)'
-            'xdg-desktop-portal-gtk: file chooser and settings portal backend')
+         pamixer brightnessctl util-linux
+         xdg-desktop-portal xdg-desktop-portal-gtk dconf gsettings-desktop-schemas)
+optdepends=('firefox: gets the MindOS dark defaults from /usr/lib/firefox/defaults/pref/mindos.js')
 backup=(etc/mindos/greetd.toml etc/mindos/mindwm.toml etc/mindos/xdg/foot/foot.ini
         etc/mindos/xdg/gtk-3.0/settings.ini etc/mindos/xdg/gtk-4.0/settings.ini)
 source=(mindos-session session-startup greetd.toml greetd-mindos.conf greetd-vt mindwm.toml mindos.desktop foot.ini
-        gtk-settings.ini)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+        gtk-settings.ini mindos-portals.conf 90_mindos.gschema.override firefox-mindos.js)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm755 mindos-session   "$pkgdir/usr/bin/mindos-session"
@@ -32,5 +32,11 @@ package() {
   # will not take from fontconfig.
   install -Dm644 gtk-settings.ini "$pkgdir/etc/mindos/xdg/gtk-3.0/settings.ini"
   install -Dm644 gtk-settings.ini "$pkgdir/etc/mindos/xdg/gtk-4.0/settings.ini"
+  # Dark mode for everything else: the settings portal (Firefox, GTK 4,
+  # libadwaita) reads the GSettings colour scheme, Firefox also gets its own
+  # defaults. The firefox directory is harmless when firefox is not installed.
+  install -Dm644 mindos-portals.conf         "$pkgdir/usr/share/xdg-desktop-portal/mindos-portals.conf"
+  install -Dm644 90_mindos.gschema.override  "$pkgdir/usr/share/glib-2.0/schemas/90_mindos.gschema.override"
+  install -Dm644 firefox-mindos.js           "$pkgdir/usr/lib/firefox/defaults/pref/mindos.js"
   install -dm755 "$pkgdir/etc/xdg/mindos/autostart"
 }
