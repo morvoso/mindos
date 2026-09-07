@@ -1,0 +1,18 @@
+/* MindOS: GameMode's helpers run without asking for a password.
+ *
+ * GameMode raises the CPU governor, the GPU clocks and a few /proc/sys values
+ * through small setuid-less helpers that ask polkit first. Its own rules file
+ * only allows the "gamemode" group; on MindOS every human account is in
+ * "mindos", so grant it there — a game launcher cannot stop to type a
+ * password, and the four actions only touch tuning knobs that mindos-perf
+ * already exposes.
+ *
+ * The session has to be a local, active one: a remote or switched-away login
+ * gets the normal prompt.
+ */
+polkit.addRule(function (action, subject) {
+    if (action.id.indexOf("com.feralinteractive.GameMode.") !== 0) return;
+    if (subject.local && subject.active && subject.isInGroup("mindos")) {
+        return polkit.Result.YES;
+    }
+});
