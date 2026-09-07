@@ -3,6 +3,8 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gtk4 as gtk;
@@ -24,9 +26,9 @@ use crate::ipc::{IpcClient, IpcEvent};
 use crate::layout::{Layout, Panel};
 use crate::mind;
 use crate::notify::NotifyHandle;
+use crate::pointer;
 use crate::polkit::PolkitHandle;
 use crate::system::{self, Audio};
-use crate::pointer;
 use crate::tray::TrayHandle;
 use crate::windows::{self, Kind, PanelSpec, ShellWindow};
 use crate::HostEvent;
@@ -127,6 +129,12 @@ struct State {
     mind_health: Value,
     /// The authorisation the polkit agent is waiting for (`Null` when none).
     polkit: Value,
+    /// A game is running (GameMode): the shell keeps still, see `watch_game`.
+    game: bool,
+    /// The compositor's idle state (the `idle` event): `stage`
+    /// (active / screensaver / blank), `locked`, `inhibited` and the chosen
+    /// screensaver. See `docs/SHELL.md`, "The screensaver and the lock screen".
+    idle: Value,
 }
 
 /// How many application notifications the centre keeps.
@@ -149,18 +157,14 @@ pub struct App {
     pub polkit: Option<PolkitHandle>,
     pub app_mode: Option<AppMode>,
     pub events: async_channel::Sender<HostEvent>,
+    /// The pending re-read of the network state (NetworkManager's changes come in bursts).
+    network_refresh: RefCell<Option<glib::SourceId>>,
     /// `--ui-dir` as given, handed to app windows this shell spawns.
     ui_dir_override: Option<PathBuf>,
     main_loop: glib::MainLoop,
     started: Instant,
     state: RefCell<State>,
     windows: RefCell<Vec<Rc<ShellWindow>>>,
-    /// A game is running (GameMode): the shell keeps still, see `watch_game`.
-    game: bool,
-    /// The compositor's idle state (the `idle` event): `stage`
-    /// (active / screensaver / blank), `locked`, `inhibited` and the chosen
-    /// screensaver. See `docs/SHELL.md`, "The screensaver and the lock screen".
-    idle: Value,
     /// Closed windows kept hidden for a moment: a popup that closes itself and
     /// then runs its menu action sends that request after `popup.close`.
     retired: RefCell<Vec<Rc<ShellWindow>>>,
@@ -171,10 +175,16 @@ pub struct App {
     desktop_monitor: RefCell<Option<gio::FileMonitor>>,
     desktop_notify_pending: Cell<bool>,
     layout_reload_pending: Cell<bool>,
+    game_monitor: RefCell<Option<gio::FileMonitor>>,
     /// The login conversation in progress (`--app greeter` only).
     greeter: RefCell<Option<greeter::Login>>,
 }
 
+    /// Whether to lock when the machine suspends, as the sleep watcher on its
+    /// own thread reads it.
+    lock_on_sleep: Arc<AtomicBool>,
+    /// An unlock attempt is with PAM right now (one at a time).
+    unlocking: Cell<bool>,
 impl App {
     pub fn new(opts: Options, events: async_channel::Sender<HostEvent>, main_loop: glib::MainLoop) -> Rc<App> {
         let config = Config::load();
@@ -189,8 +199,6 @@ impl App {
             tracing::warn!(dir = %ui_dir.display(), "UI bundle not found; windows will be empty");
         }
         let app_mode = opts.app.map(|name| AppMode {
-    /// The pending re-read of the network state (NetworkManager's changes come in bursts).
-    network_refresh: RefCell<Option<glib::SourceId>>,
             name,
             page: opts.page.unwrap_or_default(),
             arg: opts.arg.unwrap_or_default(),
@@ -201,7 +209,6 @@ impl App {
         web_context.set_cache_model(webkit::CacheModel::DocumentViewer);
         let network_session = if app_mode.as_ref().map(|m| m.name == "greeter").unwrap_or(false) {
             // The login screen keeps nothing on disk.
-    game_monitor: RefCell<Option<gio::FileMonitor>>,
             webkit::NetworkSession::new_ephemeral()
         } else {
             let data_dir = dirs_data().join("mindos/shell");
@@ -248,6 +255,7 @@ impl App {
             notify,
             polkit,
             app_mode,
+            network_refresh: RefCell::new(None),
             events,
             ui_dir_override,
             main_loop,
@@ -261,14 +269,19 @@ impl App {
             layout_monitor: RefCell::new(None),
             desktop_monitor: RefCell::new(None),
             desktop_notify_pending: Cell::new(false),
+            game_monitor: RefCell::new(None),
             layout_reload_pending: Cell::new(false),
             greeter: RefCell::new(None),
         });
+            lock_on_sleep: Arc::new(AtomicBool::new(true)),
+            unlocking: Cell::new(false),
         crate::scheme::register(&app.web_context, Rc::downgrade(&app));
         windows::install_css();
         app.watch_layout();
         app.watch_desktop();
         if let Some(display) = gdk::Display::default() {
+        app.watch_icon_theme();
+        app.watch_game();
             let weak = Rc::downgrade(&app);
             display.monitors().connect_items_changed(move |_, _, _, _| {
                 if let Some(app) = weak.upgrade() {
@@ -288,14 +301,12 @@ impl App {
             return;
         }
         let weak = Rc::downgrade(self);
-            network_refresh: RefCell::new(None),
         glib::timeout_add_local_once(Duration::from_millis(300), move || {
             if let Some(app) = weak.upgrade() {
                 app.sync_pending.set(false);
                 app.sync_windows();
             }
         });
-            game_monitor: RefCell::new(None),
     }
 
     fn panels_for<'a>(layout: &'a Layout, name: &'a str, primary: bool) -> impl Iterator<Item = &'a Panel> + 'a {
@@ -306,8 +317,6 @@ impl App {
 
     /// Reload the layout when another process saves it (the Settings app
     /// changes the wallpaper, or the shell saves while an app is open).
-        app.watch_icon_theme();
-        app.watch_game();
     fn watch_layout(self: &Rc<Self>) {
         let path = Layout::user_path();
         if let Some(parent) = path.parent() {
@@ -376,6 +385,214 @@ impl App {
             }
         });
     /// While a game is running the shell goes quiet: the UI drops its
+    fn idle_changed(self: &Rc<Self>, idle: Value) {
+        let was = self.state.borrow().idle.clone();
+        if was == idle {
+            return;
+        }
+        let locked = idle.get("locked").and_then(Value::as_bool).unwrap_or(false);
+        let stage = idle.get("stage").and_then(Value::as_str).unwrap_or("active").to_string();
+        self.state.borrow_mut().idle = idle.clone();
+        if was.get("locked") != idle.get("locked") || was.get("stage") != idle.get("stage") {
+            tracing::info!(stage, locked, "the session went {}", if stage == "active" && !locked { "back to work" } else { &stage });
+        }
+        self.sync_lock_windows(locked, &stage);
+        self.broadcast("lock", &idle);
+    }
+
+    /// One full-screen lock window per output while the screensaver is up or
+    /// the session is locked, and none otherwise. The window on the first
+    /// output carries the password field and the keyboard.
+    fn sync_lock_windows(self: &Rc<Self>, locked: bool, stage: &str) {
+        if self.app_mode.is_some() {
+            return; // an --app window is not the shell
+        }
+        let wanted = locked || stage != "active";
+        if !wanted {
+            let gone: Vec<Rc<ShellWindow>> = self
+                .windows
+                .borrow()
+                .iter()
+                .filter(|w| w.kind == Kind::Lock)
+                .cloned()
+                .collect();
+            for w in gone {
+                self.remove_window(&w);
+            }
+            return;
+        }
+        let monitors = windows::monitors();
+        let mut first = true;
+        for (i, monitor) in monitors.iter().enumerate() {
+            let name = windows::monitor_name(monitor, i);
+            // Which output carries the card is settled when the window is
+            // made, because that is what the page's argument says and the
+            // page is not reloaded afterwards: the screensaver usually
+            // starts long before the lock does. Only the keyboard follows
+            // the lock, so the screensaver never takes keys away from
+            // whatever is running underneath it.
+            let primary = std::mem::take(&mut first);
+            let keyboard = locked && primary;
+            match self.find_window(Kind::Lock, "lock", &name) {
+                Some(w) => {
+                    if w.keyboard.get() != keyboard {
+                        w.keyboard.set(keyboard);
+                        w.apply_geometry(false);
+                    }
+                }
+                None => {
+                    let arg = json!({ "primary": primary });
+                    let url = bridge::window_url("lock", "lock", &name, None, Some(&arg), None);
+                    let w = self.create_window(Kind::Lock, "lock", &name, monitor, None, keyboard, &url);
+                    // The void behind the screensaver, never a flash of white.
+                    w.view.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
+                }
+            }
+        }
+        // Windows whose monitor went away while the screen was locked.
+        let stale: Vec<Rc<ShellWindow>> = self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|w| {
+                w.kind == Kind::Lock
+                    && !monitors
+                        .iter()
+                        .enumerate()
+                        .any(|(i, m)| windows::monitor_name(m, i) == w.output && *m == w.monitor)
+            })
+            .cloned()
+            .collect();
+        for w in stale {
+            self.remove_window(&w);
+        }
+    }
+
+    /// True while the session is locked.
+    fn locked(&self) -> bool {
+        self.state
+            .borrow()
+            .idle
+            .get("locked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Check a password with PAM (on its own thread, it blocks) and unlock the
+    /// session if it is the right one.
+    async fn unlock(self: &Rc<Self>, password: String) -> Result<Value, String> {
+        if !self.locked() {
+            return Ok(json!({ "ok": true }));
+        }
+        if self.unlocking.replace(true) {
+            return Err("Still checking the last one.".into());
+        }
+        let user = crate::auth::current_user();
+        let (tx, rx) = async_channel::bounded::<Result<(), String>>(1);
+        let joined = std::thread::Builder::new()
+            .name("mindshell-unlock".into())
+            .spawn(move || {
+                let _ = tx.send_blocking(crate::auth::check_password(&user, &password));
+            });
+        if joined.is_err() {
+            self.unlocking.set(false);
+            return Err("cannot start the authentication thread".into());
+        }
+        let result = rx.recv().await.unwrap_or_else(|_| Err("the check went away".into()));
+        self.unlocking.set(false);
+        match result {
+            Ok(()) => {
+                self.ipc.request(json!({ "type": "unlock" })).await?;
+                Ok(json!({ "ok": true }))
+            }
+            Err(message) => Ok(json!({ "ok": false, "error": message })),
+        }
+    }
+
+    /// Follow the desktop's icon pack: GTK reports `gtk-icon-theme-name` from
+    /// the settings portal and the `settings.ini` files, so picking another
+    /// icon theme re-draws the application, desktop and tray icons here too.
+    /// A `shell.icon_theme` in the config pins one instead.
+    fn watch_icon_theme(self: &Rc<Self>) {
+        if !self.config.shell.icon_theme.trim().is_empty() {
+            return;
+        }
+        let Some(settings) = gtk::Settings::default() else { return };
+        let weak = Rc::downgrade(self);
+        settings.connect_gtk_icon_theme_name_notify(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.icon_theme_changed();
+            }
+        });
+    }
+
+    /// Re-resolve everything drawn with a themed icon.
+    fn icon_theme_changed(&self) {
+        let theme = icons::theme_for(&self.config.shell.icon_theme);
+        if !self.icon_theme.set(theme.clone()) {
+            return;
+        }
+        tracing::info!(icon_theme = %theme, "the desktop icon theme changed");
+        // The applications carry a resolved icon path, so they need a rescan;
+        // the desktop icons and the tray re-list and re-publish themselves.
+        let events = self.events.clone();
+        let size = self.config.shell.icon_size;
+        std::thread::spawn(move || {
+            let _ = events.send_blocking(HostEvent::Apps(apps::load_apps(&theme, size)));
+        });
+        if let Some(tray) = &self.tray {
+            tray.refresh();
+        }
+        self.broadcast("desktop.changed", &json!({ "path": fs::desktop_dir().to_string_lossy() }));
+        self.broadcast("config", &json!({ "config": self.config_json() }));
+    }
+
+    /// Tell the desktop views when the Desktop folder changes so the icons
+    /// follow (a download landing there, a file renamed in the file manager).
+    fn watch_desktop(self: &Rc<Self>) {
+        let path = fs::desktop_dir();
+        let dir = gio::File::for_path(&path);
+        match dir.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+            Ok(monitor) => {
+                let events = self.events.clone();
+                monitor.connect_changed(move |_, _, _, event| {
+                    use gio::FileMonitorEvent as E;
+                    if matches!(event, E::ChangesDoneHint | E::Created | E::Deleted | E::Renamed | E::MovedIn | E::MovedOut | E::AttributeChanged) {
+                        let _ = events.send_blocking(HostEvent::DesktopDir);
+                    }
+                });
+                *self.desktop_monitor.borrow_mut() = Some(monitor);
+            }
+            Err(e) => tracing::warn!(path = %path.display(), %e, "cannot watch the Desktop folder"),
+        }
+    }
+
+    fn desktop_dir_changed(self: &Rc<Self>) {
+        if self.desktop_notify_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(250), move || {
+            let Some(app) = weak.upgrade() else { return };
+            app.desktop_notify_pending.set(false);
+            app.broadcast("desktop.changed", &json!({ "path": fs::desktop_dir().to_string_lossy() }));
+        });
+    }
+
+    fn layout_file_changed(self: &Rc<Self>) {
+        if self.layout_reload_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(300), move || {
+            let Some(app) = weak.upgrade() else { return };
+            app.layout_reload_pending.set(false);
+            let layout = Layout::load();
+            if app.state.borrow().layout != layout {
+                tracing::info!("layout changed on disk, reloading");
+                app.set_layout(layout);
+            }
+        });
     /// animations and slows its samplers so the frames belong to the game.
     /// The GameMode hooks (`mindos-perf game-start` / `game-end`) count the
     /// games in `/run/mindos/perf/game`.
@@ -522,6 +739,17 @@ impl App {
                 let url = bridge::window_url("toast", "toast", name, None, None, None);
                 let w = self.create_window(Kind::Toast, "toast", name, monitor, None, false, &url);
                 w.window.set_visible(false);
+        // A display coming or going while the screen is locked needs a lock
+        // window of its own; the locked session must never show a desktop.
+        let (locked, stage) = {
+            let idle = &self.state.borrow().idle;
+            (
+                idle.get("locked").and_then(Value::as_bool).unwrap_or(false),
+                idle.get("stage").and_then(Value::as_str).unwrap_or("active").to_string(),
+            )
+        };
+        self.sync_lock_windows(locked, &stage);
+
             }
             // Horizontal panels first: their exclusive zones inset the vertical ones.
             let mut wanted: Vec<&Panel> = Self::panels_for(&layout, name, i == 0).collect();
@@ -1102,6 +1330,40 @@ impl App {
                 }
                 Ok(Value::Null)
             }
+            // ---- WireGuard tunnels (NetworkManager connections of type wireguard)
+            "vpn.list" => Ok(blocking(system::vpn_list).await),
+            "vpn.connect" | "vpn.disconnect" => {
+                let id = str_param("id")?;
+                let up = method == "vpn.connect";
+                blocking(move || system::vpn_set_active(&id, up)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.autoconnect" => {
+                let id = str_param("id")?;
+                let on = params.get("on").and_then(Value::as_bool).ok_or("vpn.autoconnect: missing 'on'")?;
+                blocking(move || system::vpn_set_autoconnect(&id, on)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.remove" => {
+                let id = str_param("id")?;
+                blocking(move || system::vpn_remove(&id)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.import" => {
+                // A file chooser for a wg-quick configuration; `path` skips it.
+                let path = match params.get("path").and_then(Value::as_str) {
+                    Some(p) => PathBuf::from(p),
+                    None => match self.pick_file("Import a WireGuard configuration", &[("WireGuard configuration", "*.conf")]).await {
+                        Some(p) => p,
+                        None => return Ok(json!({ "imported": false })),
+                    },
+                };
+                let id = blocking(move || system::vpn_import(&path)).await?;
+                let mut v = self.network_changed().await;
+                v["imported"] = json!(true);
+                v["id"] = json!(id);
+                Ok(v)
+            }
             "shell.run" => {
                 let argv: Vec<String> = params
                     .get("argv")
@@ -1167,6 +1429,48 @@ impl App {
                 change.insert("type".into(), json!("set_output"));
                 self.ipc.request(Value::Object(change)).await
             }
+            // ---- the pointer: GSettings for applications, IPC for the compositor
+            "pointer.get" => Ok(pointer::state()),
+            "pointer.set" => {
+                let theme = params.get("theme").and_then(Value::as_str).map(str::to_string);
+                let size = params.get("size").and_then(Value::as_u64).map(|s| s as u32);
+                if theme.is_none() && size.is_none() {
+                    return Err("pointer.set: nothing to change".into());
+                }
+                pointer::set(theme.as_deref(), size)?;
+                // The compositor draws its own cursor and does not read
+                // GSettings; it also passes the size on to what it starts.
+                let mut prefs = serde_json::Map::new();
+                if let Some(theme) = &theme {
+                    prefs.insert("cursor_theme".into(), json!(theme));
+                }
+                if let Some(size) = size {
+                    prefs.insert("cursor_size".into(), json!(size));
+                }
+                if let Err(err) = self.ipc.request(json!({ "type": "set_prefs", "prefs": prefs })).await {
+                    tracing::warn!(%err, "the compositor kept its old pointer");
+                }
+                Ok(pointer::state())
+            }
+            // ---- the screensaver and the lock screen
+            "lock.info" => {
+                let mut info = crate::auth::user_info();
+                info["host"] = json!(system::host_name());
+                info["idle"] = self.state.borrow().idle.clone();
+                Ok(info)
+            }
+            "lock.state" => Ok(self.state.borrow().idle.clone()),
+            "lock.unlock" => {
+                let password = params
+                    .get("password")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string())
+                    .ok_or("lock.unlock: missing 'password'")?;
+                self.unlock(password).await
+            }
+            "lock.now" => self.ipc.request(json!({ "type": "lock" })).await,
+            "lock.wake" => self.ipc.request(json!({ "type": "wake" })).await,
+            "lock.blank" => self.ipc.request(json!({ "type": "blank" })).await,
             "prefs.get" => self.ipc.request(json!({ "type": "get_prefs" })).await,
             "prefs.set" => {
                 let prefs = params.get("prefs").cloned().filter(Value::is_object).ok_or("prefs.set: missing 'prefs'")?;
@@ -1270,6 +1574,8 @@ impl App {
         let mut cmd = format!("{} --app {}", shell_quote(&exe.to_string_lossy()), shell_quote(name));
         if !page.is_empty() {
             cmd.push_str(&format!(" --page {}", shell_quote(page)));
+            "game": state.game,
+            "lock": state.idle.clone(),
         }
         if !arg.is_empty() {
             cmd.push_str(&format!(" {}", shell_quote(arg)));
@@ -1412,40 +1718,6 @@ impl App {
     /// Tell every view the notification list changed. `added` is the new
     /// notification (the toast window shows it), `closed` an id that went.
     fn notify_changed(&self, added: Option<&Value>, closed: Option<u32>) {
-            // ---- WireGuard tunnels (NetworkManager connections of type wireguard)
-            "vpn.list" => Ok(blocking(system::vpn_list).await),
-            "vpn.connect" | "vpn.disconnect" => {
-                let id = str_param("id")?;
-                let up = method == "vpn.connect";
-                blocking(move || system::vpn_set_active(&id, up)).await?;
-                Ok(self.network_changed().await)
-            }
-            "vpn.autoconnect" => {
-                let id = str_param("id")?;
-                let on = params.get("on").and_then(Value::as_bool).ok_or("vpn.autoconnect: missing 'on'")?;
-                blocking(move || system::vpn_set_autoconnect(&id, on)).await?;
-                Ok(self.network_changed().await)
-            }
-            "vpn.remove" => {
-                let id = str_param("id")?;
-                blocking(move || system::vpn_remove(&id)).await?;
-                Ok(self.network_changed().await)
-            }
-            "vpn.import" => {
-                // A file chooser for a wg-quick configuration; `path` skips it.
-                let path = match params.get("path").and_then(Value::as_str) {
-                    Some(p) => PathBuf::from(p),
-                    None => match self.pick_file("Import a WireGuard configuration", &[("WireGuard configuration", "*.conf")]).await {
-                        Some(p) => p,
-                        None => return Ok(json!({ "imported": false })),
-                    },
-                };
-                let id = blocking(move || system::vpn_import(&path)).await?;
-                let mut v = self.network_changed().await;
-                v["imported"] = json!(true);
-                v["id"] = json!(id);
-                Ok(v)
-            }
         let mut v = Self::notify_json_locked(&self.state.borrow());
         v["added"] = added.cloned().unwrap_or(Value::Null);
         v["closed"] = closed.map(|id| json!(id)).unwrap_or(Value::Null);
@@ -1523,48 +1795,6 @@ impl App {
                 .map_err(|e| format!("{}: {e}", argv2[0]))
         })
         .await?;
-            // ---- the pointer: GSettings for applications, IPC for the compositor
-            "pointer.get" => Ok(pointer::state()),
-            "pointer.set" => {
-                let theme = params.get("theme").and_then(Value::as_str).map(str::to_string);
-                let size = params.get("size").and_then(Value::as_u64).map(|s| s as u32);
-                if theme.is_none() && size.is_none() {
-                    return Err("pointer.set: nothing to change".into());
-                }
-                pointer::set(theme.as_deref(), size)?;
-                // The compositor draws its own cursor and does not read
-                // GSettings; it also passes the size on to what it starts.
-                let mut prefs = serde_json::Map::new();
-                if let Some(theme) = &theme {
-                    prefs.insert("cursor_theme".into(), json!(theme));
-                }
-                if let Some(size) = size {
-                    prefs.insert("cursor_size".into(), json!(size));
-                }
-                if let Err(err) = self.ipc.request(json!({ "type": "set_prefs", "prefs": prefs })).await {
-                    tracing::warn!(%err, "the compositor kept its old pointer");
-                }
-                Ok(pointer::state())
-            }
-            // ---- the screensaver and the lock screen
-            "lock.info" => {
-                let mut info = crate::auth::user_info();
-                info["host"] = json!(system::host_name());
-                info["idle"] = self.state.borrow().idle.clone();
-                Ok(info)
-            }
-            "lock.state" => Ok(self.state.borrow().idle.clone()),
-            "lock.unlock" => {
-                let password = params
-                    .get("password")
-                    .and_then(Value::as_str)
-                    .map(|s| s.to_string())
-                    .ok_or("lock.unlock: missing 'password'")?;
-                self.unlock(password).await
-            }
-            "lock.now" => self.ipc.request(json!({ "type": "lock" })).await,
-            "lock.wake" => self.ipc.request(json!({ "type": "wake" })).await,
-            "lock.blank" => self.ipc.request(json!({ "type": "blank" })).await,
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let json = serde_json::from_str::<Value>(stdout.trim()).unwrap_or(Value::Null);
@@ -1614,8 +1844,6 @@ impl App {
     fn set_edit_mode(&self, enabled: bool) {
         {
             let mut state = self.state.borrow_mut();
-            "game": state.game,
-            "lock": state.idle.clone(),
             if state.edit_mode == enabled {
                 return;
             }
@@ -1630,6 +1858,68 @@ impl App {
     }
 
     fn set_layout(self: &Rc<Self>, layout: Layout) {
+    /// Re-read the network state once the burst of change events has settled:
+    /// a tunnel going down is several lines from `nmcli monitor`, and only the
+    /// last one shows the final state.
+    fn schedule_network_refresh(self: &Rc<Self>) {
+        if let Some(id) = self.network_refresh.borrow_mut().take() {
+            id.remove();
+        }
+        let app = self.clone();
+        let id = glib::timeout_add_local_once(Duration::from_millis(400), move || {
+            app.network_refresh.borrow_mut().take();
+            let app = app.clone();
+            glib::spawn_future_local(async move {
+                app.network_changed().await;
+            });
+        });
+        *self.network_refresh.borrow_mut() = Some(id);
+    }
+
+    /// Read the network and tunnel state again and tell every window; the
+    /// tunnel list is also the answer to the `vpn.*` calls.
+    async fn network_changed(&self) -> Value {
+        let vpn = blocking(system::vpn_list).await;
+        let network = blocking(system::network_status).await;
+        self.broadcast("vpn", &vpn);
+        self.broadcast("network", &network);
+        vpn
+    }
+
+    /// A native open-file dialog; `None` when the user dismissed it.
+    async fn pick_file(&self, title: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
+        let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
+        let list = gio::ListStore::new::<gtk::FileFilter>();
+        for (name, pattern) in filters {
+            let f = gtk::FileFilter::new();
+            f.set_name(Some(name));
+            f.add_pattern(pattern);
+            list.append(&f);
+        }
+        let all = gtk::FileFilter::new();
+        all.set_name(Some("All files"));
+        all.add_pattern("*");
+        list.append(&all);
+        dialog.set_filters(Some(&list));
+        if let Some(first) = list.item(0).and_downcast::<gtk::FileFilter>() {
+            dialog.set_default_filter(Some(&first));
+        }
+        if let Some(home) = system::home_dir() {
+            dialog.set_initial_folder(Some(&gio::File::for_path(home)));
+        }
+        // A layer-shell surface cannot parent a dialog, so it opens as its own
+        // window and the compositor places it.
+        match dialog.open_future(None::<&gtk::Window>).await {
+            Ok(file) => file.path(),
+            Err(e) => {
+                if !e.matches(gtk::DialogError::Dismissed) {
+                    tracing::warn!(%e, "file dialog");
+                }
+                None
+            }
+        }
+    }
+
         self.state.borrow_mut().layout = layout.clone();
         self.sync_windows();
         self.broadcast("layout", &json!({ "layout": layout.to_value() }));
@@ -1741,6 +2031,22 @@ impl App {
         }
         let monitors = windows::monitors();
         let Some(monitor) = monitors.first() else { return };
+                    // Where the session stands: the shell may have been
+                    // restarted with the screen already locked.
+                    if let Ok(idle) = app.ipc.request(json!({ "type": "get_idle" })).await {
+                        app.idle_changed(idle);
+                    }
+                    if let Ok(prefs) = app.ipc.request(json!({ "type": "get_prefs" })).await {
+                        let on = prefs
+                            .pointer("/prefs/idle/lock_on_sleep")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true);
+                        app.lock_on_sleep.store(on, Ordering::Relaxed);
+                    }
+                    // A game may already have been running before the shell started.
+                    if app.state.borrow().game {
+                        let _ = app.ipc.send(json!({ "type": "inhibit_idle", "on": true }));
+                    }
         let name = windows::monitor_name(monitor, 0);
         let url = bridge::window_url("popup", "auth", &name, Some("auth"), Some(&json!({})), None);
         self.create_window(Kind::Popup, "auth", &name, monitor, None, true, &url);
@@ -1790,6 +2096,21 @@ impl App {
             }
             HostEvent::Ipc(IpcEvent::Event(name, value)) => match name.as_str() {
                 "tray" => {
+                "idle" => {
+                    let mut idle = value.clone();
+                    if let Value::Object(map) = &mut idle {
+                        map.remove("event");
+                    }
+                    self.idle_changed(idle);
+                }
+                "prefs" => {
+                    let lock_on_sleep = value
+                        .pointer("/prefs/idle/lock_on_sleep")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    self.lock_on_sleep.store(lock_on_sleep, Ordering::Relaxed);
+                    self.broadcast("prefs", &value);
+                }
                     let items = value.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
                     self.state.borrow_mut().xtray = Value::Array(items.iter().filter_map(xembed_item_json).collect());
                     self.broadcast("tray", &json!({ "items": self.tray_items_json() }));
@@ -1805,9 +2126,11 @@ impl App {
                     self.broadcast("windows", &json!({ "windows": windows, "focused": focused }));
                 }
                 "outputs" => {
+            HostEvent::Network => self.schedule_network_refresh(),
                     let outputs = value
                         .get("outputs")
                         .and_then(Value::as_array)
+            HostEvent::Game => self.game_changed(),
                         .cloned()
                         .unwrap_or_default();
                     self.state.borrow_mut().ipc_outputs = outputs;
@@ -1927,6 +2250,8 @@ impl App {
                     state.mind_notices.retain(|n| n.get("id").and_then(Value::as_str) != Some(id.as_str()));
                     state.mind_notices.insert(0, v.clone());
                 }
+        // Lock the screen before the machine suspends (a logind delay inhibitor).
+        crate::sleepwatch::start(self.ipc.clone(), self.lock_on_sleep.clone());
                 self.mind_notices_changed(Some(&v));
             }
             "notice_gone" => {
@@ -1956,68 +2281,6 @@ impl App {
         // Settings (Updates, Mind) shows the daemon's notices, update
         // status and health, so an --app window subscribes too.
         if !self.is_greeter() {
-    /// Re-read the network state once the burst of change events has settled:
-    /// a tunnel going down is several lines from `nmcli monitor`, and only the
-    /// last one shows the final state.
-    fn schedule_network_refresh(self: &Rc<Self>) {
-        if let Some(id) = self.network_refresh.borrow_mut().take() {
-            id.remove();
-        }
-        let app = self.clone();
-        let id = glib::timeout_add_local_once(Duration::from_millis(400), move || {
-            app.network_refresh.borrow_mut().take();
-            let app = app.clone();
-            glib::spawn_future_local(async move {
-                app.network_changed().await;
-            });
-        });
-        *self.network_refresh.borrow_mut() = Some(id);
-    }
-
-    /// Read the network and tunnel state again and tell every window; the
-    /// tunnel list is also the answer to the `vpn.*` calls.
-    async fn network_changed(&self) -> Value {
-        let vpn = blocking(system::vpn_list).await;
-        let network = blocking(system::network_status).await;
-        self.broadcast("vpn", &vpn);
-        self.broadcast("network", &network);
-        vpn
-    }
-
-    /// A native open-file dialog; `None` when the user dismissed it.
-    async fn pick_file(&self, title: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
-        let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
-        let list = gio::ListStore::new::<gtk::FileFilter>();
-        for (name, pattern) in filters {
-            let f = gtk::FileFilter::new();
-            f.set_name(Some(name));
-            f.add_pattern(pattern);
-            list.append(&f);
-        }
-        let all = gtk::FileFilter::new();
-        all.set_name(Some("All files"));
-        all.add_pattern("*");
-        list.append(&all);
-        dialog.set_filters(Some(&list));
-        if let Some(first) = list.item(0).and_downcast::<gtk::FileFilter>() {
-            dialog.set_default_filter(Some(&first));
-        }
-        if let Some(home) = system::home_dir() {
-            dialog.set_initial_folder(Some(&gio::File::for_path(home)));
-        }
-        // A layer-shell surface cannot parent a dialog, so it opens as its own
-        // window and the compositor places it.
-        match dialog.open_future(None::<&gtk::Window>).await {
-            Ok(file) => file.path(),
-            Err(e) => {
-                if !e.matches(gtk::DialogError::Dismissed) {
-                    tracing::warn!(%e, "file dialog");
-                }
-                None
-            }
-        }
-    }
-
             crate::mindwatch::start(self.events.clone());
         }
         if self.app_mode.is_some() {
@@ -2028,6 +2291,36 @@ impl App {
         let size = self.config.shell.icon_size;
         std::thread::Builder::new()
             .name("mindshell-apps".into())
+        // NetworkManager's own change feed: one line per event, which is the
+        // cue to read the connection and tunnel state again.
+        let events = self.events.clone();
+        std::thread::Builder::new()
+            .name("mindshell-network".into())
+            .spawn(move || {
+                use std::io::BufRead;
+                let Ok(mut child) = std::process::Command::new("nmcli")
+                    .arg("monitor")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                else {
+                    tracing::debug!("nmcli is not available; network changes are polled");
+                    return;
+                };
+                let Some(stdout) = child.stdout.take() else { return };
+                let mut lines = std::io::BufReader::new(stdout).lines();
+                // Every line is reported; the main loop settles the burst.
+                while let Some(Ok(_)) = lines.next() {
+                    if events.send_blocking(HostEvent::Network).is_err() {
+                        let _ = child.kill();
+                        return;
+                    }
+                }
+                let _ = child.wait();
+            })
+            .expect("spawn network thread");
+
             .spawn(move || {
                 let mut fingerprint = apps::fingerprint();
                 let _ = events.send_blocking(HostEvent::Apps(apps::load_apps(&theme, size)));
@@ -2045,6 +2338,18 @@ impl App {
             .expect("spawn apps thread");
 
         let events = self.events.clone();
+/// The GameMode counter kept by `mindos-perf game-start` / `game-end`.
+const GAME_FILE: &str = "/run/mindos/perf/game";
+
+/// True while at least one game is running.
+fn game_running() -> bool {
+    std::fs::read_to_string(GAME_FILE)
+        .ok()
+        .and_then(|t| t.split_whitespace().next().and_then(|n| n.parse::<u32>().ok()))
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
         std::thread::Builder::new()
             .name("mindshell-audio".into())
             .spawn(move || {
@@ -2095,10 +2400,6 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
     });
     rx.recv().await.expect("blocking worker vanished")
 }
-                    // A game may already have been running before the shell started.
-                    if app.state.borrow().game {
-                        let _ = app.ipc.send(json!({ "type": "inhibit_idle", "on": true }));
-                    }
 
 fn dirs_data() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
@@ -2155,47 +2456,3 @@ fn xembed_item_json(item: &Value) -> Option<Value> {
         "pid": item.get("pid").cloned().unwrap_or(Value::Null),
     }))
 }
-            HostEvent::Network => self.schedule_network_refresh(),
-        // NetworkManager's own change feed: one line per event, which is the
-        // cue to read the connection and tunnel state again.
-        let events = self.events.clone();
-        std::thread::Builder::new()
-            .name("mindshell-network".into())
-            .spawn(move || {
-                use std::io::BufRead;
-                let Ok(mut child) = std::process::Command::new("nmcli")
-                    .arg("monitor")
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                else {
-            HostEvent::Game => self.game_changed(),
-                    tracing::debug!("nmcli is not available; network changes are polled");
-                    return;
-                };
-                let Some(stdout) = child.stdout.take() else { return };
-                let mut lines = std::io::BufReader::new(stdout).lines();
-                // Every line is reported; the main loop settles the burst.
-                while let Some(Ok(_)) = lines.next() {
-                    if events.send_blocking(HostEvent::Network).is_err() {
-                        let _ = child.kill();
-                        return;
-                    }
-                }
-                let _ = child.wait();
-            })
-            .expect("spawn network thread");
-
-/// The GameMode counter kept by `mindos-perf game-start` / `game-end`.
-const GAME_FILE: &str = "/run/mindos/perf/game";
-
-/// True while at least one game is running.
-fn game_running() -> bool {
-    std::fs::read_to_string(GAME_FILE)
-        .ok()
-        .and_then(|t| t.split_whitespace().next().and_then(|n| n.parse::<u32>().ok()))
-        .map(|n| n > 0)
-        .unwrap_or(false)
-}
-

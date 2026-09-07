@@ -3,12 +3,13 @@ import { renderApp } from './apps';
 import * as bridge from './bridge';
 import { renderDesktop } from './desktop';
 import { renderGreeter } from './greeter';
+import { renderLock } from './lock';
 import { installMock } from './mock';
 import { renderPanel } from './panel';
 import { renderPopupWindow } from './popups';
 import { renderPreview } from './preview';
-import { store } from './state';
 import { setQuiet } from './quiet';
+import { store } from './state';
 import { renderToasts } from './toast';
 
 async function main(): Promise<void> {
@@ -16,10 +17,10 @@ async function main(): Promise<void> {
   const info = bridge.windowInfo();
   document.documentElement.dataset.kind = info.kind;
   await store.init();
-  const root = document.body;
   // Quiet while a game runs: no animations, samplers slowed or stopped.
   setQuiet(!!store.state.game);
   store.on('game', () => setQuiet(!!store.state.game));
+  const root = document.body;
   switch (info.kind) {
     case 'desktop':
       renderDesktop(root, info.output);
@@ -35,6 +36,9 @@ async function main(): Promise<void> {
       break;
     case 'greeter':
       renderGreeter(root, info.arg);
+      break;
+    case 'lock':
+      renderLock(root, info.arg);
       break;
     case 'toast':
       renderToasts(root, info.output);

@@ -138,6 +138,40 @@ where
         })
 }
 
+/// The shell's lock windows on this output, front to back. While the session
+/// is locked these are the only client surfaces drawn: everything else stays
+/// behind a black screen, whether it keeps painting or not.
+pub fn lock_elements<R>(output: &Output, renderer: &mut R) -> Vec<CustomRenderElements<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let layers = smithay::desktop::layer_map_for_output(output);
+    let mut elements = Vec::new();
+    for layer in layers
+        .layers_on(smithay::wayland::shell::wlr_layer::Layer::Overlay)
+        .rev()
+        .filter(|l| l.namespace() == crate::idle::LOCK_NAMESPACE)
+    {
+        let Some(geometry) = layers.layer_geometry(layer) else {
+            continue;
+        };
+        elements.extend(
+            AsRenderElements::<R>::render_elements::<WaylandSurfaceRenderElement<R>>(
+                layer,
+                renderer,
+                geometry.loc.to_physical_precise_round(scale),
+                scale,
+                1.0,
+            )
+            .into_iter()
+            .map(CustomRenderElements::Surface),
+        );
+    }
+    elements
+}
+
 #[profiling::function]
 pub fn output_elements<R>(
     output: &Output,
@@ -152,6 +186,20 @@ where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + 'static,
 {
+    if locked {
+        // The pointer (in `custom_elements`) stays on top; the lock windows
+        // cover the rest, and black covers whatever they do not.
+        let mut elements = custom_elements
+            .into_iter()
+            .map(OutputRenderElements::from)
+            .collect::<Vec<_>>();
+        elements.extend(
+            lock_elements(output, renderer)
+                .into_iter()
+                .map(OutputRenderElements::Custom),
+        );
+        return (elements, Color32F::new(0.0, 0.0, 0.0, 1.0));
+    }
     if let Some(window) = output
         .user_data()
         .get::<FullscreenSurface>()

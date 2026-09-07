@@ -272,6 +272,7 @@ pub fn run_winit() {
             let space = &mut state.space;
             let damage_tracker = &mut state.backend_data.damage_tracker;
             let show_window_preview = state.show_window_preview;
+            let locked = state.idle.locked;
 
             let dnd_icon = state.dnd_icon.as_ref();
             let mindbar = &mut state.mindbar;
@@ -378,6 +379,7 @@ pub fn run_winit() {
                     age,
                     show_window_preview,
                     backdrop,
+                    locked,
                 )
                 .map_err(|err| match err {
                     OutputDamageTrackerError::Rendering(err) => err.into(),

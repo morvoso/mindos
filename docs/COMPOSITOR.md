@@ -37,6 +37,9 @@
   seconds. The whole screen disappears the frame the shell maps its desktop.
 * **The Mind bar** (`Super+Space`): a software-rendered overlay that is both an
   application launcher and the front end of `mindd`, the local LLM daemon.
+* **Idling**: the screensaver, the automatic lock and switching the displays
+  off, all counted from the last input event and enforced here (see *Idling*
+  below).
 * **A shell IPC socket** (`MINDWM_SOCKET`) through which `mindshell`, the
   HTML/TypeScript desktop, lists and drives windows; see `docs/SHELL.md`.
 
@@ -184,6 +187,7 @@ protocol get everything.
 
 * Type to filter installed applications (XDG desktop entries from
   `$XDG_DATA_DIRS`); `Enter` launches the highlighted one, `↑`/`↓`/`Tab` select.
+| `Super+L` | Lock the screen |
 * Anything that is not an application, a query prefixed with `?`, or
   `Shift+Enter`, is sent to Mind. The answer streams in; tool calls show as
   `⚙ run: nvidia-smi`, results as `✓ run_command: …`.
@@ -214,7 +218,7 @@ launcher and says so in its status line; it reconnects automatically.
 to every program mindwm starts and imported into `systemd --user` by
 `session-startup`. Newline-delimited JSON, one request per line, replies echo
 the request's `id`; subscribers get `windows`, `outputs`, `layout_mode`,
-`prefs`, `shortcut`, `mindbar` and `mind_status` events, and can change the
+`prefs`, `idle`, `shortcut`, `mindbar` and `mind_status` events, and can change the
 layout mode, the preferences and the outputs (mode, scale, position,
 rotation, VRR, primary) from the Settings app. The full request/event tables are in `docs/SHELL.md`
 ("The compositor IPC"); `src/ipc.rs` implements them.
@@ -224,6 +228,61 @@ rotation, VRR, primary) from the Settings app. The full request/event tables are
   drawn yet are not listed.
 * Snapshots are compared after every event-loop turn and only sent when a
   listed field changed, so an idle desktop costs nothing.
+## Idling
+
+The compositor keeps the idle clock, because it is the only process that sees
+every key, click and gesture, and it is the one that can switch a display off
+and keep windows off the screen. The shell draws the screensaver and the lock
+screen; `src/idle.rs` decides when.
+
+Everything is counted from the last input event, in seconds, `0` meaning
+never:
+
+```text
+ input ────────────── screensaver ────── lock ────── displays off
+        idle.screensaver      idle.lock       idle.blank
+```
+
+The timings live with the other preferences (`Prefs::idle` in
+`$XDG_STATE_HOME/mindos/mindwm.json`), so Settings › Screen changes them with
+the ordinary `set_prefs` request and they survive a restart. One calloop timer
+is armed for the next deadline; nothing is armed while the session is held
+awake or when every timeout is *never*.
+
+* **The screensaver.** The stage goes to `screensaver`, the shell puts a
+  `mindshell-lock` overlay on every output and draws a game there. The next
+  key or click takes it away — and is swallowed, so the key that woke the
+  screen is not also typed into whatever was underneath. The pointer is
+  hidden for as long as the stage is not `active`: a client only chooses a
+  cursor when the pointer moves, and moving it is exactly what ends the
+  screensaver, so leaving it to the shell would park an arrow in one place
+  for hours.
+* **The lock.** `set_locked` drops the keyboard focus and closes the Mind bar.
+  From then on `surface_under`, the focus handling and the render pass only
+  consider overlay layer surfaces in the `mindshell-lock` namespace, the
+  output is cleared to opaque black behind them, and the IPC refuses anything
+  that would start or focus a program. `Super+L` locks; only `Ctrl+Alt+F1..F12`
+  still works, so a locked machine can still be recovered from a text console.
+  There is no `ext-session-lock-v1` here: GTK — and therefore the shell —
+  cannot speak it, so the compositor owns the lock state itself.
+* **The displays.** The stage goes to `blank` and the DRM backend clears every
+  surface (`DrmCompositor::clear`), which is a real DPMS off, not a black
+  picture. Clearing stops the page flips that drive the render loop, so
+  rendering is skipped while blanked and restarted with a fresh buffer when
+  the screen comes back. A nested session (`--winit`) has no displays to
+  switch off, so the screensaver and the lock still work there but blanking
+  does nothing.
+
+Two protocols hang off the same clock: `ext-idle-notify-v1`, so a program can
+be told how long the session has been idle, and `zwp_idle_inhibit_v1`, so a
+video player or a game can hold all of it off. The shell holds the session
+awake the same way (`inhibit_idle`) while GameMode reports a running game.
+Both only count while *Stay awake while something is playing* is set.
+
+Where it all stands is broadcast as the `idle` event
+(`{ stage, locked, inhibited, saver }`) and can be asked for with `get_idle`;
+`lock`, `unlock`, `wake` and `blank` drive it from the shell.
+
 * A stalled subscriber (4 MiB of unread events) or one that sends a line over
   64 KiB is disconnected.
 

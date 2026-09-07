@@ -54,7 +54,6 @@ const CATALOG: CatalogEntry[] = [
 
 export const mockHooks: MockHooks = {};
 
-function app(id: string, name: string, categories: string[], opts: Partial<AppInfo> = {}): AppInfo {
 const vpn: VpnTunnel[] = [
   { id: '33b8e36a-5b64-42fb-8f29-230894f4d8b4', name: 'office', iface: 'office', address: '10.66.0.2/24', endpoint: 'vpn.example.net:51820', peers: 1, active: true, activating: false, autoconnect: true },
   { id: '9a1c2d3e-4f50-4617-8899-aabbccddeeff', name: 'mullvad-se', iface: 'wg-se', address: '10.64.12.7/32', endpoint: '185.65.134.1:51820', peers: 1, active: false, activating: false, autoconnect: false },
@@ -64,6 +63,7 @@ const vpnState = (): VpnState => {
   return { available: mode !== '0', tunnels: mode === 'none' ? [] : vpn.map((t) => ({ ...t })) };
 };
 
+function app(id: string, name: string, categories: string[], opts: Partial<AppInfo> = {}): AppInfo {
   return {
     id: id.endsWith('.desktop') ? id : id + '.desktop',
     name,
@@ -148,7 +148,6 @@ export function installMock(): MindosGlobal {
   const emit = (event: string, payload: unknown) => {
     listeners.get(event)?.forEach((cb) => cb(payload));
   };
-  let layout: Layout = defaultLayout();
   const vpnSet = (id: string, patch: Partial<VpnTunnel>): VpnState => {
     const t = vpn.find((x) => x.id === id);
     if (!t) throw new Error('Could not connect: no such tunnel');
@@ -156,6 +155,7 @@ export function installMock(): MindosGlobal {
     emit('vpn', vpnState());
     return vpnState();
   };
+  let layout: Layout = defaultLayout();
   let editMode = q.get('edit') === '1';
   const windows: WindowInfo[] = [
     win(1, 'Steam', 'steam', { x11: true }),
@@ -329,8 +329,23 @@ export function installMock(): MindosGlobal {
   // ----- compositor state: layout mode, prefs, outputs -----
   const MODE_LIST = [{ name: 'floating', label: 'Floating' }, { name: 'dwindle', label: 'Tiles' }, { name: 'columns', label: 'Columns' }];
   let layoutMode = q.get('mode') ?? 'floating';
-  const prefs: Prefs = { layout_mode: layoutMode, mind_show_tools: false, primary_output: null, outputs: {} };
+  const prefs: Prefs = {
+    layout_mode: layoutMode,
+    mind_show_tools: false,
+    primary_output: null,
+    idle: { screensaver: 300, saver: 'shuffle', lock: 900, blank: 900, lock_on_blank: true, lock_on_sleep: true, stay_awake_when_busy: true },
+    outputs: {},
+  };
+  // The screensaver and the lock screen: open ?kind=lock to see the page,
+  // and "hunter2" unlocks it.
+  const idle: LockState = { stage: q.get('stage') ?? 'active', locked: info.kind === 'lock', inhibited: false, saver: q.get('saver') ?? prefs.idle?.saver ?? 'shuffle' };
+  const pushIdle = (patch: Partial<LockState>) => {
+    Object.assign(idle, patch);
+    emit('lock', { ...idle });
+    return { ...idle };
+  };
   const outputs: WmOutput[] = JSON.parse(JSON.stringify(OUTPUTS));
+  const pointer = { theme: 'MindOS', size: 24, themes: ['MindOS', 'Adwaita', 'breeze_cursors'], sizes: [24, 32, 48, 64], writable: true };
   const modeEvent = () => ({ mode: layoutMode, label: MODE_LIST.find((m) => m.name === layoutMode)?.label ?? layoutMode, modes: MODE_LIST });
   const setMode = (m: string) => {
     if (!MODE_LIST.some((x) => x.name === m)) throw new Error(`unknown layout mode ${m}`);
@@ -362,7 +377,6 @@ export function installMock(): MindosGlobal {
     if (typeof p.vrr === 'boolean') o.vrr = p.vrr && o.vrr_supported;
     if (p.primary === true) for (const x of outputs) x.primary = x === o;
     emit('outputs', { outputs: outputs.map((x) => ({ name: x.name, make: x.make, model: x.model, x: x.x, y: x.y, width: x.width, height: x.height, scale: x.scale, refresh: x.refresh })) });
-  const pointer = { theme: 'MindOS', size: 24, themes: ['MindOS', 'Adwaita', 'breeze_cursors'], sizes: [24, 32, 48, 64], writable: true };
     return { outputs: JSON.parse(JSON.stringify(outputs)) };
   };
 
@@ -525,6 +539,7 @@ export function installMock(): MindosGlobal {
       polkit: { ...polkit },
       audio: { ...audio },
       app: info.kind === 'app' ? { name: info.id, page: appArg.page, arg: appArg.arg } : null,
+      lock: { ...idle },
       version: '0.2.0 (mock)',
     }),
     'shell.ready': () => ({}),
@@ -670,6 +685,12 @@ export function installMock(): MindosGlobal {
       console.info('[mock] greeter power', p.action);
       return {};
     },
+    'lock.info': () => ({ name: 'morvoso', display: 'Justin', avatar: null, host: 'mindos-dev', idle: { ...idle } }),
+    'lock.state': () => ({ ...idle }),
+    'lock.unlock': (p) => (p.password === 'hunter2' ? (pushIdle({ locked: false, stage: 'active' }), { ok: true }) : { ok: false, error: 'That password did not work.' }),
+    'lock.now': () => pushIdle({ locked: true, stage: 'active' }),
+    'lock.wake': () => pushIdle({ stage: 'active' }),
+    'lock.blank': () => pushIdle({ stage: 'blank', locked: prefs.idle?.lock_on_blank ?? true }),
     'system.stats': stats,
     'audio.get': () => ({ ...audio }),
     'audio.set': (p) => {
@@ -683,15 +704,24 @@ export function installMock(): MindosGlobal {
       return {};
     },
     'network.status': () => ({ connected: true, kind: 'wifi', ssid: 'Nebula-5G', iface: 'wlan0', ip: '192.168.122.40' }),
+    'vpn.list': () => vpnState(),
+    'vpn.connect': (p) => vpnSet(String(p.id), { active: true }),
+    'vpn.disconnect': (p) => vpnSet(String(p.id), { active: false }),
+    'vpn.autoconnect': (p) => vpnSet(String(p.id), { autoconnect: !!p.on }),
+    'vpn.remove': (p) => {
+      vpn.splice(vpn.findIndex((t) => t.id === p.id), 1);
+      emit('vpn', vpnState());
+      return vpnState();
+    },
+    'vpn.import': () => {
+      const t: VpnTunnel = { id: `0000000${vpn.length}-0000-4000-8000-000000000000`, name: `imported-${vpn.length}`, iface: `wg${vpn.length}`, address: '10.9.0.2/24', endpoint: 'new.example.org:51820', peers: 1, active: true, activating: false, autoconnect: true };
+      vpn.push(t);
+      emit('vpn', vpnState());
+      return { ...vpnState(), imported: true, id: t.id };
+    },
     'battery.status': () => (q.get('battery') === '1' ? { present: true, percent: 67, charging: false, timeToEmpty: 8200 } : { present: false }),
     'icons.resolve': (p) => letterIcon(String(p.name), hashHue(String(p.name))),
     'panel.fit': (p) => {
-    'lock.info': () => ({ name: 'morvoso', display: 'Justin', avatar: null, host: 'mindos-dev', idle: { ...idle } }),
-    'lock.state': () => ({ ...idle }),
-    'lock.unlock': (p) => (p.password === 'hunter2' ? (pushIdle({ locked: false, stage: 'active' }), { ok: true }) : { ok: false, error: 'That password did not work.' }),
-    'lock.now': () => pushIdle({ locked: true, stage: 'active' }),
-    'lock.wake': () => pushIdle({ stage: 'active' }),
-    'lock.blank': () => pushIdle({ stage: 'blank', locked: prefs.idle?.lock_on_blank ?? true }),
       mockHooks.panelFit?.(String(p.panel ?? ''), Number(p.length) || 0);
       return {};
     },
@@ -700,6 +730,8 @@ export function installMock(): MindosGlobal {
     'wm.cycleLayoutMode': () => setMode(MODE_LIST[(MODE_LIST.findIndex((m) => m.name === layoutMode) + 1) % MODE_LIST.length].name),
     'wm.outputs': () => ({ outputs: JSON.parse(JSON.stringify(outputs)) }),
     'wm.setOutput': (p) => setOutput(p),
+    'pointer.get': () => pointer,
+    'pointer.set': (p) => Object.assign(pointer, p.theme ? { theme: String(p.theme) } : {}, p.size ? { size: Number(p.size) } : {}),
     'prefs.get': () => ({ prefs: { ...prefs } }),
     'prefs.set': (p) => {
       Object.assign(prefs, (p.prefs as Prefs) ?? {});
@@ -753,8 +785,6 @@ export function installMock(): MindosGlobal {
           mockHooks.closePopup?.('auth');
           const pending = pkexecPending;
           pkexecPending = undefined;
-    'pointer.get': () => pointer,
-    'pointer.set': (p) => Object.assign(pointer, p.theme ? { theme: String(p.theme) } : {}, p.size ? { size: Number(p.size) } : {}),
           pending?.done(runHelper(pending.argv));
           return;
         }

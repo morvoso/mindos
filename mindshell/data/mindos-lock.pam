@@ -1,0 +1,8 @@
+# PAM for the MindOS lock screen (mindshell's auth.rs, service "mindos-lock").
+#
+# It only ever checks the password of the account it is already running as, so
+# it needs nothing beyond what the machine accepts for a normal login: whatever
+# system-auth is set up for — a password, a fingerprint reader, a smart card —
+# works here too. Nothing here opens a session; the session is already open.
+auth      include   system-auth
+account   include   system-auth

@@ -4,7 +4,7 @@ export type Edge = 'top' | 'bottom' | 'left' | 'right';
 export type Align = 'start' | 'center' | 'end';
 export type PanelLayer = 'top' | 'bottom';
 export type Container = 'panel' | 'desktop';
-export type WindowKind = 'desktop' | 'panel' | 'popup' | 'preview' | 'app' | 'greeter' | 'toast';
+export type WindowKind = 'desktop' | 'panel' | 'popup' | 'preview' | 'app' | 'greeter' | 'toast' | 'lock';
 
 export type Config = Record<string, unknown>;
 
@@ -452,8 +452,16 @@ export interface ShellState {
   notify?: NotifyState;
   polkit?: PolkitRequest | null;
   audio?: AudioState;
+  /** Read on demand (`vpn.list`) and pushed as `vpn`. */
+  vpn?: VpnState;
+  /** Pushed as `network` whenever NetworkManager reports a change. */
+  network?: NetworkState;
   app?: AppMode | null;
   version?: string;
+  /** A game is running: the shell keeps still until it ends. */
+  game?: boolean;
+  /** The screensaver / lock stage, as the compositor reports it. */
+  lock?: LockState;
 }
 
 /* ----- compositor: layout modes, preferences, outputs ----- */
@@ -467,16 +475,33 @@ export interface LayoutModeInfo {
 export interface Prefs {
   layout_mode?: string | null;
   mind_show_tools?: boolean | null;
-  /** Read on demand (`vpn.list`) and pushed as `vpn`. */
-  vpn?: VpnState;
-  /** Pushed as `network` whenever NetworkManager reports a change. */
-  network?: NetworkState;
   primary_output?: string | null;
+  idle?: Partial<IdlePrefs>;
   outputs?: Record<string, unknown>;
-  /** A game is running: the shell keeps still until it ends. */
-  game?: boolean;
-  /** The screensaver / lock stage, as the compositor reports it. */
-  lock?: LockState;
+}
+
+/** What happens when the machine is left alone (Settings › Screen). Every
+ *  timeout is in seconds, counted from the last key, click or gesture; `0`
+ *  means never. */
+export interface IdlePrefs {
+  screensaver: number;
+  /** A saver id, `shuffle` or `blank`. */
+  saver: string;
+  lock: number;
+  blank: number;
+  lock_on_blank: boolean;
+  lock_on_sleep: boolean;
+  stay_awake_when_busy: boolean;
+}
+
+/** Where the session stands, from the compositor's `idle` event. */
+export interface LockState {
+  /** `active`, `screensaver` or `blank`. */
+  stage: string;
+  locked: boolean;
+  /** Something is holding the session awake (a video, a game). */
+  inhibited: boolean;
+  saver: string;
 }
 
 export interface WmMode {
@@ -508,6 +533,16 @@ export interface WmOutput {
   primary: boolean;
   mm_width: number;
   mm_height: number;
+}
+
+/** `pointer.get` / `pointer.set`: the cursor theme and size. */
+export interface PointerState {
+  theme: string;
+  size: number;
+  themes: string[];
+  sizes: number[];
+  /** False when gsettings-desktop-schemas is missing: nothing can be saved. */
+  writable: boolean;
 }
 
 /** What `wm.setOutput` accepts besides `name`. */
@@ -580,16 +615,6 @@ export interface FsEntry {
   hidden: boolean;
   symlink: boolean;
   mime: string;
-/** `pointer.get` / `pointer.set`: the cursor theme and size. */
-export interface PointerState {
-  theme: string;
-  size: number;
-  themes: string[];
-  sizes: number[];
-  /** False when gsettings-desktop-schemas is missing: nothing can be saved. */
-  writable: boolean;
-}
-
   icon: string;
   image: boolean;
   /** A ready-made thumbnail URL (the mock); the host serves mindos://shell/thumb/ instead. */

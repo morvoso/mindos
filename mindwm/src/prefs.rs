@@ -30,6 +30,42 @@ pub struct Prefs {
     pub outputs: BTreeMap<String, OutputPrefs>,
 }
 
+/// The idle timings, all counted from the last key, click or gesture.
+/// A timeout of `0` means never.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct IdleSettings {
+    /// Seconds before the screensaver starts.
+    pub screensaver: u32,
+    /// Which screensaver the shell draws (`shuffle` picks a different one
+    /// every time); the names are in `docs/SHELL.md`.
+    pub saver: String,
+    /// Seconds before the session locks.
+    pub lock: u32,
+    /// Seconds before the displays are switched off.
+    pub blank: u32,
+    /// Lock as soon as the displays switch off, whatever the lock timeout is.
+    pub lock_on_blank: bool,
+    /// Lock when the machine suspends (the shell asks logind).
+    pub lock_on_sleep: bool,
+    /// Stay awake while a program asks to (a video player, a running game).
+    pub stay_awake_when_busy: bool,
+}
+
+impl Default for IdleSettings {
+    fn default() -> Self {
+        IdleSettings {
+            screensaver: 300,
+            saver: "shuffle".into(),
+            lock: 900,
+            blank: 900,
+            lock_on_blank: true,
+            lock_on_sleep: true,
+            stay_awake_when_busy: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct OutputPrefs {

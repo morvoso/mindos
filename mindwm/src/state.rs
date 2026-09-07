@@ -219,6 +219,10 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub layout: LayoutState,
     /// Preferences kept between sessions (layout mode, Mind bar, displays).
     pub prefs: Prefs,
+    /// The screensaver, the lock screen and switching the displays off.
+    pub idle: IdleState,
+    pub idle_notifier: IdleNotifierState<AnvilState<BackendData>>,
+    pub idle_inhibit_manager_state: IdleInhibitManagerState,
 }
 
 /// A minimised window: unmapped from the space, restored at `location`.
@@ -361,11 +365,11 @@ impl<BackendData: Backend> TabletSeatHandler for AnvilState<BackendData> {
     }
 }
 delegate_tablet_manager!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
+smithay::delegate_cursor_shape!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 delegate_text_input_manager!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 impl<BackendData: Backend> InputMethodHandler for AnvilState<BackendData> {
-smithay::delegate_cursor_shape!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
     fn new_popup(&mut self, surface: PopupSurface) {
         if let Err(err) = self.popups.track_popup(PopupKind::from(surface)) {
             warn!("Failed to track popup: {}", err);
@@ -629,6 +633,10 @@ smithay::delegate_fifo!(@<BackendData: Backend + 'static> AnvilState<BackendData
 
 smithay::delegate_commit_timing!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
+smithay::delegate_idle_notify!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
+
+smithay::delegate_idle_inhibit!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
+
 impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     pub fn init(
         display: Display<AnvilState<BackendData>>,
@@ -720,6 +728,11 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
         let fifo_manager_state = FifoManagerState::new::<Self>(&dh);
         let commit_timing_manager_state = CommitTimingManagerState::new::<Self>(&dh);
+        // ext-idle-notify-v1 / zwp_idle_inhibit_v1: programs ask how long the
+        // machine has been left alone, and ask it not to idle at all (a video
+        // player, a game). See `idle.rs`.
+        let idle_notifier = IdleNotifierState::<Self>::new(&dh, handle.clone());
+        let idle_inhibit_manager_state = IdleInhibitManagerState::new::<Self>(&dh);
         TextInputManagerState::new::<Self>(&dh);
         InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
         VirtualKeyboardManagerState::new::<Self, _>(&dh, |_client| true);
@@ -732,6 +745,11 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             PointerGesturesState::new::<Self>(&dh);
         }
         TabletManagerState::new::<Self>(&dh);
+        // wp_cursor_shape_v1: a client names a shape and the compositor draws
+        // it from the MindOS theme. GTK 4 and most toolkits prefer this to
+        // attaching their own cursor surface, which is what keeps the pointer
+        // the same everywhere.
+        CursorShapeManagerState::new::<Self>(&dh);
         SecurityContextState::new::<Self, _>(&dh, |client| {
             client
                 .get_data::<ClientState>()
@@ -745,11 +763,6 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let pointer = seat.add_pointer();
         seat.add_keyboard(XkbConfig::default(), 200, 25)
             .expect("Failed to initialize the keyboard");
-        // wp_cursor_shape_v1: a client names a shape and the compositor draws
-        // it from the MindOS theme. GTK 4 and most toolkits prefer this to
-        // attaching their own cursor surface, which is what keeps the pointer
-        // the same everywhere.
-        CursorShapeManagerState::new::<Self>(&dh);
 
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&dh);
 
@@ -816,8 +829,13 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             super_tap_fired: false,
             layout,
             prefs,
+            idle: IdleState::default(),
+            idle_notifier,
+            idle_inhibit_manager_state,
         };
+        state.idle.since = Some(std::time::Instant::now());
         state.start_ipc();
+        state.arm_idle_timer();
         state
     }
 
@@ -1326,6 +1344,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
     /// Give a window keyboard focus.
     pub fn focus_window(&mut self, window: &WindowElement) {
+        if self.idle.locked {
+            return;
+        }
         let serial = crate::input_handler::next_serial();
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(KeyboardFocusTarget::Window(window.0.clone())), serial);
@@ -1339,6 +1360,19 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
+        if self.idle.locked {
+            // The lock screen owns the keyboard; nothing behind it gets it back.
+            let holds_lock = matches!(
+                keyboard.current_focus(),
+                Some(KeyboardFocusTarget::LayerSurface(layer))
+                    if layer.alive() && layer.namespace() == crate::idle::LOCK_NAMESPACE
+            );
+            if !holds_lock && keyboard.current_focus().is_some() {
+                let serial = crate::input_handler::next_serial();
+                keyboard.set_focus(self, None, serial);
+            }
+            return;
+        }
         let focus_ok = match keyboard.current_focus() {
             None => false,
             Some(KeyboardFocusTarget::Window(window)) => {
@@ -1677,40 +1711,6 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 _ => return Err("primary_output must be a string or null".into()),
             };
         }
-        self.prefs_changed();
-        Ok(())
-    }
-
-    /// The Displays settings: apply a change to one output and remember it.
-    pub fn set_output_config(&mut self, name: &str, change: &OutputChange) -> Result<(), String> {
-        if let Some(enabled) = change.enabled {
-            let was_on = self.space.outputs().any(|o| o.name() == name);
-            if enabled != was_on {
-                BackendData::set_output_enabled(self, name, enabled)?;
-            }
-            self.prefs.output_mut(name).enabled = Some(enabled);
-            if !enabled {
-                self.prefs_changed();
-                self.after_output_change(None);
-                return Ok(());
-            }
-        }
-        let output = self
-            .space
-            .outputs()
-            .find(|o| o.name() == name)
-            .cloned()
-            .ok_or_else(|| format!("no such output: {name}"))?;
-        if let Some(mode) = &change.mode {
-            let wl_mode = smithay::output::Mode {
-                size: (mode.width, mode.height).into(),
-                refresh: mode.refresh,
-            };
-            if !output.modes().contains(&wl_mode) {
-                return Err(format!(
-                    "{name} has no {}x{} @ {:.3} Hz mode",
-                    mode.width,
-                    mode.height,
         if object.contains_key("cursor_theme") || object.contains_key("cursor_size") {
             let (mut theme, mut size) = crate::cursor::configured();
             if let Some(value) = object.get("cursor_theme") {
@@ -1751,6 +1751,40 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             self.arm_idle_timer();
             self.idle_changed();
         }
+        self.prefs_changed();
+        Ok(())
+    }
+
+    /// The Displays settings: apply a change to one output and remember it.
+    pub fn set_output_config(&mut self, name: &str, change: &OutputChange) -> Result<(), String> {
+        if let Some(enabled) = change.enabled {
+            let was_on = self.space.outputs().any(|o| o.name() == name);
+            if enabled != was_on {
+                BackendData::set_output_enabled(self, name, enabled)?;
+            }
+            self.prefs.output_mut(name).enabled = Some(enabled);
+            if !enabled {
+                self.prefs_changed();
+                self.after_output_change(None);
+                return Ok(());
+            }
+        }
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == name)
+            .cloned()
+            .ok_or_else(|| format!("no such output: {name}"))?;
+        if let Some(mode) = &change.mode {
+            let wl_mode = smithay::output::Mode {
+                size: (mode.width, mode.height).into(),
+                refresh: mode.refresh,
+            };
+            if !output.modes().contains(&wl_mode) {
+                return Err(format!(
+                    "{name} has no {}x{} @ {:.3} Hz mode",
+                    mode.width,
+                    mode.height,
                     mode.refresh as f64 / 1000.0
                 ));
             }
@@ -1952,6 +1986,10 @@ pub trait Backend {
         (false, false)
     }
 
+    /// Reload the compositor's own pointer (the cursor it draws for a client
+    /// that only names a shape). Backends that never draw one do nothing.
+    fn set_cursor(&mut self, _theme: &str, _size: u32) {}
+
     /// Connected outputs that are switched off.
     fn disabled_outputs(&self) -> Vec<OutputInfo> {
         Vec::new()
@@ -1963,6 +2001,15 @@ pub trait Backend {
         Self: Sized + 'static,
     {
         Err("this backend cannot switch outputs off".into())
+    }
+
+    /// Switch every display off (DPMS) or light them again. Backends without
+    /// real displays do nothing, so the screensaver and the lock still work
+    /// in a nested session.
+    fn set_blanked(_state: &mut AnvilState<Self>, _blanked: bool)
+    where
+        Self: Sized + 'static,
+    {
     }
 }
 
@@ -1986,10 +2033,6 @@ pub fn transform_name(transform: smithay::utils::Transform) -> &'static str {
     use smithay::utils::Transform;
     match transform {
         Transform::Normal => "normal",
-    /// Reload the compositor's own pointer (the cursor it draws for a client
-    /// that only names a shape). Backends that never draw one do nothing.
-    fn set_cursor(&mut self, _theme: &str, _size: u32) {}
-
         Transform::_90 => "90",
         Transform::_180 => "180",
         Transform::_270 => "270",

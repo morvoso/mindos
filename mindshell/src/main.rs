@@ -9,6 +9,7 @@
 
 mod app;
 mod apps;
+mod auth;
 mod bridge;
 mod config;
 mod fs;
@@ -19,11 +20,12 @@ mod layout;
 mod mind;
 mod mindwatch;
 mod notify;
-mod polkit;
 mod pointer;
+mod polkit;
 mod portal;
 mod scheme;
 mod sleepwatch;
+mod system;
 mod tray;
 mod windows;
 

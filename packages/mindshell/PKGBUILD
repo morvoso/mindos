@@ -4,7 +4,7 @@
 # the user service and the session autostart entry.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=24
+pkgrel=34
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://mindos.local"
@@ -14,7 +14,7 @@ license=(MIT OFL-1.1)
 # mindos-base / mindos-session metapackages, and those cannot be listed here:
 # `makepkg -s` in the build box resolves dependencies from the Arch repos only.
 depends=(glibc gcc-libs gtk4 webkitgtk-6.0 gtk4-layer-shell glib2 libsoup3
-         breeze-icons hicolor-icon-theme polkit)
+         pam breeze-icons hicolor-icon-theme polkit)
 optdepends=('mindos-session: starts the shell from the session autostart directory'
             'mindos-theme: Orbitron in /usr/share/fonts/mindos and the system font rendering defaults (the UI bundle ships its own copies of Inter, JetBrains Mono and Orbitron)'
             'wireplumber: audio widget (wpctl)'
@@ -25,7 +25,7 @@ optdepends=('mindos-session: starts the shell from the session autostart directo
             'nvidia-utils: GPU statistics in the system monitor widgets'
             'papirus-icon-theme: alternative icon theme (icon_theme in shell.toml)')
 makedepends=(rust clang lld rsync esbuild pkgconf)
-backup=(etc/mindos/shell.toml)
+backup=(etc/mindos/shell.toml etc/pam.d/mindos-lock)
 options=(!lto !debug)
 
 _srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -66,6 +66,9 @@ package() {
   # systemd --user service and the session autostart entry that starts it.
   install -Dm644 "$srcdir/mindshell/data/mindos-shell.service" "$pkgdir/usr/lib/systemd/user/mindos-shell.service"
   install -Dm755 "$srcdir/mindshell/data/50-mindshell" "$pkgdir/etc/xdg/mindos/autostart/50-mindshell"
+
+  # What the lock screen checks the password against.
+  install -Dm644 "$srcdir/mindshell/data/mindos-lock.pam" "$pkgdir/etc/pam.d/mindos-lock"
 
   # The Settings app (the same binary with --app).
   for entry in mindos-settings mindos-displays mindos-wallpaper; do

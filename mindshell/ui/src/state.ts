@@ -122,6 +122,14 @@ export class Store {
       if (this.state.mind) this.state.mind.health = p;
       this.emit('mindHealth');
     });
+    bridge.on<VpnState>('vpn', (p) => {
+      this.state.vpn = p;
+      this.emit('vpn');
+    });
+    bridge.on<NetworkState>('network', (p) => {
+      this.state.network = p;
+      this.emit('network');
+    });
     bridge.on<AudioState>('audio', (p) => {
       this.state.audio = p;
       this.emit('audio');
@@ -136,14 +144,6 @@ export class Store {
       this.emit('shortcut');
     });
     bridge.on<LayoutModeInfo>('layout_mode', (p) => {
-    bridge.on<VpnState>('vpn', (p) => {
-      this.state.vpn = p;
-      this.emit('vpn');
-    });
-    bridge.on<NetworkState>('network', (p) => {
-      this.state.network = p;
-      this.emit('network');
-    });
       this.layoutMode = { mode: p.mode, label: p.label, modes: p.modes ?? this.layoutMode?.modes };
       this.emit('layoutMode');
     });

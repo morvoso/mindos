@@ -189,6 +189,21 @@ pub enum Request {
     /// Replay a click on an XEmbed tray icon (`icon` is the `id` from the `tray` event;
     /// `button` 1 left, 2 middle, 3 right, 4/5 wheel up/down, 6/7 left/right).
     TrayClick { icon: u32, button: u32 },
+    /// Where the session stands: the idle stage, the lock, the screensaver.
+    GetIdle,
+    /// Lock the session now. Only the shell's lock windows are drawn or
+    /// reachable until `unlock`.
+    Lock,
+    /// Unlock: the shell sends this once the password has checked out.
+    Unlock,
+    /// Take the screensaver away and light the displays again (the lock, if
+    /// any, stays up).
+    Wake,
+    /// Switch the displays off now.
+    Blank,
+    /// Hold the session awake — nothing idles while a client asks for this —
+    /// or let go of the hold. The hold ends with the connection.
+    InhibitIdle { on: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -541,6 +556,8 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         if let Some(token) = self.ipc.remove_client(id) {
             self.handle.remove(token);
         }
+        // A client that goes away stops holding the session awake.
+        self.set_idle_hold(id, false);
         debug!(client = id, "shell IPC client disconnected");
     }
 
@@ -679,6 +696,18 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         {
             return Reply::Err("not available on the login screen".into());
         }
+        if self.idle.locked
+            && matches!(
+                request,
+                Request::Mindbar { .. }
+                    | Request::Launch { .. }
+                    | Request::Terminal
+                    | Request::Overview { .. }
+                    | Request::Focus { .. }
+            )
+        {
+            return Reply::Err("the session is locked".into());
+        }
         match request {
             Request::Subscribe => {
                 self.ipc.subscribe(client);
@@ -773,6 +802,30 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 Err(err) => Reply::Err(err),
             },
             Request::TrayClick { icon, button } => self.tray_click(icon, button),
+
+            // ---- idling: the screensaver, the lock, switching the displays off
+            Request::GetIdle => Reply::Ok(self.idle_json()),
+            Request::Lock => {
+                self.set_locked(true);
+                Reply::Ok(self.idle_json())
+            }
+            Request::Unlock => {
+                self.set_locked(false);
+                self.wake_idle();
+                Reply::Ok(self.idle_json())
+            }
+            Request::Wake => {
+                self.wake_idle();
+                Reply::Ok(self.idle_json())
+            }
+            Request::Blank => {
+                self.blank_now();
+                Reply::Ok(self.idle_json())
+            }
+            Request::InhibitIdle { on } => {
+                self.set_idle_hold(client, on);
+                Reply::Ok(self.idle_json())
+            }
         }
     }
 

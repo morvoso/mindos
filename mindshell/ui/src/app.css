@@ -632,7 +632,7 @@ select option { background: var(--bg-1); color: var(--fg); }
 .aud.muted .vol-val { color: var(--fg-faint); }
 
 /* power */
-.power-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+.power-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 12px; }
 .power-btn {
   display: flex; flex-direction: column; align-items: center; gap: 10px; border-radius: var(--r);
   padding: 16px 4px 12px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--glass-border);
@@ -664,6 +664,7 @@ select option { background: var(--bg-1); color: var(--fg); }
 .frow textarea { width: 100%; }
 .frow select { height: 32px; padding-right: 26px; }
 .frow[hidden] { display: none; }
+.power-btn.power-lock:hover { color: var(--accent); border-color: rgb(var(--accent-a) / .5); }
 .frow-num { display: inline-flex; align-items: center; gap: 8px; }
 .frow-num input[type=range] { width: 110px; }
 .frow-num input[type=number] { width: 64px; height: 30px; padding: 0 8px; }
@@ -934,6 +935,67 @@ html[data-kind=greeter], html[data-kind=greeter] body { background: var(--void);
 .ntf-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 28px 0 22px; color: var(--fg-dim); font: 600 14px/1.2 var(--ui); }
 .ntf-empty .ic { color: var(--ok); }
 .ntf-empty .pop-hint { margin: 0; }
+/* ---------- the screensaver and the lock screen (kind=lock) ----------
+   One overlay per display. The screensaver has the whole window; while the
+   session is locked it dims to a background and the card comes up over it on
+   the primary display. The clock drifts slowly while the saver is up, so a
+   panel never holds the same pixels lit for hours. */
+
+html[data-kind=lock], html[data-kind=lock] body { background: #000; }
+.lock-window { position: absolute; inset: 0; overflow: hidden; color: var(--fg); background: var(--void); }
+.lock-saver { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; }
+.lock-saver[hidden] { display: none; }
+.lock-window > .g-vignette { z-index: 1; }
+.lock-window.carded .lock-saver { opacity: .3; transition: opacity .45s ease; }
+.lock-window[data-stage=blank] > * { opacity: 0; }
+
+.lock-clock { position: absolute; z-index: 2; top: 9vh; left: 0; right: 0; text-align: center; pointer-events: none; text-shadow: 0 2px 30px rgb(0 0 0 / .9); }
+/* While a game is playing the clock is small, out of the way at the bottom,
+   and drifts, so nothing burns into a panel. */
+.lock-clock.drifting { top: auto; bottom: 13vh; transition: transform 5.4s linear; }
+.lock-clock.drifting .gc-time { font-size: 40px; font-weight: 300; }
+.lock-clock.drifting .gc-ampm { font-size: 11px; }
+.lock-clock.drifting .gc-date { margin-top: 4px; font-size: 12px; }
+
+.lock-stage { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; justify-content: center; padding-top: 9vh; }
+.lock-stage[hidden] { display: none; }
+.lock-card {
+  /* No entrance animation here: the card is the only way back into the
+     session, so it is on screen the instant the window is. */
+  width: 360px; animation: none;
+}
+.lock-badge {
+  display: inline-flex; align-items: center; gap: 6px; margin-bottom: 14px; padding: 4px 12px 4px 9px; border-radius: 999px;
+  border: 1px solid rgb(var(--accent-a) / .35); background: rgb(var(--accent-a) / .1); color: var(--accent);
+  font: var(--t-eyebrow); letter-spacing: var(--track); text-transform: uppercase;
+}
+
+/* ---------- the screensaver picker (Settings > Screen) ---------- */
+.saver-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin: 4px 0 2px; }
+.saver-grid.off { opacity: .45; pointer-events: none; }
+.saver-tile {
+  padding: 0; overflow: hidden; text-align: left; border-radius: var(--r);
+  border: 1px solid var(--hairline); background: var(--bg-1);
+  transition: border-color var(--fast), box-shadow var(--fast), transform var(--fast);
+}
+.saver-tile:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.saver-tile.on { border-color: rgb(var(--accent-a) / .6); box-shadow: 0 0 0 1px rgb(var(--accent-a) / .25), 0 0 22px rgb(var(--accent-a) / .18); }
+.saver-preview { position: relative; aspect-ratio: 16 / 10; background: var(--void); }
+.saver-preview[data-empty=shuffle]::after,
+.saver-preview[data-empty=blank]::after {
+  content: '⇄'; position: absolute; inset: 0; display: grid; place-items: center;
+  font: 400 30px/1 var(--ui); color: var(--fg-faint);
+}
+.saver-preview[data-empty=blank]::after { content: '—'; }
+.saver-canvas, .saver-frozen { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
+.saver-frozen[hidden] { display: none; }
+.saver-name { padding: 8px 10px; font: var(--t-label); color: var(--fg-dim); }
+.saver-tile.on .saver-name { color: var(--fg); }
+.saver-chosen { font: var(--t-caption); color: var(--fg-faint); }
+.saver-full { position: fixed; inset: 0; z-index: 200; background: var(--void); cursor: pointer; animation: saver-in .2s ease both; }
+@keyframes saver-in { from { opacity: 0; } to { opacity: 1; } }
+.saver-hint { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center; font: var(--t-caption); color: var(--fg-faint); }
+
 .ntc-list, .ntf-list { display: flex; flex-direction: column; gap: 6px; }
 
 .ntc, .ntf {

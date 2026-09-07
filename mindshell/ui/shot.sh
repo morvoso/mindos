@@ -37,3 +37,13 @@ shot preview-auth        'kind=preview&popup=auth'
 shot toast               'kind=toast&id=toast&output=Virtual-1' 400,300
 # The login screen (kind=greeter) on a full output.
 shot greeter             'kind=greeter&arg=%7B%22primary%22%3Atrue%7D'
+# The lock screen and a screensaver or two (kind=lock).
+shot lock                'kind=lock&arg=%7B%22primary%22%3Atrue%7D&saver=breaker'
+shot saver-serpent       'kind=lock&arg=%7B%22primary%22%3Afalse%7D&stage=screensaver&saver=serpent'
+shot saver-volley        'kind=lock&arg=%7B%22primary%22%3Afalse%7D&stage=screensaver&saver=volley'
+shot saver-breaker       'kind=lock&arg=%7B%22primary%22%3Afalse%7D&stage=screensaver&saver=breaker'
+shot saver-drift         'kind=lock&arg=%7B%22primary%22%3Afalse%7D&stage=screensaver&saver=drift'
+shot saver-wave          'kind=lock&arg=%7B%22primary%22%3Afalse%7D&stage=screensaver&saver=wave'
+shot saver-lander        'kind=lock&arg=%7B%22primary%22%3Afalse%7D&stage=screensaver&saver=lander'
+shot saver-starfield     'kind=lock&arg=%7B%22primary%22%3Afalse%7D&stage=screensaver&saver=starfield'
+shot app-screen          'kind=app&id=settings&arg=%7B%22page%22%3A%22screen%22%7D' 1040,760

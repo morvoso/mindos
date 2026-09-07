@@ -290,6 +290,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         if keyboard.is_grabbed() {
             return;
         }
+        if self.idle.locked && layer.namespace() != crate::idle::LOCK_NAMESPACE {
+            // Locked: a panel or popup mapping behind the lock screen gets nothing.
+            return;
+        }
         let serial = crate::input_handler::next_serial();
         keyboard.set_focus(self, Some(KeyboardFocusTarget::LayerSurface(layer)), serial);
     }

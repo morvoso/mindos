@@ -36,6 +36,10 @@ pub enum Kind {
     /// Notification toasts: a small overlay in the top-right corner of the
     /// primary output, sized by the UI (`toast.fit`), hidden when empty.
     Toast,
+    /// The screensaver and the lock screen: one full-screen overlay per
+    /// output. The compositor knows these windows by their namespace
+    /// (`mindshell-lock`) and draws nothing else while the session is locked.
+    Lock,
 }
 
 impl Kind {
@@ -47,6 +51,7 @@ impl Kind {
             Kind::App => "app",
             Kind::Greeter => "greeter",
             Kind::Toast => "toast",
+            Kind::Lock => "lock",
         }
     }
 }
@@ -225,6 +230,22 @@ impl ShellWindow {
                 });
                 self.view.set_size_request(-1, -1);
             }
+            Kind::Lock => {
+                w.set_layer(Layer::Overlay);
+                for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+                    w.set_anchor(edge, true);
+                }
+                w.set_exclusive_zone(-1);
+                // The screensaver takes no keyboard at all — the compositor
+                // swallows the key that dismisses it. Once the session is
+                // locked, the window with the password field takes it.
+                w.set_keyboard_mode(if self.keyboard.get() {
+                    KeyboardMode::Exclusive
+                } else {
+                    KeyboardMode::None
+                });
+                self.view.set_size_request(-1, -1);
+            }
             Kind::Toast => {
                 w.set_layer(Layer::Overlay);
                 w.set_anchor(Edge::Top, true);
@@ -280,7 +301,7 @@ impl ShellWindow {
     /// Where this window's top-left corner sits on its output (logical px).
     pub fn origin(&self, edit_mode: bool) -> (i32, i32) {
         match self.kind {
-            Kind::Desktop | Kind::Popup | Kind::App | Kind::Greeter => (0, 0),
+            Kind::Desktop | Kind::Popup | Kind::App | Kind::Greeter | Kind::Lock => (0, 0),
             Kind::Toast => {
                 let (mw, _) = self.monitor_size();
                 (mw - TOAST_MARGIN - self.toast.get().0, TOAST_MARGIN)

@@ -1,5 +1,5 @@
 // The Settings app: Mind, updates, performance, games, developer, wallpaper,
-// displays, the desktop shell and about.
+// displays, the screen (screensaver and lock), the desktop shell and about.
 
 import { h } from '../dom';
 import { appFrame, setTitle } from './shared';
@@ -8,6 +8,7 @@ import { displaysPage } from './settings-displays';
 import { gamesPage } from './settings-games';
 import { mindPage } from './settings-mind';
 import { performancePage } from './settings-performance';
+import { screenPage } from './settings-screen';
 import { updatesPage } from './settings-updates';
 import { aboutPage, shellPage } from './settings-shell';
 import { wallpaperPage } from './settings-wallpaper';
@@ -22,6 +23,7 @@ const PAGES: { id: string; label: string; icon: string; render: PageFn }[] = [
   { id: 'developer', label: 'Developer', icon: 'code', render: devPage },
   { id: 'wallpaper', label: 'Wallpaper', icon: 'image', render: wallpaperPage },
   { id: 'displays', label: 'Displays', icon: 'display', render: displaysPage },
+  { id: 'screen', label: 'Screen', icon: 'moon', render: screenPage },
   { id: 'shell', label: 'Desktop', icon: 'layout', render: shellPage },
   { id: 'about', label: 'About', icon: 'info', render: aboutPage },
 ];

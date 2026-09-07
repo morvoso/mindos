@@ -65,8 +65,21 @@ use smithay::{
     },
 };
 
+/// Somebody touching the machine, as opposed to a device being plugged in.
+fn is_activity<B: InputBackend>(event: &InputEvent<B>) -> bool {
+    !matches!(
+        event,
+        InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } | InputEvent::Special(_)
+    )
+}
+
 impl<BackendData: Backend> AnvilState<BackendData> {
     fn process_common_key_action(&mut self, action: KeyAction) {
+        if self.idle.locked && !matches!(action, KeyAction::None | KeyAction::VtSwitch(_)) {
+            // Locked: nothing but switching virtual terminals.
+            debug!(?action, "ignored while the session is locked");
+            return;
+        }
         if self.config.session.kiosk && !matches!(action, KeyAction::None | KeyAction::VtSwitch(_)) {
             // The login screen: nothing starts a program, opens the Mind bar
             // or ends the compositor from the keyboard.
@@ -116,6 +129,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     window.close();
                 }
             }
+            KeyAction::LockScreen => self.set_locked(true),
             KeyAction::ToggleFullscreen => self.toggle_fullscreen_focused(),
             KeyAction::ToggleMaximize => self.toggle_maximize_focused(),
             KeyAction::CycleWindow => self.cycle_windows(),
@@ -182,6 +196,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     cloned
                 });
                 if let Some(surface) = surface {
+                    if self.idle.locked && surface.namespace() != crate::idle::LOCK_NAMESPACE {
+                        // Locked: only the lock screen may take the keyboard.
+                        continue;
+                    }
                     keyboard.set_focus(self, Some(surface.into()), serial);
                     keyboard.input::<(), _>(self, keycode, state, serial, time, |data, _, handle| {
                         // Everything is forwarded to the exclusive layer, but a Super
@@ -429,6 +447,28 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         let output_geo = self.space.output_geometry(output).unwrap();
         let layers = layer_map_for_output(output);
 
+        if self.idle.locked {
+            // Locked: the pointer reaches the lock screen and nothing else.
+            return layers
+                .layers_on(WlrLayer::Overlay)
+                .rev()
+                .filter(|l| l.namespace() == crate::idle::LOCK_NAMESPACE)
+                .find_map(|layer| {
+                    let layer_loc = layers.layer_geometry(layer)?.loc;
+                    layer
+                        .surface_under(
+                            pos - output_geo.loc.to_f64() - layer_loc.to_f64(),
+                            WindowSurfaceType::ALL,
+                        )
+                        .map(|(surface, loc)| {
+                            (
+                                PointerFocusTarget::from(surface),
+                                (loc + layer_loc + output_geo.loc).to_f64(),
+                            )
+                        })
+                });
+        }
+
         let mut under = None;
         if let Some((surface, loc)) = output
             .user_data()
@@ -529,6 +569,9 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 #[cfg(feature = "winit")]
 impl<BackendData: Backend> AnvilState<BackendData> {
     pub fn process_input_event_windowed<B: InputBackend>(&mut self, event: InputEvent<B>, output_name: &str) {
+        if is_activity(&event) && self.note_activity() {
+            return;
+        }
         match event {
             InputEvent::Keyboard { event } => match self.keyboard_key_to_action::<B>(event) {
                 KeyAction::ScaleUp => {
@@ -648,6 +691,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 #[cfg(feature = "udev")]
 impl AnvilState<UdevData> {
     pub fn process_input_event<B: InputBackend>(&mut self, dh: &DisplayHandle, event: InputEvent<B>) {
+        // The first key or click after the screen went to sleep only wakes it:
+        // it must not reach the window (or the password field) underneath.
+        if is_activity(&event) && self.note_activity() {
+            return;
+        }
         match event {
             InputEvent::Keyboard { event, .. } => match self.keyboard_key_to_action::<B>(event) {
                 #[cfg(feature = "udev")]
@@ -1369,6 +1417,8 @@ enum KeyAction {
     /// Open the configured terminal
     Terminal,
     CloseWindow,
+    /// Lock the session now (Super+L).
+    LockScreen,
     ToggleFullscreen,
     ToggleMaximize,
     CycleWindow,
@@ -1413,6 +1463,8 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
         Some(KeyAction::CloseWindow)
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::f {
         Some(KeyAction::ToggleFullscreen)
+    } else if modifiers.logo && !modifiers.shift && keysym == Keysym::l {
+        Some(KeyAction::LockScreen)
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::m {
         Some(KeyAction::ToggleMaximize)
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::w {

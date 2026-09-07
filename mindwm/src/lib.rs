@@ -16,6 +16,7 @@ pub mod mind;
 pub mod mindbar;
 pub mod text;
 pub mod focus;
+pub mod idle;
 pub mod input_handler;
 pub mod ipc;
 pub mod layout;

@@ -23,13 +23,15 @@ file is the host's operating notes.
 | `src/mind.rs` | client for the Mind daemon socket (`/run/mindos/mind.sock`): `mind.request` pass-through, `models` / `download` events |
 | `src/fs.rs` | the desktop folder: directory listings with MIME types and thumbnails, trash, `gio open`, wallpaper folders |
 | `src/portal.rs` | the Wallpaper portal backend (`org.freedesktop.impl.portal.Wallpaper` on `org.freedesktop.impl.portal.desktop.mindos`): "Set as Background" in Files / Image Viewer writes the layout's `desktop.wallpaper` |
+| `src/auth.rs` | the lock screen's password check: PAM (service `mindos-lock`) through libpam, plus the account's name and avatar |
+| `src/sleepwatch.rs` | logind watcher: a `delay` sleep inhibitor and `PrepareForSleep`, so the screen is locked before the machine suspends |
 | `src/tray.rs` | StatusNotifierItem/DBusMenu through `system-tray` on a tokio thread; pixmaps as PNG |
 | `src/apps.rs` | desktop-entry index (XDG data dirs + Flatpak exports), Exec cleaning, detached spawn |
 | `src/icons.rs` | icon lookup (theme, `IconThemePath`, pixmaps), percent-encoding |
 | `src/system.rs` | `systemctl` power, `/proc` statistics, `nvidia-smi`, `wpctl`, `nmcli`, sysfs battery |
 | `src/layout.rs` | `layout.json` model, validation (`sanitized`), atomic save, reset |
 | `src/config.rs` | `shell.toml` model and overlay of `/etc` + `~/.config` |
-| `data/` | default `layout.json`, `shell.toml`, `mindos-shell.service`, `50-mindshell` autostart, the `mindos-settings` / `mindos-displays` / `mindos-wallpaper` desktop entries, `mindos.portal` and the D-Bus activation file of the Wallpaper portal backend |
+| `data/` | default `layout.json`, `shell.toml`, `mindos-shell.service`, `50-mindshell` autostart, the `mindos-settings` / `mindos-displays` / `mindos-wallpaper` desktop entries, `mindos-lock.pam` (the lock screen's PAM service), `mindos.portal` and the D-Bus activation file of the Wallpaper portal backend |
 | `ui/` | the TypeScript UI (built by `ui/build.sh <outdir>` with esbuild) |
 
 ## Runtime model

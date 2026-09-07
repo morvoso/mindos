@@ -343,6 +343,33 @@ impl Backend for UdevData {
             .collect()
     }
 
+    /// Switch every display off with DPMS, or light them again. Clearing a
+    /// DRM surface stops its page flips, so the render loop for that output
+    /// stops with it; lighting up has to kick a frame to start it again.
+    fn set_blanked(state: &mut AnvilState<Self>, blanked: bool) {
+        if blanked {
+            for device in state.backend_data.backends.values_mut() {
+                for surface in device.surfaces.values_mut() {
+                    if let Err(err) = surface.drm_output.with_compositor(|c| c.clear()) {
+                        warn!(?err, "cannot switch a display off");
+                    }
+                }
+            }
+            return;
+        }
+        let nodes: Vec<DrmNode> = state.backend_data.backends.keys().copied().collect();
+        for node in nodes {
+            if let Some(device) = state.backend_data.backends.get_mut(&node) {
+                for surface in device.surfaces.values_mut() {
+                    surface.drm_output.reset_buffers();
+                }
+            }
+            state
+                .handle
+                .insert_idle(move |data| data.render(node, None, data.clock.now()));
+        }
+    }
+
     fn set_output_enabled(state: &mut AnvilState<Self>, name: &str, enabled: bool) -> Result<(), String> {
         if enabled {
             let found = state.backend_data.backends.iter_mut().find_map(|(node, device)| {
@@ -1711,6 +1738,12 @@ impl AnvilState<UdevData> {
     fn render_surface(&mut self, node: DrmNode, crtc: crtc::Handle, frame_target: Time<Monotonic>) {
         profiling::scope!("render_surface", &format!("{crtc:?}"));
 
+        if self.idle.stage == crate::idle::Stage::Blank {
+            // The displays are off: no frame, no page flip, no vblank. The
+            // loop starts again from `set_blanked`.
+            return;
+        }
+
         let output = if let Some(output) = self.space.outputs().find(|o| {
             o.user_data().get::<UdevOutputId>()
                 == Some(&UdevOutputId {
@@ -1740,6 +1773,11 @@ impl AnvilState<UdevData> {
 
         let start = Instant::now();
 
+        // The shape the client asked for (wp_cursor_shape_v1), or the arrow.
+        let icon = match &self.cursor_status {
+            CursorImageStatus::Named(icon) => *icon,
+            _ => CursorIcon::Default,
+        };
         // TODO get scale from the rendersurface when supporting HiDPI
         let (index, frame) = self
             .backend_data
@@ -1767,11 +1805,6 @@ impl AnvilState<UdevData> {
                     &frame.pixels_rgba,
                     Fourcc::Argb8888,
                     (frame.width as i32, frame.height as i32),
-        // The shape the client asked for (wp_cursor_shape_v1), or the arrow.
-        let icon = match &self.cursor_status {
-            CursorImageStatus::Named(icon) => *icon,
-            _ => CursorIcon::Default,
-        };
                     1,
                     Transform::Normal,
                     None,
@@ -1792,6 +1825,7 @@ impl AnvilState<UdevData> {
             self.show_window_preview,
             &mut self.mindbar,
             self.config.theme.show_wordmark,
+            self.idle.locked,
         );
         let reschedule = match result {
             Ok((has_rendered, states)) => {
@@ -1886,6 +1920,7 @@ fn render_surface<'a>(
     show_window_preview: bool,
     mindbar: &mut crate::mindbar::MindBar,
     show_wordmark: bool,
+    locked: bool,
 ) -> Result<(bool, RenderElementStates), SwapBuffersError> {
     let output_geometry = space.output_geometry(output).unwrap();
     let scale = Scale::from(output.current_scale().fractional_scale());
@@ -1979,7 +2014,7 @@ fn render_surface<'a>(
         .collect();
 
     let (elements, clear_color) =
-        output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop);
+        output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop, locked);
 
     let frame_mode = if surface.disable_direct_scanout {
         FrameFlags::empty()

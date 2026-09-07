@@ -198,6 +198,7 @@ Every window loads `mindos://shell/app/index.html?kind=<kind>&id=<id>&output=<na
 window stacked on one page: it is what `make shell-preview` screenshots in
 Chromium for design work without a compositor.
 
+| `lock` (one per output, while the screensaver is up or the session is locked) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output while locked and `none` otherwise; namespace `mindshell-lock`, which is how the compositor tells it apart | the screensaver and the lock screen. The compositor creates the need for it (its `idle` event) and enforces it: while the session is locked nothing but these surfaces is drawn or reachable |
 ## The bridge (`window.mindos`)
 
 Injected into every view before any script runs.
@@ -295,6 +296,12 @@ data so the UI can be developed in Chromium/Firefox.
 | `mind` | `{ connected, ready, model, daemon, sleeping, notices, updates, health }` |
 | `mind_notices` | `{ notices, added? }` whenever a Mind notice arrives, changes or goes (`added` is the new one; the toast window shows it) |
 | `mind_updates` | the mindd `updates` status (`{ checked_at, packages: [{ name, from, to, tag }], news, risk, summary, warnings, manual_intervention, reboot, assessed_by_model, assessing, checking, applying, auto_apply, last_update, error }`) whenever it changes |
+| `lock.info` | → `{ name, display, avatar, host, idle }` — the account the lock screen unlocks, and where the session stands |
+| `lock.state` | → the `idle` payload (`{ stage, locked, inhibited, saver }`) |
+| `lock.unlock` | `{ password }` → `{ ok }`, or `{ ok: false, error }` with PAM's own message. Checked against the `mindos-lock` PAM service on a thread of its own; one attempt at a time |
+| `lock.now` | lock the session now (the power menu, Settings › Screen, Super + L) |
+| `lock.wake` | wake the screen without unlocking |
+| `lock.blank` | switch the displays off now |
 | `mind_health` | `{ checked_at, findings: [{ id, level, title, body, actions }] }` after a health check |
 | `notify` | `{ items, dnd, added?, closed? }` on every notification change (`added`: the new notification, `closed`: the id that went) |
 | `vpn.list` | → `{ available, tunnels: [{ id, name, iface?, address?, endpoint?, peers, active, activating, autoconnect }] }` — every NetworkManager connection of type `wireguard`, active ones first (`id` is the connection UUID; `available` is false without nmcli) |
@@ -322,6 +329,9 @@ serves the bundle's own `fonts/` first and falls back to
 `/usr/share/fonts/mindos` and the system font directories.
 
 ### Host implementation notes
+| `config` | `{ config }` when a host setting changed while the shell runs — today the icon theme, when the desktop's icon pack changes |
+| `lock` | `{ stage: "active" \| "screensaver" \| "blank", locked, inhibited, saver }` whenever the compositor's idle state changes (also in `shell.state.lock`) |
+| `game` | `{ running }` when GameMode starts or ends a game (the host watches `/run/mindos/perf/game`); the UI goes quiet — `:root.quiet`, no animations, samplers slowed five times, the desktop's stopped |
 
 What `mindshell` (the Rust host in `mindshell/`) does beyond the tables above:
 
@@ -411,7 +421,12 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `quit` | | end the session |
 | `get_layout_mode` | | `{ mode, label, modes: [{ mode, label, description }] }` |
 | `set_layout_mode` / `cycle_layout_mode` | `mode` / | the new `{ mode, label }`; every window is re-arranged and the choice is persisted |
-| `get_prefs` / `set_prefs` | / `prefs` (partial) | `{ prefs }`: `layout_mode`, `mind_show_tools` (show the Mind's tool lines), `primary_output`, `outputs: { name: { enabled, mode: "WxH@mHz", scale, position, transform, vrr } }`, stored in `$XDG_STATE_HOME/mindos/mindwm.json` |
+| `get_prefs` / `set_prefs` | / `prefs` (partial) | `{ prefs }`: `layout_mode`, `mind_show_tools` (show the Mind's tool lines), `primary_output`, `outputs: { name: { enabled, mode: "WxH@mHz", scale, position, transform, vrr } }`, `idle: { screensaver, saver, lock, blank, lock_on_blank, lock_on_sleep, stay_awake_when_busy }` (seconds, `0` = never), stored in `$XDG_STATE_HOME/mindos/mindwm.json` |
+| `get_idle` | | `{ stage, locked, inhibited, saver }` — where the session stands (same shape as the `idle` event) |
+| `lock` / `unlock` | | lock or unlock the session. Locking drops the keyboard focus and closes the Mind bar; from then on only `mindshell-lock` surfaces are drawn and reachable, and every request that would start or focus a program is refused with `the session is locked` |
+| `wake` | | wake the screen (undo the screensaver or blanking) without touching the lock |
+| `blank` | | switch the displays off now (and lock, when *Lock when the displays turn off* is set) |
+| `inhibit_idle` | `on` | hold the session awake while this client is connected — what the shell does while a game runs. Dropped with the connection |
 | `tray_click` | `icon` (the `id` from the `tray` event), `button` (1 left, 2 middle, 3 right, 4/5 wheel up/down, 6/7 wheel left/right) | replays the click on the XEmbed icon at the pointer's position, so the program's own menu opens under the cursor |
 | `set_output` | `name`, then any of `width` + `height` + `refresh` (mHz), `scale`, `position: [x, y]`, `transform`, `enabled`, `vrr`, `primary` | applies the mode/scale/position/rotation/VRR/primary change, persists it and sends an `outputs` event |
 
@@ -436,6 +451,7 @@ or 4 MiB of unread events disconnects the client.
 
 ## Development
 
+| `idle` | `stage`: `active` \| `screensaver` \| `blank`, `locked`, `inhibited` (something is holding the session awake), `saver` (the chosen screensaver). Sent whenever any of it changes |
 ```sh
 # UI only, in a browser with the mock host
 cd mindshell/ui && npm install && npm run dev        # esbuild --watch → dist/
@@ -572,6 +588,58 @@ runs `mindos-greeter` (`mindos-session`) on VT 1 as the unprivileged
 `/etc/mindos/greeter/mindwm.toml` on top of the normal configuration
 (`[session] kiosk = true`: no Mind bar, no launcher, no shortcut or IPC
 request that starts a program; `[startup].exec = ["mindshell --app greeter"]`),
+## The screensaver and the lock screen
+
+![The lock screen over a running screensaver](img/lock.png)
+
+The clock is the compositor's (see *Idling* in `docs/COMPOSITOR.md`): it sees
+every key, click and gesture, so it is the only process that can say when the
+machine was last touched. It counts three deadlines from that moment — the
+screensaver, the lock and the displays — and reports where the session stands
+as the `idle` event, which the host relays to every page as `lock`.
+
+The host answers that event by creating one `lock` window per display, or
+taking them all away again. On the first display, while the session is
+locked, that window takes the keyboard and shows the card: the clock, the
+account's avatar and name, and the password field. Everything else — the
+other displays, and every display while the screensaver is merely up — shows
+the screensaver and a small clock that drifts slowly around the screen so
+nothing burns into a panel. `lock.unlock` checks the password with PAM
+(`/etc/pam.d/mindos-lock`, which includes `system-auth`, so a fingerprint
+reader or a smart card works here too) on a thread of its own, and asks the
+compositor to unlock when it is the right one. A wrong password shakes the
+card and says what PAM said.
+
+The shell also holds a logind *delay* inhibitor (`src/sleepwatch.rs`): on
+`PrepareForSleep` it locks the session and only then lets go, so the machine
+never suspends with the desktop still on screen. And while a game is running
+it holds the session awake (`inhibit_idle`), as does any program that takes a
+`zwp_idle_inhibitor_v1` — a video player, say — while *Stay awake while
+something is playing* is set.
+
+**The screensavers** (`ui/src/savers/`) are small games that play themselves,
+drawn on a canvas in the shell's own colours: Serpent (a line that eats and
+grows), Volley (two bats and a ball), Breaker (a wall of blocks), Drift (a
+ship among rocks), Wave (drones in formation), Lander (setting a craft down
+on a pad) and Starfield. They are originals — the ideas are as old as home
+computers, the code and the artwork are ours, and nothing here borrows a name,
+a character or a shape from a game anyone owns. `shuffle` picks a different
+one every four minutes; `blank` draws nothing at all. Each module exports
+`{ id, name, description, start(canvas) }` and returns the function that stops
+it; `savers/engine.ts` owns the frame loop, the palette and the score line.
+
+![Settings, the Screen page](img/settings-screen.png)
+
+**Settings › Screen** writes the timings straight into the compositor's
+preferences (`prefs.set`, the `idle` object), so they take effect at once and
+survive a restart: how long before the screensaver, before the lock and before
+the displays switch off, which screensaver runs (the tiles animate as the
+pointer passes over them, and *Preview full screen* runs the chosen one over
+the whole window), whether locking follows the displays and the machine going
+to sleep, and whether something playing holds it all off. *Lock now* and Super
++ L do the same thing; the power menu has a Lock button that needs only one
+click.
+
 so the login screen is the same compositor and the same UI stack as the
 desktop, in the same theme. greetd does the authenticating (PAM, through
 `/etc/pam.d/greetd`); the greeter only relays the conversation over
