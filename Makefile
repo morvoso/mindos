@@ -46,7 +46,7 @@ repo:
 	cp build/packages/*.pkg.tar.zst $(REPO)/
 	$(BUILDBOX) bash -c 'cd $(REPO) && repo-add -q mindos.db.tar.zst *.pkg.tar.zst'
 
-# The model bundled on the ISO: Qwen3.5 4B, Q4_K_M (~2.7 GB, Apache-2.0), plus its licence.
+# The model bundled on the ISO: Qwen3.5 2B, Q4_K_M (~1.2 GB, Apache-2.0), plus its licence.
 # Matches the "recommended" entry of packages/mindos-mind/model-catalog.json.
 MODEL_FILE := Qwen3.5-4B-Q4_K_M.gguf
 MODEL_URL  := https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/$(MODEL_FILE)

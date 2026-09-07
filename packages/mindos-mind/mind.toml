@@ -3,7 +3,7 @@
 
 [model]
 # GGUF file to serve, or "auto": default.gguf in models_dir, else the largest
-# GGUF that fits in ~80% of GPU memory. MindOS ships Qwen3.5 4B (Apache-2.0);
+# GGUF that fits in ~80% of GPU memory. MindOS ships Qwen3.5 2B (Apache-2.0);
 # Settings › Mind switches models and downloads others from the catalog, and
 # its choice is kept in <state_dir>/mind-prefs.json, which overrides this.
 path = "auto"

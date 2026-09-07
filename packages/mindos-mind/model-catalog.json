@@ -21,7 +21,8 @@
     "license": "Apache-2.0",
     "license_url": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE",
     "min_vram_gb": 2,
-    "description": "Small and quick. A good choice for machines without a discrete GPU."
+    "recommended": true,
+    "description": "The MindOS default: quick to load, light on memory, and good enough at tool calling for everyday questions and system work."
   },
   {
     "id": "qwen3.5-4b",
@@ -33,8 +34,7 @@
     "license": "Apache-2.0",
     "license_url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE",
     "min_vram_gb": 4,
-    "recommended": true,
-    "description": "The MindOS default: reliable tool calling, fits beside a running game on any 8 GB GPU."
+    "description": "More reliable at tool calling and longer answers than the default, and still fits beside a running game on an 8 GB GPU."
   },
   {
     "id": "qwen3.5-4b-hq",

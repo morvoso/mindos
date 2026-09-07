@@ -3,7 +3,7 @@ post_install() {
   systemd-tmpfiles --create mindos.conf >/dev/null 2>&1 || true
   cat <<'MSG'
 ==> MindOS Mind installed.
-    * The ISO ships Qwen3.5 4B in /var/lib/mindos/models/ (Apache-2.0). Any
+    * The ISO ships Qwen3.5 2B in /var/lib/mindos/models/ (Apache-2.0). Any
       GGUF placed there works too (default.gguf wins, else the largest one that
       fits the GPU); then: systemctl enable --now mindd
     * Settings > Mind (or `mind models` / `mind model` / `mind download`) switches

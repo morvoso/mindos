@@ -46,7 +46,8 @@ function catalogEntry(id: string, name: string, file: string, size: number, para
 
 const CATALOG: CatalogEntry[] = [
   catalogEntry('Qwen3.5-0.8B-GGUF', 'Qwen3.5 0.8B', 'Qwen3.5-0.8B-Q8_0.gguf', 0.9 * GIB, '0.8B · Q8_0', 'Tiny and instant. Fine for launching apps and simple questions; runs on anything.', 2),
-  catalogEntry('Qwen3.5-4B-GGUF', 'Qwen3.5 4B', 'Qwen3.5-4B-Q4_K_M.gguf', 2.6 * GIB, '4B · Q4_K_M', 'The default: quick, good at following instructions and using tools. Needs about 4 GB of video memory.', 4, true),
+  catalogEntry('Qwen3.5-2B-GGUF', 'Qwen3.5 2B', 'Qwen3.5-2B-Q4_K_M.gguf', 1.2 * GIB, '2B · Q4_K_M', 'The default: loads in a second, light on memory, good enough at following instructions and using tools.', 2, true),
+  catalogEntry('Qwen3.5-4B-GGUF', 'Qwen3.5 4B', 'Qwen3.5-4B-Q4_K_M.gguf', 2.6 * GIB, '4B · Q4_K_M', 'More reliable with tools and longer answers. Needs about 4 GB of video memory.', 4),
   catalogEntry('Qwen3.5-9B-GGUF', 'Qwen3.5 9B', 'Qwen3.5-9B-Q4_K_M.gguf', 5.6 * GIB, '9B · Q4_K_M', 'Noticeably smarter answers and better code; still fast on a mid-range GPU.', 8),
   catalogEntry('Qwen3.5-27B-GGUF', 'Qwen3.5 27B', 'Qwen3.5-27B-Q4_K_M.gguf', 16.5 * GIB, '27B · Q4_K_M', 'The big one. Best answers, needs a 24 GB card to stay fully on the GPU.', 20),
 ];
@@ -318,7 +319,7 @@ export function installMock(): MindosGlobal {
     perf.nvidia = perf.effective === 'performance';
     emit('mind', { ...mind, sleeping: true });
   }, 40000);
-  const mind = { connected: true, ready: false, model: 'Qwen3.5-4B-Q4_K_M.gguf', daemon: true, sleeping: false, notices, updates, health };
+  const mind = { connected: true, ready: false, model: 'Qwen3.5-2B-Q4_K_M.gguf', daemon: true, sleeping: false, notices, updates, health };
   const popups = new Set<string>();
   let nextWin = 7;
   const t0 = Date.now();
@@ -367,7 +368,7 @@ export function installMock(): MindosGlobal {
 
   // ----- Mind (mindd) state -----
   const installed: ModelEntry[] = [
-    { file: 'Qwen3.5-4B-Q4_K_M.gguf', path: `${MODELS_DIR}/Qwen3.5-4B-Q4_K_M.gguf`, size: 2.6 * GIB, active: true },
+    { file: 'Qwen3.5-2B-Q4_K_M.gguf', path: `${MODELS_DIR}/Qwen3.5-2B-Q4_K_M.gguf`, size: 1.2 * GIB, active: true },
     { file: 'Qwen3.5-0.8B-Q8_0.gguf', path: `${MODELS_DIR}/Qwen3.5-0.8B-Q8_0.gguf`, size: 0.9 * GIB, active: false },
   ];
   const models: ModelsInfo = {

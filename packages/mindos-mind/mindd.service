@@ -11,8 +11,12 @@ Restart=on-failure
 RestartSec=3
 Environment=HOME=/root
 Environment=LC_ALL=C.UTF-8
-# Inference yields to games and interactive work.
+# Inference yields to games and interactive work. The model is read from disk
+# the moment the daemon starts, which is also when the desktop is starting:
+# the lower I/O priority keeps those gigabytes out of the session's way.
 Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 KillMode=mixed
 TimeoutStopSec=20
 
