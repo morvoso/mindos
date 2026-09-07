@@ -463,6 +463,11 @@ pub fn user_name() -> String {
     std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "user".into())
 }
 
+/// The user's home directory, from $HOME.
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from).filter(|p| p.is_absolute())
+}
+
 pub fn host_name() -> String {
     std::fs::read_to_string("/etc/hostname")
         .map(|s| s.trim().to_string())

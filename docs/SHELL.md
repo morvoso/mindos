@@ -550,6 +550,8 @@ message with the attempt count (three tries, as elsewhere); `polkit.cancel`,
 Escape or a click beside the dialog dismisses the request, and pkexec exits
 126. One dialog at a time: further requests wait their turn.
 
+`developer` (detected toolchains, containers, SSH, groups and kernel limits,
+git identity; every privileged action runs through `pkexec`),
 The Mind and the Settings app use it through the `shell.run` allow-list
 (`pkexec systemctl enable --now docker.service`, `pkexec usermod -aG docker …`)
 instead of hopping through a terminal with `sudo`. Everything that has to work

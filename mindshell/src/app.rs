@@ -39,6 +39,32 @@ const RETIRE_GRACE: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Default, Clone)]
 pub struct Options {
+/// Settings > Developer: the services, groups and packages its buttons may
+/// act on. Each command still goes through pkexec, so the user sees and
+/// authorises it; these lists fix the set the UI can request.
+const DEV_UNITS: &[&str] = &["docker.service", "sshd.service"];
+const DEV_GROUPS: &[&str] = &["docker", "kvm", "libvirt", "uucp", "wireshark"];
+const DEV_PACKAGES: &[&str] = &[
+    "rustup", "go", "nodejs", "npm", "deno", "bun", "python", "python-pip", "uv",
+    "jdk-openjdk", "dotnet-sdk", "zig", "ruby", "php", "lua", "elixir", "ghc",
+    "crystal", "nim", "julia", "dart", "r", "kotlin", "perl",
+    "docker", "docker-compose", "podman", "distrobox", "openssh",
+];
+
+/// `~/.ssh/id_ed25519`: the one key path the Developer page may create.
+fn is_ssh_key_path(path: &str) -> bool {
+    system::home_dir().map(|h| h.join(".ssh/id_ed25519")).is_some_and(|p| p == PathBuf::from(path))
+}
+
+/// A public key inside `~/.ssh`, so the page can show it for copying.
+fn is_ssh_pub_path(path: &str) -> bool {
+    let p = PathBuf::from(path);
+    let Some(dir) = system::home_dir().map(|h| h.join(".ssh")) else { return false };
+    p.parent() == Some(dir.as_path())
+        && p.extension().is_some_and(|e| e == "pub")
+        && !path.contains("..")
+}
+
     pub devtools: bool,
     pub ui_dir: Option<PathBuf>,
     /// `--app NAME`: one ordinary window running that UI app instead of the shell.
@@ -1467,8 +1493,22 @@ impl App {
             ["checkupdates", ..] => !sudo,
             ["nvidia-smi", ..] => !sudo,
             // Settings > Developer, through the authentication dialog.
-            ["pkexec", "systemctl", "enable", "--now", "docker.service"] => !sudo,
-            ["pkexec", "usermod", "-aG", "docker", who] => !sudo && *who == system::user_name(),
+            ["pkexec", "systemctl", verb, "--now", unit] => {
+                !sudo && matches!(*verb, "enable" | "disable") && DEV_UNITS.contains(unit)
+            }
+            ["pkexec", "usermod", "-aG", group, who] => {
+                !sudo && DEV_GROUPS.contains(group) && *who == system::user_name()
+            }
+            // A toolchain from the Developer page's catalogue. --repo-only is
+            // part of the pattern, not an argument the UI supplies, so this
+            // path never reaches Flathub or the AUR.
+            ["pkexec", "mindos-pkg", "install", "--repo-only", pkgs @ ..] => {
+                !sudo && !pkgs.is_empty() && pkgs.iter().all(|p| DEV_PACKAGES.contains(p))
+            }
+            // Unprivileged, run as the user: the SSH key and the git identity.
+            ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", _, "-f", path] => !sudo && is_ssh_key_path(path),
+            ["cat", path] => !sudo && is_ssh_pub_path(path),
+            ["git", "config", "--global", key, _] => !sudo && matches!(*key, "user.name" | "user.email"),
             _ => false,
         };
         if !allowed {

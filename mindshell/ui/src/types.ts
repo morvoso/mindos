@@ -402,9 +402,24 @@ export interface DlssKind {
 
 /* ----- developer stack (mindos-dev-setup) ----- */
 
+export interface DevTool {
+  name: string;
+  cmd: string;
+  version: string;
+}
+
 export interface DevStatus {
-  tools: { name: string; version: string | null }[];
-  docker: { active: boolean; enabled: boolean; member: boolean };
+  /** Languages found on the machine, whatever they are. Installed only. */
+  toolchains: DevTool[];
+  /** Build, debug and container tools, installed only. */
+  tools: DevTool[];
+  docker: { installed: boolean; active: boolean; enabled: boolean; member: boolean };
+  podman: { installed: boolean };
+  ssh: { installed: boolean; active: boolean; enabled: boolean; port: number | null; new_key: string; keys: { path: string; type: string; comment: string }[] };
+  groups: { name: string; help: string; member: boolean }[];
+  limits: { inotify_watches: number | null; inotify_instances: number | null; perf_paranoid: number | null };
+  git: { name: string | null; email: string | null };
+  user: string;
 }
 
 export interface ShellConfig {

@@ -1,13 +1,18 @@
 #!/bin/bash
-# mindos-dev-setup — one-time developer setup for MindOS. Run as your own user.
+# mindos-dev-setup: developer setup for MindOS. Run as a normal user.
 #
-#   mindos-dev-setup                 Rust toolchain, Docker, VS Code defaults, git identity
-#   mindos-dev-setup --status        tool versions and Docker state
-#   mindos-dev-setup --status --json the same as JSON (used by Settings › Developer)
+#   mindos-dev-setup                 per-user setup: Rust toolchain, Docker, editor and git defaults
+#   mindos-dev-setup --status        report installed toolchains, tools, groups and services
+#   mindos-dev-setup --status --json the same report as JSON (used by Settings › Developer)
 #
-# Every step is skipped when it is already done, so the command can be run
-# again at any time. sudo is used only for Docker (the service and the group)
-# and says so before asking for a password.
+# The mindos-dev package installs the build tools. This command performs the
+# steps a package cannot: per-user toolchains, service state, group membership
+# and configuration files in the home directory. It reports every toolchain
+# it detects, whether or not mindos-dev installed it.
+#
+# Steps that are already complete are skipped, so the command can be run
+# again at any time. sudo is used only where root is required, and each such
+# step is announced before the password prompt.
 
 set -u
 
@@ -16,7 +21,7 @@ for a in "$@"; do
   case $a in
     --status) STATUS=1;;
     --json) JSON=1;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "mindos-dev-setup: unknown option $a" >&2; exit 2;;
   esac
 done
@@ -27,49 +32,168 @@ skip() { printf '\033[2m·\033[0m %s\n' "$*"; }
 step() { printf '\033[36m→\033[0m %s\n' "$*"; }
 warn() { printf '\033[35m!\033[0m %s\n' "$*" >&2; }
 
-# ----- status ---------------------------------------------------------------
-TOOLS=(rustc cargo node npm python go docker podman)
+# ----- toolchains -----------------------------------------------------------
+# label|command|version arguments. Wider than the set mindos-dev installs;
+# only toolchains that are present are reported.
+TOOLCHAINS=(
+  'C/C++|gcc|--version'          'Clang|clang|--version'
+  'Rust|rustc|--version'         'Go|go|version'
+  'Node.js|node|--version'       'Deno|deno|--version'
+  'Bun|bun|--version'            'Python|python|--version'
+  'Java|java|-version'           '.NET|dotnet|--version'
+  'Zig|zig|version'              'Ruby|ruby|--version'
+  'PHP|php|--version'            'Perl|perl|--version'
+  'Lua|lua|-v'                   'Elixir|elixir|--version'
+  'Haskell|ghc|--version'        'Swift|swift|--version'
+  'Kotlin|kotlinc|-version'      'Crystal|crystal|--version'
+  'Nim|nim|--version'            'Julia|julia|--version'
+  'Dart|dart|--version'          'R|R|--version'
+)
 
-tool_version() { # first x.y[.z] token of `$1 --version` (go: `go version`), empty if missing
-  local out
-  have "$1" || return 0
-  case $1 in
-    go) out=$(go version 2>/dev/null);;
-    *)  out=$(timeout 5 "$1" --version 2>/dev/null | head -n1);;
-  esac
-  grep -oE '[0-9]+(\.[0-9]+)+[0-9A-Za-z.+-]*' <<<"$out" | head -n1
+# Build, debug and container tools, reported when present.
+TOOLS=(
+  'git|git|--version'            'cmake|cmake|--version'
+  'ninja|ninja|--version'        'mold|mold|--version'
+  'sccache|sccache|--version'    'just|just|--version'
+  'gdb|gdb|--version'            'lldb|lldb|--version'
+  'perf|perf|--version'          'valgrind|valgrind|--version'
+  'docker|docker|--version'      'podman|podman|--version'
+  'distrobox|distrobox|--version'
+)
+
+# First x.y[.z] token of the version output, empty when the command is absent.
+# java and kotlinc write to stderr; the 2>&1 covers them.
+probe() { # probe CMD ARGS...
+  local cmd=$1; shift
+  have "$cmd" || return 0
+  timeout 5 "$cmd" "$@" 2>&1 | head -n2 | grep -oE '[0-9]+(\.[0-9]+)+[0-9A-Za-z.+-]*' | head -n1
 }
 
-docker_active()  { have systemctl && systemctl is-active  --quiet docker.service 2>/dev/null; }
-docker_enabled() { have systemctl && systemctl is-enabled --quiet docker.service 2>/dev/null; }
-docker_member()  { id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; }
-bool() { "$@" && echo true || echo false; }
-json_str() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
+# ----- system state ---------------------------------------------------------
+unit_active()  { have systemctl && systemctl is-active  --quiet "$1" 2>/dev/null; }
+unit_enabled() { have systemctl && systemctl is-enabled --quiet "$1" 2>/dev/null; }
+unit_exists()  { have systemctl && systemctl cat "$1" >/dev/null 2>&1; }
+# Query by user name: bare `id -nG` reports the groups this process received
+# at login, so a group joined since then would not appear. The group database
+# is the state the page should report.
+in_group()     { id -nG "${USER:-$(id -un)}" 2>/dev/null | tr ' ' '\n' | grep -qx "$1"; }
+group_exists() { getent group "$1" >/dev/null 2>&1; }
 
-status_json() {
-  local t v first=1
-  printf '{"tools":['
-  for t in "${TOOLS[@]}"; do
-    v=$(tool_version "$t")
+# Groups that grant a normal user access to a device or service. Only groups
+# that exist on this system are offered.
+DEV_GROUPS=(
+  'docker|Run Docker containers without sudo'
+  'kvm|Access /dev/kvm for hardware-accelerated virtual machines'
+  'libvirt|Manage virtual machines with libvirt and virt-manager'
+  'uucp|Access serial ports (microcontrollers, debug adapters)'
+  'wireshark|Capture network traffic without root access'
+)
+
+sysctl_val() { sysctl -n "$1" 2>/dev/null || echo ''; }
+
+ssh_keys() { # "path<TAB>type<TAB>comment" per public key in ~/.ssh
+  local f
+  for f in "$HOME"/.ssh/*.pub; do
+    [ -e "$f" ] || continue
+    ssh-keygen -l -f "$f" 2>/dev/null | awk -v p="$f" '{t=$NF; gsub(/[()]/,"",t); print p"\t"t"\t"$3}'
+  done
+}
+
+# ----- json -----------------------------------------------------------------
+json_str() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\t'/\\t}; printf '"%s"' "$s"; }
+json_or_null() { [ -n "${1:-}" ] && json_str "$1" || printf null; }
+json_num() { [ -n "${1:-}" ] && printf '%s' "$1" || printf null; }
+bool() { "$@" && echo true || echo false; }
+
+json_versions() { # json_versions ENTRY... -> [{"name":..,"version":..}] (installed only)
+  local e label cmd args v first=1
+  printf '['
+  for e in "$@"; do
+    IFS='|' read -r label cmd args <<<"$e"
+    v=$(probe "$cmd" "$args")
+    [ -n "$v" ] || continue
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"name":%s,"version":%s}' "$(json_str "$t")" "$([ -n "$v" ] && json_str "$v" || echo null)"
+    printf '{"name":%s,"cmd":%s,"version":%s}' "$(json_str "$label")" "$(json_str "$cmd")" "$(json_str "$v")"
   done
-  printf '],"docker":{"active":%s,"enabled":%s,"member":%s}}\n' \
-    "$(bool docker_active)" "$(bool docker_enabled)" "$(bool docker_member)"
+  printf ']'
+}
+
+status_json() {
+  local g name help first port kpath ktype kcomment
+  printf '{"toolchains":'; json_versions "${TOOLCHAINS[@]}"
+  printf ',"tools":';      json_versions "${TOOLS[@]}"
+
+  printf ',"docker":{"installed":%s,"active":%s,"enabled":%s,"member":%s}' \
+    "$(bool have docker)" "$(bool unit_active docker.service)" \
+    "$(bool unit_enabled docker.service)" "$(bool in_group docker)"
+  printf ',"podman":{"installed":%s}' "$(bool have podman)"
+
+  port=$(awk '/^[[:space:]]*Port[[:space:]]+[0-9]+/ {p=$2} END {if (p) print p}' /etc/ssh/sshd_config 2>/dev/null)
+  printf ',"ssh":{"installed":%s,"active":%s,"enabled":%s,"port":%s,"new_key":%s,"keys":[' \
+    "$(bool unit_exists sshd.service)" "$(bool unit_active sshd.service)" \
+    "$(bool unit_enabled sshd.service)" "$(json_num "${port:-22}")" \
+    "$(json_str "$HOME/.ssh/id_ed25519")"
+  first=1
+  while IFS=$'\t' read -r kpath ktype kcomment; do
+    [ -n "$kpath" ] || continue
+    [ $first = 1 ] || printf ','
+    first=0
+    printf '{"path":%s,"type":%s,"comment":%s}' "$(json_str "$kpath")" "$(json_str "$ktype")" "$(json_str "$kcomment")"
+  done <<<"$(ssh_keys)"
+  printf ']}'
+
+  printf ',"groups":['
+  first=1
+  for g in "${DEV_GROUPS[@]}"; do
+    IFS='|' read -r name help <<<"$g"
+    group_exists "$name" || continue
+    [ $first = 1 ] || printf ','
+    first=0
+    printf '{"name":%s,"help":%s,"member":%s}' "$(json_str "$name")" "$(json_str "$help")" "$(bool in_group "$name")"
+  done
+  printf ']'
+
+  printf ',"limits":{"inotify_watches":%s,"inotify_instances":%s,"perf_paranoid":%s}' \
+    "$(json_num "$(sysctl_val fs.inotify.max_user_watches)")" \
+    "$(json_num "$(sysctl_val fs.inotify.max_user_instances)")" \
+    "$(json_num "$(sysctl_val kernel.perf_event_paranoid)")"
+
+  printf ',"git":{"name":%s,"email":%s}' \
+    "$(json_or_null "$(git config --global user.name 2>/dev/null)")" \
+    "$(json_or_null "$(git config --global user.email 2>/dev/null)")"
+  printf ',"user":%s}\n' "$(json_str "${USER:-$(id -un)}")"
 }
 
 status_text() {
-  local t v
-  for t in "${TOOLS[@]}"; do
-    v=$(tool_version "$t")
-    if [ -n "$v" ]; then printf '\033[32m✓\033[0m %-8s %s\n' "$t" "$v"
-    else printf '\033[2m–\033[0m %-8s not installed\n' "$t"; fi
+  local e label cmd args v g name help
+  echo "Toolchains"
+  for e in "${TOOLCHAINS[@]}"; do
+    IFS='|' read -r label cmd args <<<"$e"
+    v=$(probe "$cmd" "$args")
+    [ -n "$v" ] && printf '  \033[32m✓\033[0m %-10s %s\n' "$label" "$v"
   done
-  printf '%-10s service %s, %s at boot, %s\n' docker \
-    "$(docker_active && echo running || echo stopped)" \
-    "$(docker_enabled && echo enabled || echo disabled)" \
-    "$(docker_member && echo "$USER is in the docker group" || echo "$USER is not in the docker group")"
+  echo "Tools"
+  for e in "${TOOLS[@]}"; do
+    IFS='|' read -r label cmd args <<<"$e"
+    v=$(probe "$cmd" "$args")
+    [ -n "$v" ] && printf '  \033[32m✓\033[0m %-10s %s\n' "$label" "$v"
+  done
+  echo "Groups"
+  for g in "${DEV_GROUPS[@]}"; do
+    IFS='|' read -r name help <<<"$g"
+    group_exists "$name" || continue
+    printf '  %s %-10s %s\n' "$(in_group "$name" && echo $'\033[32m✓\033[0m' || echo $'\033[2m–\033[0m')" "$name" "$help"
+  done
+  echo "Services"
+  printf '  docker  %s, %s at boot\n' \
+    "$(unit_active docker.service && echo running || echo stopped)" \
+    "$(unit_enabled docker.service && echo enabled || echo disabled)"
+  if unit_exists sshd.service; then
+    printf '  sshd    %s, %s at boot\n' \
+      "$(unit_active sshd.service && echo running || echo stopped)" \
+      "$(unit_enabled sshd.service && echo enabled || echo disabled)"
+  fi
 }
 
 if [ $STATUS = 1 ]; then
@@ -79,19 +203,20 @@ fi
 
 # ----- setup ----------------------------------------------------------------
 if [ "$(id -u)" = 0 ]; then
-  echo "mindos-dev-setup: run this as your own user, not root (it uses sudo where needed)." >&2
+  echo "mindos-dev-setup: run as a normal user, not as root. sudo is used where required." >&2
   exit 1
 fi
 
 DONE=()
 
-# Rust: rustup is installed by the package, the toolchain is per user.
+# Rust: the package installs rustup; the toolchain itself is per user.
+# Skipped when rustup is not installed.
 if have rustup; then
   if rustup show active-toolchain >/dev/null 2>&1; then
     skip "rust: $(rustup show active-toolchain 2>/dev/null | head -n1 | cut -d' ' -f1) is the default toolchain"
   else
     step "rust: installing the stable toolchain (rustup default stable)"
-    if rustup default stable; then DONE+=("Rust stable toolchain installed"); else warn "rustup default stable failed (offline?)"; fi
+    if rustup default stable; then DONE+=("Rust stable toolchain installed"); else warn "rustup default stable failed. Check the network connection."; fi
   fi
   if rustup show active-toolchain >/dev/null 2>&1; then
     missing=()
@@ -110,9 +235,9 @@ else
   skip "rust: rustup not installed"
 fi
 
-# Docker: the service and the group. Podman needs nothing (rootless by default).
+# Docker: the service and the group. Podman requires no setup.
 if have docker && have systemctl; then
-  if docker_enabled && docker_active; then
+  if unit_enabled docker.service && unit_active docker.service; then
     skip "docker: service enabled and running"
   else
     step "docker: enabling and starting docker.service and docker.socket (sudo)"
@@ -122,12 +247,12 @@ if have docker && have systemctl; then
       warn "could not enable docker (sudo systemctl enable --now docker.service docker.socket)"
     fi
   fi
-  if docker_member; then
+  if in_group docker; then
     skip "docker: $USER is in the docker group"
   else
     step "docker: adding $USER to the docker group (sudo)"
     if sudo usermod -aG docker "$USER"; then
-      DONE+=("$USER added to the docker group: log out and back in before using docker without sudo")
+      DONE+=("$USER added to the docker group. Log out and back in to use docker without sudo.")
     else
       warn "could not add $USER to the docker group (sudo usermod -aG docker $USER)"
     fi
@@ -136,12 +261,29 @@ else
   skip "docker: not installed"
 fi
 
-# VS Code (Code - OSS): dark theme, JetBrains Mono, no telemetry. Only if the
-# user has no settings yet.
+# SSH key for git remotes and remote logins. Created only when the user
+# confirms at a terminal; ssh-keygen prompts for the passphrase.
+if have ssh-keygen; then
+  if [ -n "$(ssh_keys)" ]; then
+    skip "ssh: $(ssh_keys | wc -l) key(s) in ~/.ssh"
+  elif [ -t 0 ]; then
+    step "ssh: no key in ~/.ssh"
+    read -rp "  Create an ed25519 key now? [y/N] " a
+    if [[ ${a:-} =~ ^[Yy] ]]; then
+      mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+      ssh-keygen -t ed25519 -C "$USER@$(hostname)" -f "$HOME/.ssh/id_ed25519" && DONE+=("SSH key created: ~/.ssh/id_ed25519.pub")
+    fi
+  else
+    skip "ssh: no key in ~/.ssh. Create one with ssh-keygen or in Settings › Developer."
+  fi
+fi
+
+# Editor defaults, written only when the user has none. VS Code (Code - OSS)
+# is the graphical editor mindos-dev installs; neovim is not configured.
 CODE_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/Code\ -\ OSS/User
 if [ -e "$CODE_DIR/settings.json" ]; then
   skip "vs code: $CODE_DIR/settings.json exists"
-else
+elif [ -d "${XDG_CONFIG_HOME:-$HOME/.config}" ]; then
   mkdir -p "$CODE_DIR" && cat > "$CODE_DIR/settings.json" <<'JSON'
 {
   "workbench.colorTheme": "Default Dark Modern",
@@ -157,26 +299,27 @@ JSON
   DONE+=("VS Code defaults written to $CODE_DIR/settings.json")
 fi
 
-# git identity: ask only when missing and someone is there to answer.
+# git identity: prompted only when missing and a terminal is attached.
 if have git; then
   name=$(git config --global user.name 2>/dev/null || true)
   email=$(git config --global user.email 2>/dev/null || true)
   if [ -n "$name" ] && [ -n "$email" ]; then
     skip "git: commits as $name <$email>"
   elif [ -t 0 ]; then
-    step "git: no global identity yet"
-    [ -n "$name" ]  || { read -rp "  your name for commits: " name;  [ -n "$name" ]  && git config --global user.name "$name"; }
-    [ -n "$email" ] || { read -rp "  your email for commits: " email; [ -n "$email" ] && git config --global user.email "$email"; }
+    step "git: no global identity set"
+    [ -n "$name" ]  || { read -rp "  Name for commits: " name;  [ -n "$name" ]  && git config --global user.name "$name"; }
+    [ -n "$email" ] || { read -rp "  Email address for commits: " email; [ -n "$email" ] && git config --global user.email "$email"; }
     [ -n "$name" ] && [ -n "$email" ] && DONE+=("git identity set: $name <$email>")
   else
-    skip "git: no identity set (run: git config --global user.name NAME; git config --global user.email EMAIL)"
+    skip "git: no identity set. Set one in Settings › Developer or with git config --global."
   fi
 fi
 
 echo
 if [ ${#DONE[@]} -eq 0 ]; then
-  echo "Nothing to do: the developer stack is set up."
+  echo "No changes were needed. The developer setup is complete."
 else
   for d in "${DONE[@]}"; do ok "$d"; done
 fi
-echo "Type 'mindos' in a shell for the MindOS commands; see /usr/share/doc/mindos-dev/README."
+echo "Additional toolchains: mindos-pkg install NAME (see docs/PACKAGES.md)."
+echo "Run 'mindos' for a list of MindOS commands. See /usr/share/doc/mindos-dev/README."

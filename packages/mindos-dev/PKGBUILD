@@ -1,25 +1,29 @@
 # Maintainer: MindOS <build@mindos.local>
-# Meta package: the MindOS development toolchain, plus the shell, git and
-# editor defaults that make it pleasant out of the box (docs/DEV.md).
+# Meta package: the MindOS development toolchain, with shell prompt, git and
+# editor defaults (docs/DEV.md).
 pkgname=mindos-dev
 pkgver=0.1.0
-pkgrel=2
-pkgdesc="MindOS development stack: compilers, Rust, Node, Python, Go, Docker/Podman, editors and CLI tools with a themed shell prompt and git setup"
+pkgrel=4
+pkgdesc="MindOS development stack: build tools, containers, editors and command-line tools, with shell prompt and git defaults"
 arch=(any)
 url="https://mindos.local"
 license=(MIT)
-depends=(base-devel git git-lfs github-cli rustup clang llvm lld cmake ninja
-         python python-pip nodejs npm docker docker-compose
+# A language-neutral starting set: the build tools most projects need and
+# four common runtimes. Other toolchains are installed with
+# `mindos-pkg install NAME` or from Settings > Developer, which reports
+# every toolchain it detects.
+depends=(base-devel git git-lfs github-cli openssh clang llvm lld cmake ninja
+         rustup python python-pip nodejs npm go docker docker-compose
          neovim code kitty zsh fish tmux ripgrep fd bat eza fzf jq btop nvtop htop
          # git, debugging, profiling
          lazygit git-delta difftastic gdb lldb strace ltrace perf valgrind hyperfine tokei
          # shell
          starship zoxide direnv just shellcheck man-db man-pages tldr
-         # faster builds, more languages
-         mold sccache uv go
+         # build acceleration
+         mold sccache uv
          # system views
          bottom dust duf sd
-         # containers: Docker for compose workflows, Podman + distrobox for other distros' toolchains
+         # containers: Docker for compose workflows, Podman + distrobox for other distributions' toolchains
          podman distrobox)
 backup=(etc/gitconfig etc/mindos/dev/gitconfig etc/mindos/dev/starship.toml
         etc/mindos/dev/zshrc etc/fish/conf.d/mindos-dev.fish)
@@ -30,7 +34,7 @@ sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 package() {
   # Prompt, shell integration (fish is sourced automatically; zsh users source
   # /etc/mindos/dev/zshrc from ~/.zshrc) and the git defaults, all under /etc so
-  # they can be edited and are kept as .pacsave/.pacnew across upgrades.
+  # they can be edited and are preserved as .pacsave/.pacnew across upgrades.
   install -Dm644 starship.toml      "$pkgdir/etc/mindos/dev/starship.toml"
   install -Dm644 mindos-dev.fish    "$pkgdir/etc/fish/conf.d/mindos-dev.fish"
   install -Dm644 zshrc              "$pkgdir/etc/mindos/dev/zshrc"
@@ -45,8 +49,12 @@ package() {
 
   install -dm755 "$pkgdir/usr/share/doc/$pkgname"
   cat > "$pkgdir/usr/share/doc/$pkgname/README" <<'DOC'
-mindos-dev pulls in the MindOS development toolchain. Run `mindos-dev-setup`
-once to install the stable Rust toolchain, enable Docker and write the VS Code
-defaults; `mindos` in a shell lists the MindOS commands. See docs/DEV.md.
+mindos-dev installs the MindOS build tools, containers, editors and
+command-line tools. Run `mindos-dev-setup` once to complete the per-user
+steps a package cannot perform (the Rust toolchain, the Docker service and
+group, an SSH key, editor and git defaults), or use Settings > Developer,
+which performs the same steps. `mindos-dev-setup --status` reports every
+installed toolchain; `mindos-pkg install NAME` installs additional ones.
+Run `mindos` in a shell for a list of MindOS commands. See docs/DEV.md.
 DOC
 }

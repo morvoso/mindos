@@ -1086,7 +1086,11 @@ html[data-kind=toast], html[data-kind=toast] body { background: transparent; }
 .dev-tool { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--glass-border); font-size: 12.5px; }
 .dev-name { color: var(--fg); }
 .dev-ver { color: var(--fg-faint); }
-.dev-tool.missing .dev-ver { color: var(--warn); }
+/* A heading inside a card, for a second group of rows under the first. */
+.card-sub { margin: 18px 0 6px; font: var(--t-eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--fg-dim); }
+.field-row { display: flex; align-items: center; gap: 8px; }
+.field-row input { flex: 1 1 0; min-width: 0; }
+.keybox { width: 100%; word-break: break-all; }
 
 /* ===== the authentication dialog (polkit) ===== */
 .popup-auth .pop-backdrop { background: rgb(2 4 10 / .45); backdrop-filter: blur(1.5px); }
