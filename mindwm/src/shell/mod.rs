@@ -49,8 +49,9 @@ use crate::{
 };
 
 mod element;
+pub mod frame;
 mod grabs;
-pub(crate) mod ssd;
+pub mod ssd;
 #[cfg(feature = "xwayland")]
 mod x11;
 mod xdg;

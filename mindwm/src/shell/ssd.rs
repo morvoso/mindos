@@ -4,11 +4,13 @@
 //! server-side decorations (xdg-decoration, which is what Qt, GTK, foot,
 //! Chromium and most toolkits ask for when the compositor prefers it) and
 //! for X11 windows that do not ask to be undecorated. It uses the same
-//! tokens and fonts as the shell: a `bg-0` bar with hairlines, the title in
-//! Inter, a cyan line along the top edge of the focused window and
-//! minimise / maximise / close glyphs on the right. The bar is rendered on
-//! the CPU into a memory buffer that is only redrawn when something about it
-//! changed (title, focus, hover, width, maximised state).
+//! tokens and fonts as the shell: a translucent glass bar with a sheen along
+//! its top edge, the title in Inter, a cyan line under the bar of the focused
+//! window and minimise / maximise / close glyphs on the right. The bar is
+//! rasterised on the CPU into a memory buffer that is only redrawn when
+//! something about it changed (title, focus, hover, width, maximised state)
+//! and composited by the GPU like everything else; the shadow and border
+//! around the whole window are `frame.rs`.
 
 use std::cell::{RefCell, RefMut};
 use std::time::{Duration, Instant};
@@ -35,18 +37,18 @@ use crate::{
     AnvilState,
 };
 
-use super::WindowElement;
+use super::{frame::Frame, WindowElement};
 
 /// Height of the bar in logical pixels.
-pub const HEADER_BAR_HEIGHT: i32 = 30;
-const BUTTON_WIDTH: i32 = 40;
-const RADIUS: i32 = 11;
-const TITLE_PX: f32 = 14.5;
+pub const HEADER_BAR_HEIGHT: i32 = 32;
+/// Radius of the window's top corners (the frame follows it).
+pub const RADIUS: i32 = 12;
+const BUTTON_WIDTH: i32 = 38;
+const TITLE_PX: f32 = 13.5;
 const DOUBLE_CLICK: Duration = Duration::from_millis(350);
 const BTN_LEFT: u32 = 0x110;
 
-const BG: Rgba = hex(0x0a0d12);
-const HAIRLINE: Rgba = hex(0x223041);
+const BG: Rgba = hex(0x0d1219);
 const WHITE: Rgba = hex(0xffffff);
 const FG: Rgba = hex(0xe6edf3);
 const FG_DIM: Rgba = hex(0x8b9bb0);
@@ -78,6 +80,8 @@ pub struct WindowState {
     /// The window negotiated (or was assigned) server-side decorations.
     pub is_ssd: bool,
     pub header_bar: HeaderBar,
+    /// The shadow and border around the window.
+    pub frame: Frame,
 }
 
 #[derive(Debug)]
@@ -151,6 +155,18 @@ impl HeaderBar {
             self.pressed = None;
             self.dirty = true;
         }
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        self.maximized
+    }
+
+    pub fn is_tiled(&self) -> bool {
+        self.tiled
     }
 
     /// The buttons of the bar, left to right.
@@ -361,25 +377,39 @@ impl HeaderBar {
         let r = if self.maximized { 0 } else { RADIUS * s };
         let corners = if self.maximized { 0 } else { TOP_LEFT | TOP_RIGHT };
         let mut c = Canvas::new(w, h);
-        // Glass: a translucent dark fill (the compositor blends it over what
-        // is behind the window), a light hairline catching the top edge.
-        c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, if self.focused { 0.84 } else { 0.76 }));
-        c.stroke_rounded_rect(0, 0, w, h + r, r, corners, alpha(WHITE, 0.10));
+        // Glass: a translucent dark tint (the compositor blends it over what
+        // is behind the window) that the light catches from above: a sheen
+        // fading down the bar and a bright hairline along the top edge.
+        c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, if self.focused { 0.82 } else { 0.72 }));
+        let sheen = if self.focused { 0.07 } else { 0.04 };
+        for row in 0..h / 2 {
+            let t = 1.0 - row as f32 / (h / 2) as f32;
+            let a = sheen * t * t;
+            for col in 0..w {
+                let cov = Canvas::rounded_coverage(col, row, w, h, r, corners);
+                if cov > 0.0 {
+                    c.blend(col, row, alpha(WHITE, a * cov));
+                }
+            }
+        }
+        let mut edge = Canvas::new(w, r + s);
+        edge.stroke_rounded_rect(0, 0, w, 2 * (r + s) + 4 * s, r, corners, alpha(WHITE, if self.focused { 0.14 } else { 0.09 }));
+        c.draw_canvas(0, 0, &edge);
         // Bottom line between the bar and the window: the accent, with a
         // soft glow into the bar, when focused; a hairline otherwise.
         if self.focused {
-            for (row, a) in [(1, 0.20), (2, 0.11), (3, 0.05)] {
+            for (row, a) in [(1, 0.16), (2, 0.08), (3, 0.03)] {
                 c.fill_rect(0, h - s - s * row, w, s, alpha(ACCENT, a));
             }
-            c.fill_rect(0, h - s, w, s, alpha(ACCENT, 0.9));
+            c.fill_rect(0, h - s, w, s, alpha(ACCENT, 0.85));
         } else {
-            c.fill_rect(0, h - s, w, s, alpha(WHITE, 0.08));
+            c.fill_rect(0, h - s, w, s, alpha(WHITE, 0.07));
         }
 
         // Title.
         let buttons = self.buttons();
         let buttons_w = buttons.len() as i32 * BUTTON_WIDTH * s;
-        let pad = 12 * s;
+        let pad = 14 * s;
         let max_w = w - buttons_w - pad - 8 * s;
         if max_w > 20 * s {
             let px = TITLE_PX * s as f32;
@@ -407,7 +437,7 @@ impl HeaderBar {
                     (false, true) => alpha(FG, 0.14),
                     (false, false) => alpha(FG, 0.08),
                 };
-                c.fill_circle(bx + bw / 2, h / 2, 11 * s, bg);
+                c.fill_circle(bx + bw / 2, h / 2, 12 * s, bg);
             }
             let glyph = if hovered || pressed {
                 if danger {
@@ -515,6 +545,7 @@ impl WindowElement {
             RefCell::new(WindowState {
                 is_ssd: false,
                 header_bar: HeaderBar::default(),
+                frame: Frame::default(),
             })
         });
 

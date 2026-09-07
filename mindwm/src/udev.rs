@@ -1965,10 +1965,18 @@ fn render_surface<'a>(
     if let Some(bar) = mindbar.render_element(renderer, output_geometry.size, scale.x) {
         custom_elements.push(CustomRenderElements::Overlay(bar));
     }
-    let has_windows = space.elements().next().is_some();
-    let backdrop = mindbar
-        .backdrop_element(renderer, output_geometry.size, scale.x, has_windows, show_wordmark)
-        .map(CustomRenderElements::Overlay);
+    // The startup screen goes away as soon as the shell maps its desktop (a
+    // background layer surface), not when a window opens.
+    let desktop_up = {
+        let layers = smithay::desktop::layer_map_for_output(output);
+        let up = layers.layers_on(smithay::wayland::shell::wlr_layer::Layer::Background).next().is_some();
+        up
+    };
+    let backdrop: Vec<_> = mindbar
+        .backdrop_elements(renderer, output_geometry.size, scale.x, desktop_up, show_wordmark)
+        .into_iter()
+        .map(CustomRenderElements::Overlay)
+        .collect();
 
     let (elements, clear_color) =
         output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop);

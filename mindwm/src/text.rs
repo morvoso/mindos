@@ -98,6 +98,7 @@ pub const ALL_CORNERS: u8 = 15;
 /// The HUD look: opposite corners cut.
 pub const DIAGONAL: u8 = TOP_LEFT | BOTTOM_RIGHT;
 
+#[derive(Clone)]
 pub struct Canvas {
     pub width: i32,
     pub height: i32,
@@ -186,7 +187,7 @@ impl Canvas {
     /// selected corners are rounded with radius `r`: 1 inside, 0 outside, a
     /// fraction on the curve so the edge is anti-aliased.
     #[inline]
-    fn rounded_coverage(lx: i32, ly: i32, w: i32, h: i32, r: i32, corners: u8) -> f32 {
+    pub(crate) fn rounded_coverage(lx: i32, ly: i32, w: i32, h: i32, r: i32, corners: u8) -> f32 {
         if lx < 0 || ly < 0 || lx >= w || ly >= h {
             return 0.0;
         }
@@ -290,6 +291,148 @@ impl Canvas {
                 }
             }
         }
+    }
+
+    /// A soft drop shadow: `color` under a w×h rounded rectangle (selected
+    /// corners rounded with `r`), blurred so it fades out over `blur` pixels
+    /// around the shape. The mask is a gaussian blur of the shape's coverage,
+    /// done as two separable passes; the cost is (area + blur²) × blur, so
+    /// callers draw large shadows once and cache them.
+    pub fn shadow_rounded_rect(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, corners: u8, blur: i32, color: Rgba) {
+        if w <= 0 || h <= 0 || color[3] <= 0.0 {
+            return;
+        }
+        let blur = blur.max(0);
+        let r = r.clamp(0, w.min(h) / 2);
+        // the region the shadow can touch
+        let bx = x - blur;
+        let by = y - blur;
+        let bw = w + 2 * blur;
+        let bh = h + 2 * blur;
+        let mut mask = vec![0f32; (bw * bh) as usize];
+        for yy in 0..bh {
+            for xx in 0..bw {
+                mask[(yy * bw + xx) as usize] = Self::rounded_coverage(xx - blur, yy - blur, w, h, r, corners);
+            }
+        }
+        if blur > 0 {
+            let sigma = blur as f32 / 2.2;
+            let kernel: Vec<f32> = (-blur..=blur)
+                .map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp())
+                .collect();
+            let sum: f32 = kernel.iter().sum();
+            let kernel: Vec<f32> = kernel.into_iter().map(|k| k / sum).collect();
+            let mut tmp = vec![0f32; (bw * bh) as usize];
+            for yy in 0..bh {
+                for xx in 0..bw {
+                    let mut acc = 0.0;
+                    for (k, weight) in kernel.iter().enumerate() {
+                        let sx = xx + k as i32 - blur;
+                        if sx >= 0 && sx < bw {
+                            acc += mask[(yy * bw + sx) as usize] * weight;
+                        }
+                    }
+                    tmp[(yy * bw + xx) as usize] = acc;
+                }
+            }
+            for yy in 0..bh {
+                for xx in 0..bw {
+                    let mut acc = 0.0;
+                    for (k, weight) in kernel.iter().enumerate() {
+                        let sy = yy + k as i32 - blur;
+                        if sy >= 0 && sy < bh {
+                            acc += tmp[(sy * bw + xx) as usize] * weight;
+                        }
+                    }
+                    mask[(yy * bw + xx) as usize] = acc;
+                }
+            }
+        }
+        for yy in 0..bh {
+            let py = by + yy;
+            if py < 0 || py >= self.height {
+                continue;
+            }
+            for xx in 0..bw {
+                let px = bx + xx;
+                if px < 0 || px >= self.width {
+                    continue;
+                }
+                let a = mask[(yy * bw + xx) as usize];
+                if a > 0.002 {
+                    self.blend(px, py, [color[0], color[1], color[2], color[3] * a]);
+                }
+            }
+        }
+    }
+
+    /// Multiply every pixel's alpha (and colour: the data is premultiplied)
+    /// by `1 - coverage` of a rounded rectangle: cuts the shape out of the
+    /// canvas, with anti-aliased edges. Used to punch the window out of its
+    /// shadow so a translucent window does not darken itself.
+    pub fn cut_rounded_rect(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, corners: u8) {
+        let r = r.clamp(0, w.min(h) / 2);
+        for yy in y.max(0)..(y + h).min(self.height) {
+            for xx in x.max(0)..(x + w).min(self.width) {
+                let cov = Self::rounded_coverage(xx - x, yy - y, w, h, r, corners);
+                if cov <= 0.0 {
+                    continue;
+                }
+                let keep = 1.0 - cov;
+                let i = ((yy * self.width + xx) * 4) as usize;
+                for b in &mut self.data[i..i + 4] {
+                    *b = (*b as f32 * keep).round() as u8;
+                }
+            }
+        }
+    }
+
+    /// Composite another canvas onto this one at (x, y) (source over).
+    pub fn draw_canvas(&mut self, x: i32, y: i32, src: &Canvas) {
+        for sy in 0..src.height {
+            let dy = y + sy;
+            if dy < 0 || dy >= self.height {
+                continue;
+            }
+            for sx in 0..src.width {
+                let dx = x + sx;
+                if dx < 0 || dx >= self.width {
+                    continue;
+                }
+                let si = ((sy * src.width + sx) * 4) as usize;
+                let sa = src.data[si + 3];
+                if sa == 0 {
+                    continue;
+                }
+                let di = ((dy * self.width + dx) * 4) as usize;
+                let inv = 1.0 - sa as f32 / 255.0;
+                for c in 0..4 {
+                    let v = src.data[si + c] as f32 + self.data[di + c] as f32 * inv;
+                    self.data[di + c] = v.round().min(255.0) as u8;
+                }
+            }
+        }
+    }
+
+    /// A copy of the w×h pixels at (x, y); pixels outside stay transparent.
+    pub fn crop(&self, x: i32, y: i32, w: i32, h: i32) -> Canvas {
+        let mut out = Canvas::new(w, h);
+        for yy in 0..out.height {
+            let sy = y + yy;
+            if sy < 0 || sy >= self.height {
+                continue;
+            }
+            for xx in 0..out.width {
+                let sx = x + xx;
+                if sx < 0 || sx >= self.width {
+                    continue;
+                }
+                let si = ((sy * self.width + sx) * 4) as usize;
+                let di = ((yy * out.width + xx) * 4) as usize;
+                out.data[di..di + 4].copy_from_slice(&self.data[si..si + 4]);
+            }
+        }
+        out
     }
 
     #[inline]
@@ -632,6 +775,44 @@ impl TextRenderer {
             }
         }
         self.draw(canvas, x, y, None, text, px, color, face)
+    }
+
+    /// `draw_spaced` with a soft glow behind it: the wordmark of the startup
+    /// screen, which has to match `measure_spaced` exactly to stay centred, so
+    /// the glow is stamped from the same routine rather than a plain `draw`.
+    /// Wide glows are stamped every other pixel; the result is as soft and
+    /// costs a quarter as much, which matters on the first frame after boot.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_spaced_glow(
+        &mut self,
+        canvas: &mut Canvas,
+        x: i32,
+        y: i32,
+        text: &str,
+        px: f32,
+        color: Rgba,
+        glow: Rgba,
+        radius: i32,
+        face: Face,
+        tracking: i32,
+    ) -> i32 {
+        let r = radius.max(1);
+        let step = if r > 4 { 2 } else { 1 };
+        let mut dy = -r;
+        while dy <= r {
+            let mut dx = -r;
+            while dx <= r {
+                let d = ((dx * dx + dy * dy) as f32).sqrt();
+                if d <= r as f32 + 0.5 && !(dx == 0 && dy == 0) {
+                    let falloff = 1.0 - d / (r as f32 + 1.0);
+                    let a = glow[3] * falloff * falloff * step as f32;
+                    self.draw_spaced(canvas, x + dx, y + dy, text, px, [glow[0], glow[1], glow[2], a], face, tracking);
+                }
+                dx += step;
+            }
+            dy += step;
+        }
+        self.draw_spaced(canvas, x, y, text, px, color, face, tracking)
     }
 
     pub fn line_height(&self, px: f32, face: Face) -> i32 {

@@ -16,7 +16,7 @@ use smithay::{
         constrain_space_element, ConstrainBehavior, ConstrainReference, Space, SpaceRenderElements,
     },
     output::Output,
-    utils::{Point, Rectangle, Size},
+    utils::{Point, Rectangle, Scale, Size},
 };
 
 #[cfg(feature = "debug")]
@@ -145,7 +145,8 @@ pub fn output_elements<R>(
     custom_elements: impl IntoIterator<Item = CustomRenderElements<R>>,
     renderer: &mut R,
     show_window_preview: bool,
-    backdrop: Option<CustomRenderElements<R>>,
+    backdrop: Vec<CustomRenderElements<R>>,
+    locked: bool,
 ) -> (Vec<OutputRenderElements<R, WindowRenderElement<R>>>, Color32F)
 where
     R: Renderer + ImportAll + ImportMem,
@@ -188,9 +189,7 @@ where
         )
         .expect("output without mode?");
         output_render_elements.extend(space_elements.into_iter().map(OutputRenderElements::Space));
-        if let Some(backdrop) = backdrop {
-            output_render_elements.push(OutputRenderElements::Custom(backdrop));
-        }
+        output_render_elements.extend(backdrop.into_iter().map(OutputRenderElements::Custom));
 
         (output_render_elements, background())
     }
@@ -206,13 +205,14 @@ pub fn render_output<'a, 'd, R>(
     damage_tracker: &'d mut OutputDamageTracker,
     age: usize,
     show_window_preview: bool,
-    backdrop: Option<CustomRenderElements<R>>,
+    backdrop: Vec<CustomRenderElements<R>>,
+    locked: bool,
 ) -> Result<RenderOutputResult<'d>, OutputDamageTrackerError<R::Error>>
 where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + 'static,
 {
     let (elements, clear_color) =
-        output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop);
+        output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop, locked);
     damage_tracker.render_output(renderer, framebuffer, age, &elements, clear_color)
 }

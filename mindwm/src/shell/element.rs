@@ -38,6 +38,11 @@ use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceDa
 
 use crate::{focus::PointerFocusTarget, state::Backend, AnvilState};
 
+use super::{
+    frame::{FrameStyle, SHADOW, TILE_SHADOW},
+    ssd::{WindowState, RADIUS},
+};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowElement(pub Window);
 
@@ -568,11 +573,31 @@ where
                 alpha,
             );
 
+            let top = location;
             location.y += (scale.y * header as f64).round() as i32;
 
             let window_elements =
                 AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
             vec.extend(window_elements);
+
+            // The frame (shadow and border) goes under everything. A
+            // maximised window touches the edges of its area and gets none.
+            let bar = &state.header_bar;
+            if !bar.is_maximized() {
+                let style = FrameStyle {
+                    focused: bar.is_focused(),
+                    radius: RADIUS,
+                    shadow: if bar.is_tiled() { TILE_SHADOW } else { SHADOW },
+                };
+                let size = (window_geo.size.w, window_geo.size.h + header).into();
+                let WindowState { frame, .. } = &mut *state;
+                vec.extend(
+                    frame
+                        .render_elements(renderer, top, size, scale, style, alpha)
+                        .into_iter()
+                        .map(WindowRenderElement::Decoration),
+                );
+            }
             vec.into_iter().map(C::from).collect()
         } else {
             AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha)

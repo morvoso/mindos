@@ -48,15 +48,20 @@ MindOS has two visual stages with a hard line between them:
 Everything in front of the wallpaper is glass: a dark tint (`rgb(12 17 25)`
 at 45–80 % alpha) over a blurred copy of what is behind it, a 1 px light
 border (`white / 9 %`, `16 %` when raised), a lighter line catching the top
-edge, a soft drop shadow, and rounded corners — 9 px on buttons, 12–16 px on
-cards and popups, 22 px on the dock pill. Section labels stay uppercase with
-wide tracking; body text is Inter at normal tracking.
+edge, a soft drop shadow, and rounded corners: 9 px on buttons, 12 px on window
+title bars, 12 to 16 px on cards and popups, 22 px on the dock pill.
+
+The bottom bar is present but quiet. Its tint follows the panel opacity in
+the layout (`0.6` by default, so the wallpaper shows through), and when the
+pointer has left it for a few seconds its contents fade to 80 % until the
+pointer returns (`mindshell/ui/src/panel.ts`). A bar with an open popup
+never fades.
 
 | Where | How the glass is made |
 | --- | --- |
 | Desktop widgets | real `backdrop-filter: blur(28px) saturate(1.5)` — they live in the wallpaper's own window |
 | Panels, the dock, popups, app sidebars | separate WebKit windows cannot see the wallpaper, so `mindshell/ui/src/glass.ts` puts a `.glass-bd` layer under the surface: the wallpaper blurred once on a small canvas (or the aurora gradient), sized to the output and shifted by the surface's position on it, so the crop under the window shows through. Updated when the wallpaper, the layout or the window moves. |
-| Title bars and the Mind bar | drawn by the compositor as translucent rounded cards (`Canvas::fill_rounded_rect`); mindwm does not blur, the alpha alone reads as glass over the desktop |
+| Title bars, window frames and the Mind bar | drawn by the compositor as translucent rounded cards with a sheen, a 1 px light ring and a soft shadow (`mindwm/src/shell/ssd.rs`, `mindwm/src/shell/frame.rs`, `mindwm/src/mindbar.rs`); mindwm does not blur, the alpha alone reads as glass over the desktop |
 | App windows (Settings) | opaque, over the same aurora; the sidebar is frosted with the wallpaper |
 | Files, Image Viewer, Archive Manager, Text Editor (libadwaita) | opaque in the MindOS colours (`mindos-apps`, below); they draw their own header bars, which the compositor leaves alone |
 | Terminals | `foot` runs at 92 % alpha with the MindOS palette (`packages/mindos-session/foot.ini`) |
@@ -133,6 +138,23 @@ Orbitron Bold, plus the full DejaVu Sans as its glyph fallback
 (`mindwm/resources/`, licences in `/usr/share/licenses/mindwm/`), so it never
 depends on fontconfig; the shell ships the same subsets in its UI bundle
 (`mindshell/ui/fonts/`).
+
+#### Type scale
+
+The shell uses five sizes, all Inter, defined once as tokens in
+`mindshell/ui/src/app.css` and reused everywhere:
+
+| Token | Size | Used for |
+| --- | --- | --- |
+| `--t-title` | 600 15 px | page and dialog titles |
+| `--t-body` | 400 13.5 px | body text, help lines, the title bar |
+| `--t-label` | 500 13 px | widget labels, buttons, navigation |
+| `--t-caption` | 500 11.5 px | dates, secondary lines |
+| `--t-eyebrow` | 600 11 px, `.08em` tracking | section labels, the one uppercase style |
+
+Only section labels (the eyebrow) are uppercase. Widget names, menu items,
+dates and status lines are written in sentence case so they read as words,
+not badges.
 
 ### Text rendering
 

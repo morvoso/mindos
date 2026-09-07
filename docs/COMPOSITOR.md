@@ -28,9 +28,13 @@
   off-white text (`#e6edf3`) and one electric-cyan accent (`#19e3ff`); the
   Mind bar and the title bars are rounded, translucent dark cards with a
   light hairline and a soft accent glow (`docs/THEME.md`). Red is reserved for the kernel console, the boot menu and
-  the boot stages and never appears in the session. When no window is open
-  the `MINDOS` wordmark (Orbitron) and the key hints are drawn behind
-  everything.
+  the boot stages and never appears in the session.
+* **The startup screen.** From the moment the compositor takes over from
+  Plymouth until the shell's desktop is on screen, `mindwm` draws the boot
+  splash again: the glowing `MINDOS` wordmark, a progress line with a moving
+  head, `STARTING THE DESKTOP`, the sweeping hairline and the HUD corners
+  (`[theme] show_wordmark`). The key hints join it if the wait passes six
+  seconds. The whole screen disappears the frame the shell maps its desktop.
 * **The Mind bar** (`Super+Space`): a software-rendered overlay that is both an
   application launcher and the front end of `mindd`, the local LLM daemon.
 * **A shell IPC socket** (`MINDWM_SOCKET`) through which `mindshell`, the
@@ -108,7 +112,11 @@ it starts next.
 * **Tiles** (`dwindle`, like Hyprland). Every window is a tile; a new one
   splits the focused tile along its longer side, so windows spiral inwards.
   `Super+arrows` move the focus, `Super+Shift+arrows` swap tiles,
-  `Super+Shift+F` floats the focused window (and tiles it again).
+  `Super+Shift+F` floats the focused window (and tiles it again). A window
+  remembers the size and place it had before it became a tile: switching back
+  to floating (or floating the window itself) puts it back there at once,
+  from the compositor, not left to the application's next redraw. A window
+  born as a tile gets a centred window three fifths of the output instead.
 * **Columns** (`columns`, like Niri). Windows are columns on an endless strip
   that scrolls sideways to keep the focused one in view; `Super+R` cycles a
   column through a third, a half, two thirds and the full width.
@@ -272,7 +280,7 @@ names one more file loaded last (the greeter uses
 |------|--------------|
 | `src/main.rs` | Backend selection (`--tty-udev` on a TTY, `--winit` nested, auto-detected) |
 | `src/config.rs` | Config loading and merging |
-| `src/mindbar.rs` | Mind bar state machine and CPU rendering (panel, results, conversation, desktop backdrop) |
+| `src/mindbar.rs` | Mind bar state machine and CPU rendering (panel, results, conversation, startup screen) |
 | `src/text.rs` | fontdue text rasteriser into premultiplied BGRA memory buffers; embedded Inter (body and labels), JetBrains Mono, Orbitron (display) and DejaVu Sans (glyph fallback); macOS-style compositing (gamma-corrected coverage, subpixel glyph placement); anti-aliased rounded rectangles, chamfered rectangles and glow lines |
 | `src/ipc.rs` | The shell IPC socket: framing, request/event types, calloop wiring, request handlers |
 | `src/markdown.rs` | Just enough Markdown for the Mind bar: inline emphasis, code, headings, bullets, fences and links → styled spans |

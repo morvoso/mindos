@@ -9,6 +9,8 @@
 //! any backend and costs nothing while it is closed. The look is the MindOS
 //! look: a rounded translucent dark card, light hairlines, one cyan accent, no red.
 
+use std::time::Instant;
+
 use serde_json::Value;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement};
@@ -36,10 +38,26 @@ pub const WARN: Rgba = hex(0xffb454);
 pub const DANGER: Rgba = hex(0xff5d8f);
 pub const OK: Rgba = hex(0x3ddc97);
 
+// The startup screen (`backdrop_elements`): the boot splash carried on by the
+// compositor until the shell puts the desktop up.
+const TITLE: &str = "MINDOS";
+const CAPTION: &str = "STARTING THE DESKTOP";
+/// How long the screen waits before it also shows the key hints.
+const HINTS_AFTER: f32 = 6.0;
+const STARTUP_HINTS: [(&str, &str); 5] = [
+    ("Super+Space", "ask Mind or launch an app"),
+    ("Super+Enter", "terminal"),
+    ("Super+Q", "close window"),
+    ("Super+F", "fullscreen"),
+    ("Super+Tab", "next window"),
+];
+
 const PANEL_BG: Rgba = alpha(BG0, 0.88);
 const INPUT_BG: Rgba = alpha(VOID, 0.55);
 const WHITE: Rgba = hex(0xffffff);
 const RADIUS: i32 = 18;
+/// Reach of the panel's drop shadow (logical px), around the card.
+const SHADOW: i32 = 36;
 
 const PAD: i32 = 16;
 const HEADER_H: i32 = 26;
@@ -86,6 +104,8 @@ enum LineKind {
     User,
     Mind,
     Thinking,
+    /// The animated "Thinking" line while a request is in flight.
+    Busy,
     Tool,
     Info,
     Error,
@@ -137,6 +157,10 @@ pub struct MindBar {
     streaming: String,
     thinking: String,
     busy: bool,
+    /// When the request in flight started (the thinking animation's clock).
+    busy_since: Option<Instant>,
+    /// The animation frame drawn last (a new one marks the panel dirty).
+    phase: u32,
     session: Option<String>,
     pending: Option<(String, String)>,
     connected: bool,
@@ -145,7 +169,17 @@ pub struct MindBar {
     status: String,
     dirty: bool,
     panel: Option<Cached>,
+    /// The panel's shadow, drawn once per size (it is the slow part).
+    shadow: Option<(Size<i32, Logical>, i32, Canvas)>,
+    /// The startup screen's card (wordmark, track, caption), its hints and its
+    /// HUD corners, with the card's measurements: width, height, the wordmark's
+    /// middle and the track's row, all in canvas pixels.
     wordmark: Option<Cached>,
+    card_geometry: (i32, i32, i32, i32),
+    hints: Option<Cached>,
+    corners: Option<(i32, i32, Vec<MemoryRenderBuffer>)>,
+    /// When the startup screen went up (the sweep's clock).
+    backdrop_since: Option<Instant>,
     text: TextRenderer,
     foreground: Rgba,
     accent: Rgba,
@@ -165,6 +199,8 @@ impl MindBar {
             streaming: String::new(),
             thinking: String::new(),
             busy: false,
+            busy_since: None,
+            phase: 0,
             session: None,
             pending: None,
             connected: false,
@@ -173,7 +209,12 @@ impl MindBar {
             status: "connecting".into(),
             dirty: true,
             panel: None,
+            shadow: None,
             wordmark: None,
+            card_geometry: (0, 0, 0, 0),
+            hints: None,
+            corners: None,
+            backdrop_since: None,
             text,
             foreground,
             accent,
@@ -497,8 +538,11 @@ impl MindBar {
         if !self.streaming.trim().is_empty() {
             let owned = rich_runs(LineKind::Mind, &self.streaming).unwrap_or_default();
             needed += self.text.measure_rich(&runs(&owned), 17.0, text_w).1 + 8;
-        } else if !self.thinking.trim().is_empty() || self.busy {
-            needed += self.text.measure("…", 15.0, text_w, Face::Body).1 + 8;
+        } else if self.busy {
+            needed += self.text.measure("Thinking", 15.0, text_w, Face::Body).1 + 8;
+            if !self.thinking.trim().is_empty() {
+                needed += self.text.measure("…", 15.0, text_w, Face::Body).1 * 2 + 8;
+            }
         }
         if let Some((_, desc)) = &self.pending {
             needed += self.text.measure(desc, 16.0, text_w, Face::Body).1 + 22;
@@ -523,6 +567,14 @@ impl MindBar {
         needed.clamp(64, max)
     }
 
+    /// 0..1, breathing at about one cycle per second while a request runs.
+    fn pulse(&self) -> f32 {
+        match self.busy_since {
+            Some(since) if self.busy => 0.5 + 0.5 * (since.elapsed().as_secs_f32() * 4.5).sin(),
+            _ => 1.0,
+        }
+    }
+
     fn status_color(&self) -> Rgba {
         if !self.connected {
             DANGER
@@ -531,6 +583,25 @@ impl MindBar {
         } else {
             WARN
         }
+    }
+
+    /// The panel on its drop shadow: a canvas `SHADOW` logical pixels larger
+    /// on every side. The shadow only depends on the size, so it is kept.
+    fn with_shadow(&mut self, panel: Canvas, size: Size<i32, Logical>, scale: i32) -> Canvas {
+        let s = scale.max(1);
+        let m = SHADOW * s;
+        let stale = !matches!(&self.shadow, Some((sz, sc, _)) if *sz == size && *sc == scale);
+        if stale {
+            let mut c = Canvas::new(panel.width + 2 * m, panel.height + 2 * m);
+            let r = RADIUS * s;
+            c.shadow_rounded_rect(m, m + 10 * s, panel.width, panel.height, r, ALL_CORNERS, m, alpha(VOID, 0.7));
+            c.shadow_rounded_rect(m, m + 2 * s, panel.width, panel.height, r, ALL_CORNERS, 8 * s, alpha(VOID, 0.5));
+            c.cut_rounded_rect(m, m, panel.width, panel.height, r, ALL_CORNERS);
+            self.shadow = Some((size, scale, c));
+        }
+        let mut c = self.shadow.as_ref().map(|(_, _, c)| c.clone()).unwrap();
+        c.draw_canvas(m, m, &panel);
+        c
     }
 
     fn draw_panel(&mut self, size: Size<i32, Logical>, scale: i32) -> Canvas {
@@ -560,9 +631,16 @@ impl MindBar {
             .text
             .draw_spaced(&mut canvas, x, hy, "MIND", font(14.0), accent, Face::LabelBold, 3 * s);
         x += 16 * s;
-        canvas.fill_circle(x + 3 * s, hy + 8 * s, 3 * s, self.status_color());
+        let pulse = self.pulse();
+        if self.busy {
+            // The dot breathes in the accent while the Mind works.
+            canvas.fill_circle(x + 3 * s, hy + 8 * s, 5 * s, alpha(accent, 0.25 * pulse));
+            canvas.fill_circle(x + 3 * s, hy + 8 * s, 3 * s, alpha(accent, 0.45 + 0.55 * pulse));
+        } else {
+            canvas.fill_circle(x + 3 * s, hy + 8 * s, 3 * s, self.status_color());
+        }
         x += 12 * s;
-        let status = self.status.to_uppercase();
+        let status = if self.busy { "THINKING".to_string() } else { self.status.to_uppercase() };
         x += self
             .text
             .draw_spaced(&mut canvas, x, hy, &status, font(13.0), FG_DIM, Face::Label, s);
@@ -690,15 +768,15 @@ impl MindBar {
         }
         if !self.streaming.trim().is_empty() {
             entries.push((LineKind::Mind, format!("{}▍", self.streaming.trim_end())));
-        } else if self.busy && self.thinking.trim().is_empty() {
-            entries.push((LineKind::Thinking, "…".into()));
+        } else if self.busy {
+            entries.push((LineKind::Busy, "Thinking".into()));
         }
         if let Some((_, desc)) = &self.pending {
             entries.push((LineKind::Info, format!("Mind wants to: {desc}   —   Y allow · N deny")));
         }
         let max_w = w - 2 * pad - 16 * s;
         let px_of = |kind: LineKind| match kind {
-            LineKind::Thinking => font(15.0),
+            LineKind::Thinking | LineKind::Busy => font(15.0),
             LineKind::Tool => font(15.0),
             LineKind::Info => font(16.0),
             _ => font(17.0),
@@ -729,6 +807,7 @@ impl MindBar {
                 LineKind::User => fg,
                 LineKind::Mind => fg,
                 LineKind::Thinking => FG_FAINT,
+                LineKind::Busy => FG_DIM,
                 LineKind::Tool => WARN,
                 LineKind::Info => {
                     if confirm {
@@ -740,6 +819,20 @@ impl MindBar {
                 LineKind::Error => DANGER,
             };
             let text_x = pad + 14 * s;
+            if kind == LineKind::Busy {
+                // Three dots chasing each other, then the word.
+                let pulse = self.pulse();
+                let t = self.busy_since.map(|b| b.elapsed().as_secs_f32()).unwrap_or(0.0);
+                let cy = y + th / 2;
+                for i in 0..3 {
+                    let a = 0.5 + 0.5 * (t * 6.0 - i as f32 * 1.1).sin();
+                    canvas.fill_circle(text_x + 4 * s + i * 11 * s, cy, 3 * s, alpha(MIND, 0.25 + 0.75 * a));
+                }
+                let label_x = text_x + 40 * s;
+                self.text
+                    .draw(&mut canvas, label_x, y, Some(max_w - 40 * s), &text, px_of(kind), alpha(color, 0.6 + 0.4 * pulse), face_of(kind));
+                continue;
+            }
             if confirm {
                 canvas.fill_rect(pad, y, w - 2 * pad, th + 14 * s, alpha(WARN, 0.10));
                 canvas.stroke_rect(pad, y, w - 2 * pad, th + 14 * s, alpha(WARN, 0.55));
@@ -790,6 +883,17 @@ impl MindBar {
         if !self.open || output_size.w <= 0 || output_size.h <= 0 {
             return None;
         }
+        // A request in flight animates: a new frame every 60 ms.
+        if self.busy {
+            let since = *self.busy_since.get_or_insert_with(Instant::now);
+            let phase = (since.elapsed().as_millis() / 60) as u32;
+            if phase != self.phase {
+                self.phase = phase;
+                self.dirty = true;
+            }
+        } else if self.busy_since.take().is_some() {
+            self.dirty = true;
+        }
         let int_scale = scale.ceil().max(1.0) as i32;
         let width = (output_size.w - 80).clamp(320, 980);
         let body = self.body_height(width, output_size.h);
@@ -801,7 +905,8 @@ impl MindBar {
             None => true,
         };
         if self.dirty || stale {
-            let canvas = self.draw_panel(size, int_scale);
+            let panel = self.draw_panel(size, int_scale);
+            let canvas = self.with_shadow(panel, size, int_scale);
             let buffer = MemoryRenderBuffer::from_slice(
                 &canvas.data,
                 Fourcc::Argb8888,
@@ -819,8 +924,8 @@ impl MindBar {
         }
         let cached = self.panel.as_ref()?;
         let loc: Point<i32, Logical> = (
-            (output_size.w - size.w) / 2,
-            (output_size.h as f64 * 0.10) as i32,
+            (output_size.w - size.w) / 2 - SHADOW,
+            (output_size.h as f64 * 0.10) as i32 - SHADOW,
         )
             .into();
         MemoryRenderBufferRenderElement::from_buffer(
@@ -835,106 +940,299 @@ impl MindBar {
         .ok()
     }
 
-    /// Draw the wordmark and key hints into a fresh canvas of `size` at `s`.
-    fn draw_backdrop(&mut self, size: Size<i32, Logical>, s: i32) -> Canvas {
-        let mut canvas = Canvas::new(size.w * s, size.h * s);
-        let fg = self.foreground;
-        let accent = self.accent;
-        let font = |px: f32| px * s as f32;
-        let cx = canvas.width / 2;
-
-        let title = "MINDOS";
-        let (tw, th) = self.text.measure(title, font(84.0), None, Face::Display);
-        let tx = cx - tw / 2;
-        self.text.draw_glow(
-            &mut canvas,
-            tx,
-            8 * s,
-            title,
-            font(84.0),
-            alpha(fg, 0.96),
-            alpha(accent, 0.11),
-            6 * s,
-            Face::Display,
-        );
-        let mut y = 8 * s + th + 12 * s;
-        canvas.hline_glow(cx - 120 * s, y, 240 * s, 2 * s, 3 * s, accent);
-        y += 14 * s;
-        let tag = "GAME MODE";
-        let tagw = self.text.measure_spaced(tag, font(13.0), Face::LabelBold, 4 * s);
-        self.text
-            .draw_spaced(&mut canvas, cx - tagw / 2, y, tag, font(13.0), alpha(accent, 0.9), Face::LabelBold, 4 * s);
-        y += 40 * s;
-
-        let hints = [
-            ("Super+Space", "ask Mind or launch an app"),
-            ("Super+Enter", "terminal"),
-            ("Super+Q", "close window"),
-            ("Super+F", "fullscreen"),
-            ("Super+Tab", "next window"),
-        ];
-        for (key, action) in hints {
-            let (kw, _) = self.text.measure(key, font(15.0), None, Face::Mono);
-            self.text
-                .draw(&mut canvas, cx - 12 * s - kw, y + s, None, key, font(15.0), alpha(accent, 0.85), Face::Mono);
-            self.text
-                .draw(&mut canvas, cx + 12 * s, y, None, action, font(17.0), FG_DIM, Face::Label);
-            y += 27 * s;
-        }
-        canvas
-    }
-
-    /// The "MINDOS" wordmark with key hints, drawn behind windows when the
-    /// desktop is empty.
-    pub fn backdrop_element<R>(
-        &mut self,
+    /// One element for a canvas already uploaded into `buffer`, placed with its
+    /// top-left corner at `loc` (logical coordinates on the output).
+    fn buffer_element<R>(
         renderer: &mut R,
-        output_size: Size<i32, Logical>,
+        buffer: &MemoryRenderBuffer,
+        loc: Point<i32, Logical>,
         scale: f64,
-        has_windows: bool,
-        enabled: bool,
     ) -> Option<MemoryRenderBufferRenderElement<R>>
     where
         R: Renderer + ImportMem,
         R::TextureId: Clone + Send + 'static,
     {
-        if !enabled || has_windows || output_size.w < 200 || output_size.h < 120 {
-            return None;
-        }
-        let int_scale = scale.ceil().max(1.0) as i32;
-        let size = Size::from((output_size.w.min(1200), 340));
-        let stale = match &self.wordmark {
-            Some(c) => c.size != size || c.scale != int_scale,
-            None => true,
-        };
-        if stale {
-            let canvas = self.draw_backdrop(size, int_scale);
-            let buffer = MemoryRenderBuffer::from_slice(
-                &canvas.data,
-                Fourcc::Argb8888,
-                (canvas.width, canvas.height),
-                int_scale,
-                Transform::Normal,
-                None,
-            );
-            self.wordmark = Some(Cached {
-                buffer,
-                size,
-                scale: int_scale,
-            });
-        }
-        let cached = self.wordmark.as_ref()?;
-        let loc: Point<i32, Logical> = ((output_size.w - size.w) / 2, (output_size.h - size.h) / 2).into();
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             loc.to_f64().to_physical(scale),
-            &cached.buffer,
+            buffer,
             None,
             None,
             None,
             Kind::Unspecified,
         )
         .ok()
+    }
+
+    /// A memory buffer for `canvas` at buffer scale `s`.
+    fn buffer_of(canvas: &Canvas, s: i32) -> MemoryRenderBuffer {
+        MemoryRenderBuffer::from_slice(
+            &canvas.data,
+            Fourcc::Argb8888,
+            (canvas.width, canvas.height),
+            s,
+            Transform::Normal,
+            None,
+        )
+    }
+
+    /// The startup card: the wordmark, the progress track and the caption,
+    /// laid out in the splash's own units (`c` turns one into canvas pixels).
+    fn draw_startup_card(&mut self, c: &dyn Fn(f32) -> i32, title_px: f32, tracking: i32) -> (Canvas, i32, i32) {
+        let accent = self.accent;
+        let pad = c(20.0);
+        let title_w = self.text.measure_spaced(TITLE, title_px, Face::Display, tracking);
+        let (_, title_h) = self.text.measure(TITLE, title_px, None, Face::Display);
+        let bar_w = c(360.0);
+        let bar_h = c(3.0).max(2);
+        let cap_px = c(15.0) as f32;
+        let cap_track = c(4.0);
+        let cap_w = self.text.measure_spaced(CAPTION, cap_px, Face::Mono, cap_track);
+        let cap_h = self.text.line_height(cap_px, Face::Mono);
+
+        let width = title_w.max(bar_w).max(cap_w) + 2 * pad;
+        let bar_y = pad + title_h + c(34.0);
+        let cap_y = bar_y + bar_h + c(24.0);
+        let height = cap_y + cap_h + pad;
+        let mut canvas = Canvas::new(width, height);
+        let cx = width / 2;
+
+        let fg = self.foreground;
+        self.text.draw_spaced_glow(
+            &mut canvas,
+            cx - title_w / 2,
+            pad,
+            TITLE,
+            title_px,
+            alpha(fg, 0.96),
+            alpha(accent, 0.14),
+            c(9.0).max(2),
+            Face::Display,
+            tracking,
+        );
+        // The track the sweep runs along: the splash's own #223041.
+        canvas.fill_rect(cx - bar_w / 2, bar_y, bar_w, bar_h, HAIRLINE);
+        canvas.fill_rect(cx - bar_w / 2, bar_y, bar_w, bar_h, alpha(accent, 0.10));
+        self.text
+            .draw_spaced(&mut canvas, cx - cap_w / 2, cap_y, CAPTION, cap_px, FG_DIM, Face::Mono, cap_track);
+        (canvas, pad + title_h / 2, bar_y)
+    }
+
+    /// The key hints, shown only when the desktop keeps the screen waiting:
+    /// enough to work with the compositor alone if the shell never comes up.
+    fn draw_startup_hints(&mut self, c: &dyn Fn(f32) -> i32) -> Canvas {
+        let accent = self.accent;
+        let key_px = c(14.0) as f32;
+        let act_px = c(15.0) as f32;
+        let gap = c(12.0);
+        let mut keyw = 0;
+        let mut actw = 0;
+        for (key, action) in STARTUP_HINTS {
+            keyw = keyw.max(self.text.measure(key, key_px, None, Face::Mono).0);
+            actw = actw.max(self.text.measure(action, act_px, None, Face::Label).0);
+        }
+        let row = self.text.line_height(act_px, Face::Label) + c(7.0);
+        let mut canvas = Canvas::new(keyw + 2 * gap + actw, row * STARTUP_HINTS.len() as i32);
+        let mut y = 0;
+        for (key, action) in STARTUP_HINTS {
+            let kw = self.text.measure(key, key_px, None, Face::Mono).0;
+            self.text
+                .draw(&mut canvas, keyw - kw, y + c(1.0), None, key, key_px, alpha(accent, 0.55), Face::Mono);
+            self.text
+                .draw(&mut canvas, keyw + 2 * gap, y, None, action, act_px, alpha(FG_DIM, 0.6), Face::Label);
+            y += row;
+        }
+        canvas
+    }
+
+    /// One HUD corner bracket: `dx`/`dy` say which way the two arms point.
+    fn draw_corner(c: &dyn Fn(f32) -> i32, accent: Rgba, dx: i32, dy: i32) -> Canvas {
+        let side = c(32.0).max(6);
+        let t = c(2.0).max(1);
+        let mut canvas = Canvas::new(side, side);
+        let x0 = if dx > 0 { 0 } else { side - t };
+        let y0 = if dy > 0 { 0 } else { side - t };
+        canvas.fill_rect(0, y0, side, t, alpha(FG_FAINT, 0.78));
+        canvas.fill_rect(x0, 0, t, side, alpha(FG_FAINT, 0.78));
+        let n = c(5.0).max(2);
+        canvas.fill_rect(
+            if dx > 0 { 0 } else { side - n },
+            if dy > 0 { 0 } else { side - n },
+            n,
+            n,
+            alpha(accent, 0.9),
+        );
+        canvas
+    }
+
+    /// The startup screen: the boot splash, continued by the compositor.
+    ///
+    /// Plymouth gives up the display the moment the session starts, and the
+    /// shell needs a few seconds more to put its desktop up. What is drawn
+    /// here is the picture the splash was already showing -- the wordmark, a
+    /// progress line, the hairline sweep and the HUD corners -- so the
+    /// handover does not read as a different screen, and the movement says the
+    /// machine is still working rather than stuck. The key hints join it only
+    /// if the wait runs long (and are what is left if the shell never comes
+    /// up). All of it goes the moment the shell maps its desktop (a background
+    /// layer surface), not when a window opens.
+    pub fn backdrop_elements<R>(
+        &mut self,
+        renderer: &mut R,
+        output_size: Size<i32, Logical>,
+        scale: f64,
+        desktop_up: bool,
+        enabled: bool,
+    ) -> Vec<MemoryRenderBufferRenderElement<R>>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Clone + Send + 'static,
+    {
+        if !enabled || desktop_up || output_size.w < 200 || output_size.h < 120 {
+            self.backdrop_since = None;
+            return Vec::new();
+        }
+        let elapsed = self.backdrop_since.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
+        let s = scale.ceil().max(1.0) as i32;
+        // The splash lays everything out in 1080p units and scales from there
+        // (mindos.script does the same); `c` turns one unit into a canvas
+        // pixel, `u` into a logical pixel on the output.
+        let ls = (output_size.h as f32 / 1080.0).clamp(0.6, 2.0);
+        let cscale = ls * s as f32;
+        let c = move |v: f32| (v * cscale).round() as i32;
+        let u = |v: f32| (v * ls).round() as i32;
+        let accent = self.accent;
+        let mut out = Vec::new();
+
+        // ---- the card: wordmark, track, caption (redrawn only when the output changes)
+        let mut title_px = 112.0 * cscale;
+        let tracking = |px: f32| (px * 0.18).round() as i32;
+        let room = (output_size.w - u(80.0)) * s;
+        while title_px > 24.0 * cscale
+            && self.text.measure_spaced(TITLE, title_px, Face::Display, tracking(title_px)) > room
+        {
+            title_px *= 0.85;
+        }
+        let stale = match &self.wordmark {
+            Some(card) => card.scale != s || card.size.w != output_size.w || card.size.h != output_size.h,
+            None => true,
+        };
+        if stale {
+            let (canvas, title_mid, bar_y) = self.draw_startup_card(&c, title_px, tracking(title_px));
+            self.wordmark = Some(Cached {
+                buffer: Self::buffer_of(&canvas, s),
+                size: output_size,
+                scale: s,
+            });
+            self.card_geometry = (canvas.width, canvas.height, title_mid, bar_y);
+        }
+        let (card_w, card_h, title_mid, bar_y) = self.card_geometry;
+        // The wordmark sits where the splash had it: 30 units above centre.
+        let card_x = (output_size.w - card_w / s) / 2;
+        let card_y = output_size.h / 2 - u(30.0) - title_mid / s;
+        if let Some(card) = &self.wordmark {
+            out.extend(Self::buffer_element(renderer, &card.buffer, (card_x, card_y).into(), scale));
+        }
+
+        // ---- the sweep along the track: the splash's progress head, without a
+        // number to report, so it runs on a 1.9 s loop while the shell starts.
+        let bar_w = c(360.0);
+        let strip_h = c(16.0).max(4);
+        let mut strip = Canvas::new(bar_w, strip_h);
+        let seg = c(120.0).max(8);
+        let phase = (elapsed / 1.9).fract();
+        let head = (-seg as f32 + (bar_w + seg) as f32 * phase) as i32;
+        let mid = strip_h / 2;
+        let th = c(3.0).max(2);
+        for x in head.max(0)..(head + seg).min(bar_w) {
+            let t = (x - head) as f32 / seg as f32;
+            let a = (t * t * t).clamp(0.0, 1.0);
+            strip.fill_rect(x, mid - th / 2, 1, th, alpha(accent, a));
+        }
+        let hx = head + seg;
+        if hx > 0 && hx < bar_w {
+            strip.fill_circle(hx, mid, c(6.0).max(3), alpha(accent, 0.22));
+            strip.fill_circle(hx, mid, c(3.0).max(2), alpha(WHITE, 0.9));
+        }
+        out.extend(Self::buffer_element(
+            renderer,
+            &Self::buffer_of(&strip, s),
+            (card_x + (card_w - bar_w) / 2 / s, card_y + (bar_y - strip_h / 2) / s).into(),
+            scale,
+        ));
+
+        // ---- the hairline low on the screen with its streak, exactly where
+        // the splash drew it (0.84 of the height, 0.56 of the width).
+        let line_w = ((output_size.w as f32 * 0.56) as i32 * s).max(2);
+        let line_h = c(10.0).max(3);
+        let mut scan = Canvas::new(line_w, line_h);
+        let ly = line_h / 2;
+        scan.fill_rect(0, ly, line_w, c(1.0).max(1), alpha(HAIRLINE, 0.9));
+        let streak = c(260.0).max(16);
+        let travel = line_w + streak;
+        let sx = (-streak as f32 + travel as f32 * (elapsed / 2.6).fract()) as i32;
+        for x in sx.max(0)..(sx + streak).min(line_w) {
+            let t = ((x - sx) as f32 / streak as f32 * 2.0 - 1.0).abs();
+            let a = (1.0 - t).max(0.0).powf(1.3) * 0.9;
+            scan.fill_rect(x, ly - c(1.0).max(1), 1, c(3.0).max(2), alpha(accent, a));
+        }
+        out.extend(Self::buffer_element(
+            renderer,
+            &Self::buffer_of(&scan, s),
+            (
+                (output_size.w - line_w / s) / 2,
+                (output_size.h as f32 * 0.84) as i32 - line_h / (2 * s),
+            )
+                .into(),
+            scale,
+        ));
+
+        // ---- the HUD corners
+        let side = c(32.0).max(6);
+        if self.corners.as_ref().map(|(sc, sd, _)| *sc != s || *sd != side).unwrap_or(true) {
+            let corners = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
+                .iter()
+                .map(|(dx, dy)| Self::buffer_of(&Self::draw_corner(&c, accent, *dx, *dy), s))
+                .collect();
+            self.corners = Some((s, side, corners));
+        }
+        if let Some((_, _, corners)) = &self.corners {
+            let inset = u(32.0);
+            let far_x = output_size.w - inset - side / s;
+            let far_y = output_size.h - inset - side / s;
+            for (buffer, loc) in corners.iter().zip([
+                (inset, inset),
+                (far_x, inset),
+                (inset, far_y),
+                (far_x, far_y),
+            ]) {
+                out.extend(Self::buffer_element(renderer, buffer, loc.into(), scale));
+            }
+        }
+
+        // ---- the key hints, once the wait is long enough to want them
+        if elapsed >= HINTS_AFTER {
+            let stale = match &self.hints {
+                Some(h) => h.scale != s,
+                None => true,
+            };
+            if stale {
+                let canvas = self.draw_startup_hints(&c);
+                self.hints = Some(Cached {
+                    buffer: Self::buffer_of(&canvas, s),
+                    size: Size::from((canvas.width, canvas.height)),
+                    scale: s,
+                });
+            }
+            if let Some(hints) = &self.hints {
+                let loc = (
+                    (output_size.w - hints.size.w / s) / 2,
+                    card_y + card_h / s + u(26.0),
+                );
+                out.extend(Self::buffer_element(renderer, &hints.buffer, loc.into(), scale));
+            }
+        }
+        out
     }
 }
 
@@ -988,6 +1286,26 @@ mod tests {
                 haystack: n.to_lowercase(),
             })
             .collect()
+    }
+
+    /// Lay a premultiplied BGRA canvas over another one, for the previews.
+    fn paste(onto: &mut Canvas, canvas: &Canvas, ox: i32, oy: i32) {
+        for y in 0..canvas.height {
+            for x in 0..canvas.width {
+                let i = ((y * canvas.width + x) * 4) as usize;
+                let px = &canvas.data[i..i + 4];
+                if px[3] == 0 {
+                    continue;
+                }
+                let a = px[3] as f32 / 255.0;
+                // un-premultiply for blend()
+                onto.blend(
+                    ox + x,
+                    oy + y,
+                    [px[2] as f32 / 255.0 / a, px[1] as f32 / 255.0 / a, px[0] as f32 / 255.0 / a, a],
+                );
+            }
+        }
     }
 
     fn write_ppm(path: &std::path::Path, canvas: &Canvas) {
@@ -1053,26 +1371,14 @@ mod tests {
         bar.pending = None;
         let size = Size::from((900, panel_height(bar.body_height(900, 1080))));
         write_ppm(&dir.join("bar-empty.ppm"), &bar.draw_panel(size, 1));
-        // wordmark backdrop, composited onto a full 1920x1080 desktop
-        let backdrop = bar.draw_backdrop(Size::from((1200, 340)), 1);
+        // the startup screen, composited onto a full 1920x1080 desktop the way
+        // `backdrop_elements` places it (1080p units, so `c` is the identity)
+        let c = |v: f32| v.round() as i32;
         let mut desktop = Canvas::new(1920, 1080);
-        let (ox, oy) = ((1920 - backdrop.width) / 2, (1080 - backdrop.height) / 2);
-        for y in 0..backdrop.height {
-            for x in 0..backdrop.width {
-                let i = ((y * backdrop.width + x) * 4) as usize;
-                let px = &backdrop.data[i..i + 4];
-                if px[3] == 0 {
-                    continue;
-                }
-                let a = px[3] as f32 / 255.0;
-                // un-premultiply for blend()
-                desktop.blend(
-                    ox + x,
-                    oy + y,
-                    [px[2] as f32 / 255.0 / a, px[1] as f32 / 255.0 / a, px[0] as f32 / 255.0 / a, a],
-                );
-            }
-        }
+        let (card, title_mid, _bar_y) = bar.draw_startup_card(&c, 112.0, 20);
+        paste(&mut desktop, &card, (1920 - card.width) / 2, 1080 / 2 - 30 - title_mid);
+        let hints = bar.draw_startup_hints(&c);
+        paste(&mut desktop, &hints, (1920 - hints.width) / 2, 1080 - 120 - hints.height);
         write_ppm(&dir.join("desktop.ppm"), &desktop);
     }
 }
