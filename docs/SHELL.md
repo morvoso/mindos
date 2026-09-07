@@ -94,7 +94,7 @@ and the next save writes version 3).
       "align": "center",
       "margin": 0,
       "layer": "top",
-      "opacity": 0.85,
+      "opacity": 0.6,
       "float": false,
       "autohide": false,
       "widgets": [
@@ -104,9 +104,13 @@ and the next save writes version 3).
         { "id": "tray", "type": "tray", "config": {} },
         { "id": "audio", "type": "audio", "config": {} },
         { "id": "net", "type": "network", "config": {} },
+        { "id": "vpn", "type": "vpn", "config": {} },
         { "id": "bat", "type": "battery", "config": {} },
         { "id": "mode", "type": "layout-mode", "config": {} },
+        { "id": "perf", "type": "perf", "config": {} },
         { "id": "mind", "type": "mind", "config": {} },
+        { "id": "updates", "type": "updates", "config": {} },
+        { "id": "notify", "type": "notifications", "config": {} },
         { "id": "clock", "type": "clock", "config": { "seconds": false, "date": true, "hour24": false } }
       ]
     }
@@ -115,12 +119,8 @@ and the next save writes version 3).
     "wallpaper": { "mode": "builtin" },
     "icons": true,
     "widgets": []
-        { "id": "vpn", "type": "vpn", "config": {} },
   }
-        { "id": "perf", "type": "perf", "config": {} },
 }
-        { "id": "updates", "type": "updates", "config": {} },
-        { "id": "notify", "type": "notifications", "config": {} },
 ```
 
 * `panel.output`: `"*"` means one instance of the panel on every output;
@@ -164,8 +164,10 @@ and the next save writes version 3).
 | `tray` | panel | StatusNotifierItems plus the compositor's XEmbed icons (Wine, older X11 programs; `xembed: true`, ids `x11:<window>`, no menu of their own: right-click is replayed as a right-click); left-click activate, right-click menu, scroll. Settings: `hidePassive`, `iconSize` |
 | `audio` | panel | default sink volume; scroll adjusts, click opens the slider popup, middle-click mutes. Settings: `percent`, `scroll`, `step`, `hideWhenMuted` |
 | `network` | panel | wired/wifi state. Settings: `name`, `ip` |
+| `vpn` | panel | WireGuard tunnels (NetworkManager connections of type `wireguard`): a shield, lit green while a tunnel is up, with the tunnel's name; click opens the tunnel list popup (a switch per tunnel, details on click: interface, address, endpoint, connect at start-up, remove; *Import…* opens a file chooser for a wg-quick `.conf`), middle-click drops the active tunnel or brings up the only one. Settings: `name`, `hideWhenNone` |
 | `battery` | panel | charge state (hidden when no battery). Settings: `percent`, `warnAt`, `alwaysShow` |
 | `mind` | panel | Mind (mindd) status; click toggles the Mind bar. Settings: `label`, `model` |
+| `updates` | panel | the updates indicator: how many package updates the Mind's watcher found, amber when it rates them high-risk or they need a hand; hidden while the system is up to date; click opens Settings › Updates. Settings: `count`, `alwaysShow` |
 | `notifications` | panel | the bell: applications' notifications plus the Mind's notices that need attention, with a count badge (do-not-disturb crosses the bell out); click opens the notification centre popup. Setting: `count` |
 | `perf` | panel | the performance mode (`mindos-perf`: balanced / performance / quiet) as an icon, pulsing while GameMode has a game running; click opens the mode picker popup. Setting: `label` |
 | `sysmon` | panel | compact CPU / memory / GPU bars. Settings: `cpu`, `memory`, `gpu`, `interval` |
@@ -175,10 +177,8 @@ and the next save writes version 3).
 | `desktop-notes` | desktop | a sticky note (plain text, stored in the widget config). Settings: `title`, `fontSize`, `mono` |
 
 Every widget's settings are reachable without edit mode: right-click the
-| `vpn` | panel | WireGuard tunnels (NetworkManager connections of type `wireguard`): a shield, lit green while a tunnel is up, with the tunnel's name; click opens the tunnel list popup (a switch per tunnel, details on click: interface, address, endpoint, connect at start-up, remove; *Import…* opens a file chooser for a wg-quick `.conf`), middle-click drops the active tunnel or brings up the only one. Settings: `name`, `hideWhenNone` |
 widget (a panel widget or a desktop one) and pick *… settings*; the same
 menu offers *Edit the panel* / *Edit desktop*, *Add widget* and *Remove*.
-| `updates` | panel | the updates indicator: how many package updates the Mind's watcher found, amber when it rates them high-risk or they need a hand; hidden while the system is up to date; click opens Settings › Updates. Settings: `count`, `alwaysShow` |
 Changes apply and save as they are made; *Defaults* clears the widget's
 config. In edit mode the gear button on each widget opens the same form.
 
@@ -198,6 +198,7 @@ and one `mindos://shell/` origin.
 | `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus, the authentication dialog. Clicking the transparent area or pressing Escape closes it |
 | `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings app; one process per window, `app.close` ends it |
 | `toast` (one, on the primary output) | `overlay`, anchored top + right with a 12 px margin, exclusive zone 0, keyboard `none`; sized by the UI (`toast.fit`) and hidden while empty | the notification toasts: new application notifications and Mind notices slide in here and expire (never for critical ones) |
+| `lock` (one per output, while the screensaver is up or the session is locked) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output while locked and `none` otherwise; namespace `mindshell-lock`, which is how the compositor tells it apart | the screensaver and the lock screen. The compositor creates the need for it (its `idle` event) and enforces it: while the session is locked nothing but these surfaces is drawn or reachable |
 | `greeter` (`mindshell --app greeter`, one per output) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output and `none` on the others | the login screen: wallpaper and clock everywhere, the login card, the other accounts, the session and the power buttons on the first output. Started by greetd through `mindos-greeter` (see *The login screen* below) |
 
 ![Toasts in the dev VM: three `notify-send` notifications, the critical one in the danger colour](img/toasts.png)
@@ -207,7 +208,6 @@ Every window loads `mindos://shell/app/index.html?kind=<kind>&id=<id>&output=<na
 window stacked on one page: it is what `make shell-preview` screenshots in
 Chromium for design work without a compositor.
 
-| `lock` (one per output, while the screensaver is up or the session is locked) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output while locked and `none` otherwise; namespace `mindshell-lock`, which is how the compositor tells it apart | the screensaver and the lock screen. The compositor creates the need for it (its `idle` event) and enforces it: while the session is locked nothing but these surfaces is drawn or reachable |
 ## The bridge (`window.mindos`)
 
 Injected into every view before any script runs.
@@ -264,13 +264,15 @@ data so the UI can be developed in Chromium/Firefox.
 | `toast.fit` | `{ w, h }` from the toast window: the host resizes it (and hides it when `h` ≤ 1) |
 | `polkit.respond` | `{ id, password }` from the `auth` popup: the password for the authorisation the host is waiting on |
 | `polkit.cancel` | `{ id }`: the user dismissed the authentication dialog |
-| `shell.run` | `{ argv }` runs one of the system helpers and → `{ status, ok, stdout, stderr, json }` (`json` is the parsed stdout when it is JSON). Allowed: `mindos-perf status\|get\|modes\|set\|config\|apply` (also behind `sudo -n`), `mindos-dlss …`, `mindos-dev-setup …`, `mindos-boot list`, `pacman -Q…`, `checkupdates`, `nvidia-smi …`, `pkexec systemctl enable --now docker.service`, `pkexec usermod -aG docker <the session user>` (the last two go through the authentication dialog below) |
+| `shell.run` | `{ argv }` runs one of the system helpers and → `{ status, ok, stdout, stderr, json }` (`json` is the parsed stdout when it is JSON). Allowed: `mindos-perf status\|get\|modes\|set\|config\|apply` (also behind `sudo -n`), `mindos-dlss …`, `mindos-dev-setup …`, `mindos-boot list`, `pacman -Q…`, `checkupdates`, `nvidia-smi …`, `pkexec systemctl enable\|disable --now <docker.service\|sshd.service>`, `pkexec usermod -aG <docker\|kvm\|libvirt\|uucp\|wireshark> <the session user>`, `pkexec mindos-pkg install <a package from `DEV_PACKAGES`>` (those three go through the authentication dialog below), and unprivileged `ssh-keygen -t ed25519 … -f ~/.ssh/id_ed25519`, `cat ~/.ssh/*.pub`, `git config --global user.name\|user.email <value>` |
 | `panel.fit` | `{ length }` (content length in logical pixels) from a `length: 0` panel: the host resizes the panel window and answers `{ length }` |
 | `wm.layoutMode` | → `{ mode, label, modes: [{ mode, label, description }] }` |
 | `wm.setLayoutMode` / `wm.cycleLayoutMode` | `{ mode }` / none → the new `{ mode, label }`; also broadcast as `layout_mode` |
 | `wm.outputs` | → `{ outputs }` with the compositor's full output records (modes, position, transform, VRR, primary) |
 | `wm.setOutput` | `{ name, width?, height?, refresh? (mHz), scale?, position?: [x, y], transform?, enabled?, vrr?, primary? }` → applied and persisted by the compositor |
-| `prefs.get` / `prefs.set` | none / `{ prefs }` → `{ prefs }` (compositor preferences: `layout_mode`, `mind_show_tools`, `primary_output`, `outputs`); `prefs` is broadcast on every change |
+| `prefs.get` / `prefs.set` | none / `{ prefs }` → `{ prefs }` (compositor preferences: `layout_mode`, `mind_show_tools`, `primary_output`, `cursor_theme`, `cursor_size`, `outputs`); `prefs` is broadcast on every change |
+| `pointer.get` | → `{ theme, size, themes, sizes, writable }`: the cursor theme and its size from `org.gnome.desktop.interface`, and every installed theme (a directory with a `cursors/` folder in it) |
+| `pointer.set` | `{ theme?, size? }` → the new `pointer.get`: writes GSettings (GTK applications follow it at once through the settings portal) and forwards it to the compositor as `cursor_theme` / `cursor_size`, which reloads its own cursor and passes the size to what it starts next |
 | `wallpaper.list` | → `[{ path, name, folder }]`: the images in `/usr/share/mindos/wallpapers`, `~/.local/share/mindos/wallpapers` and `Wallpapers/` under the pictures folder (images are shown through `mindos://shell/thumb/`) |
 | `fs.desktop` | → `{ path }` the Desktop folder shown as icons |
 | `fs.list` | `{ path, hidden? }` → `{ path, parent, entries: [{ name, path, dir, size, mtime, hidden, symlink, mime, icon, image }] }` |
@@ -288,7 +290,18 @@ data so the UI can be developed in Chromium/Firefox.
 | `audio.set` | `{ volume }` (0..1.5) |
 | `audio.toggleMute` | |
 | `network.status` | → `{ connected, kind: "ethernet" \| "wifi" \| "none", ssid?, iface, ip? }` |
+| `vpn.list` | → `{ available, tunnels: [{ id, name, iface?, address?, endpoint?, peers, active, activating, autoconnect }] }` — every NetworkManager connection of type `wireguard`, active ones first (`id` is the connection UUID; `available` is false without nmcli) |
+| `vpn.connect` / `vpn.disconnect` | `{ id }` → the new `vpn.list` (`nmcli connection up/down`; NetworkManager's polkit rules apply, so the authentication dialog may appear) |
+| `vpn.autoconnect` | `{ id, on }` → the new `vpn.list` (whether NetworkManager brings the tunnel up at start-up) |
+| `vpn.remove` | `{ id }` → the new `vpn.list` (deletes the connection and its keys) |
+| `vpn.import` | `{ path? }` → `{ imported, id?, available, tunnels }` — without `path` a native file chooser asks for a wg-quick `.conf`; `imported` is false when it was dismissed. NetworkManager names the tunnel after the file and brings it up at once |
 | `battery.status` | → `{ present, percent, charging, timeToEmpty? }` |
+| `lock.info` | → `{ name, display, avatar, host, idle }` — the account the lock screen unlocks, and where the session stands |
+| `lock.state` | → the `idle` payload (`{ stage, locked, inhibited, saver }`) |
+| `lock.unlock` | `{ password }` → `{ ok }`, or `{ ok: false, error }` with PAM's own message. Checked against the `mindos-lock` PAM service on a thread of its own; one attempt at a time |
+| `lock.now` | lock the session now (the power menu, Settings › Screen, Super + L) |
+| `lock.wake` | wake the screen without unlocking |
+| `lock.blank` | switch the displays off now |
 | `icons.resolve` | `{ name, size }` → URL |
 
 ### Events
@@ -305,26 +318,20 @@ data so the UI can be developed in Chromium/Firefox.
 | `mind` | `{ connected, ready, model, daemon, sleeping, notices, updates, health }` |
 | `mind_notices` | `{ notices, added? }` whenever a Mind notice arrives, changes or goes (`added` is the new one; the toast window shows it) |
 | `mind_updates` | the mindd `updates` status (`{ checked_at, packages: [{ name, from, to, tag }], news, risk, summary, warnings, manual_intervention, reboot, assessed_by_model, assessing, checking, applying, auto_apply, last_update, error }`) whenever it changes |
-| `lock.info` | → `{ name, display, avatar, host, idle }` — the account the lock screen unlocks, and where the session stands |
-| `lock.state` | → the `idle` payload (`{ stage, locked, inhibited, saver }`) |
-| `lock.unlock` | `{ password }` → `{ ok }`, or `{ ok: false, error }` with PAM's own message. Checked against the `mindos-lock` PAM service on a thread of its own; one attempt at a time |
-| `lock.now` | lock the session now (the power menu, Settings › Screen, Super + L) |
-| `lock.wake` | wake the screen without unlocking |
-| `lock.blank` | switch the displays off now |
 | `mind_health` | `{ checked_at, findings: [{ id, level, title, body, actions }] }` after a health check |
 | `notify` | `{ items, dnd, added?, closed? }` on every notification change (`added`: the new notification, `closed`: the id that went) |
-| `vpn.list` | → `{ available, tunnels: [{ id, name, iface?, address?, endpoint?, peers, active, activating, autoconnect }] }` — every NetworkManager connection of type `wireguard`, active ones first (`id` is the connection UUID; `available` is false without nmcli) |
-| `vpn.connect` / `vpn.disconnect` | `{ id }` → the new `vpn.list` (`nmcli connection up/down`; NetworkManager's polkit rules apply, so the authentication dialog may appear) |
-| `vpn.autoconnect` | `{ id, on }` → the new `vpn.list` (whether NetworkManager brings the tunnel up at start-up) |
-| `vpn.remove` | `{ id }` → the new `vpn.list` (deletes the connection and its keys) |
-| `vpn.import` | `{ path? }` → `{ imported, id?, available, tunnels }` — without `path` a native file chooser asks for a wg-quick `.conf`; `imported` is false when it was dismissed. NetworkManager names the tunnel after the file and brings it up at once |
 | `perf_changed` | `{ argv }` after a `shell.run` of `mindos-perf set\|config\|apply` succeeded in any window; read the status again |
 | `polkit` | the authorisation the polkit agent is waiting for — `{ id, action, message, icon, user, users, command, error, attempt, tries, busy }` — or `null` when it is done (also in `shell.state.polkit`) |
 | `audio` | `{ volume, muted }` |
+| `vpn` | the `vpn.list` payload whenever NetworkManager reports a change (the host follows `nmcli monitor`) or a `vpn.*` call changed something |
+| `network` | the `network.status` payload, on the same cue |
 | `shortcut` | `{ name }` forwarded from the compositor (`overview`) |
 | `layout_mode` | `{ mode, label, modes? }` whenever the compositor's window layout changes |
 | `prefs` | `{ prefs }` whenever a compositor preference changes |
 | `desktop.changed` | `{ path }` when something in the Desktop folder changed (debounced) |
+| `config` | `{ config }` when a host setting changed while the shell runs — today the icon theme, when the desktop's icon pack changes |
+| `lock` | `{ stage: "active" \| "screensaver" \| "blank", locked, inhibited, saver }` whenever the compositor's idle state changes (also in `shell.state.lock`) |
+| `game` | `{ running }` when GameMode starts or ends a game (the host watches `/run/mindos/perf/game`); the UI goes quiet — `:root.quiet`, no animations, samplers slowed five times, the desktop's stopped |
 
 `mindos://shell/icon/<name>?size=N` serves an icon from the icon theme in force
 (`hicolor` fallback, SVG or PNG); an absolute path in place of `<name>` serves
@@ -338,9 +345,6 @@ serves the bundle's own `fonts/` first and falls back to
 `/usr/share/fonts/mindos` and the system font directories.
 
 ### Host implementation notes
-| `config` | `{ config }` when a host setting changed while the shell runs — today the icon theme, when the desktop's icon pack changes |
-| `lock` | `{ stage: "active" \| "screensaver" \| "blank", locked, inhibited, saver }` whenever the compositor's idle state changes (also in `shell.state.lock`) |
-| `game` | `{ running }` when GameMode starts or ends a game (the host watches `/run/mindos/perf/game`); the UI goes quiet — `:root.quiet`, no animations, samplers slowed five times, the desktop's stopped |
 
 What `mindshell` (the Rust host in `mindshell/`) does beyond the tables above:
 
@@ -349,8 +353,6 @@ What `mindshell` (the Rust host in `mindshell/`) does beyond the tables above:
   monitor list, which is also `outputs[0]` in `shell.state`).
 * **Popup anchors pass through.** `popup.open` / `popup.toggle` take the
   `anchor` in output-local logical pixels, as the UI conventions below say
-| `vpn` | the `vpn.list` payload whenever NetworkManager reports a change (the host follows `nmcli monitor`) or a `vpn.*` call changed something |
-| `network` | the `network.status` payload, on the same cue |
   (the UI adds the panel window's origin itself); the host does not translate
   it. The popup receives it as `mindos.window.anchor` (the `&anchor=<json>`
   URL parameter) and inside `mindos.window.arg.anchor`, and places itself.
@@ -449,6 +451,7 @@ Events (`{"event":"...", ...}`):
 | `mindbar` | `open: bool` |
 | `layout_mode` | `mode`, `label`, `modes` (after `subscribe` and on every change) |
 | `prefs` | `prefs` (after `subscribe` and on every change) |
+| `idle` | `stage`: `active` \| `screensaver` \| `blank`, `locked`, `inhibited` (something is holding the session awake), `saver` (the chosen screensaver). Sent whenever any of it changes |
 | `tray` | `items: [{ id, title, class, pid, width, height, pixels }]`: the XEmbed (legacy X11) tray icons the compositor hosts, `pixels` base64 RGBA with straight alpha, `width`/`height` 24. Sent after `subscribe` and whenever an icon docks, undocks, renames or redraws (icons are read back every 400 ms) |
 
 Window ids are stable for the life of a window and follow creation order.
@@ -460,7 +463,6 @@ or 4 MiB of unread events disconnects the client.
 
 ## Development
 
-| `idle` | `stage`: `active` \| `screensaver` \| `blank`, `locked`, `inhibited` (something is holding the session awake), `saver` (the chosen screensaver). Sent whenever any of it changes |
 ```sh
 # UI only, in a browser with the mock host
 cd mindshell/ui && npm install && npm run dev        # esbuild --watch → dist/
@@ -548,6 +550,8 @@ compositor's title bar and `app.close` ends the process. Settings pages:
 `desktop.wallpaper`), `displays` (basic: resolution / refresh rate / scale
 per output; advanced: position, rotation, VRR, primary, enable, through
 `wm.outputs` / `wm.setOutput`), `shell` (layout mode, panels, edit mode),
+`developer` (detected toolchains, containers, SSH, groups and kernel limits,
+git identity; every privileged action runs through `pkexec`),
 `about`.
 
 ## The authentication dialog (polkit)
@@ -575,8 +579,6 @@ message with the attempt count (three tries, as elsewhere); `polkit.cancel`,
 Escape or a click beside the dialog dismisses the request, and pkexec exits
 126. One dialog at a time: further requests wait their turn.
 
-`developer` (detected toolchains, containers, SSH, groups and kernel limits,
-git identity; every privileged action runs through `pkexec`),
 The Mind and the Settings app use it through the `shell.run` allow-list
 (`pkexec systemctl enable --now docker.service`, `pkexec usermod -aG docker …`)
 instead of hopping through a terminal with `sudo`. Everything that has to work
@@ -586,17 +588,6 @@ allowed for local, active members of the `mindos` group by
 `/usr/share/polkit-1/rules.d/50-mindos-gamemode.rules` (`mindos-gaming`), so a
 game never stops to ask for a password.
 
-## The login screen
-
-![The MindOS login screen](img/greeter.png)
-
-`mindshell --app greeter` is the greeter for [greetd](https://sr.ht/~kennylevinsen/greetd/),
-the login manager MindOS uses (Arch `greetd`, nothing from the AUR). greetd
-runs `mindos-greeter` (`mindos-session`) on VT 1 as the unprivileged
-`greeter` user: it is `mindwm --tty-udev` with
-`/etc/mindos/greeter/mindwm.toml` on top of the normal configuration
-(`[session] kiosk = true`: no Mind bar, no launcher, no shortcut or IPC
-request that starts a program; `[startup].exec = ["mindshell --app greeter"]`),
 ## The screensaver and the lock screen
 
 ![The lock screen over a running screensaver](img/lock.png)
@@ -649,6 +640,17 @@ to sleep, and whether something playing holds it all off. *Lock now* and Super
 + L do the same thing; the power menu has a Lock button that needs only one
 click.
 
+## The login screen
+
+![The MindOS login screen](img/greeter.png)
+
+`mindshell --app greeter` is the greeter for [greetd](https://sr.ht/~kennylevinsen/greetd/),
+the login manager MindOS uses (Arch `greetd`, nothing from the AUR). greetd
+runs `mindos-greeter` (`mindos-session`) on VT 1 as the unprivileged
+`greeter` user: it is `mindwm --tty-udev` with
+`/etc/mindos/greeter/mindwm.toml` on top of the normal configuration
+(`[session] kiosk = true`: no Mind bar, no launcher, no shortcut or IPC
+request that starts a program; `[startup].exec = ["mindshell --app greeter"]`),
 so the login screen is the same compositor and the same UI stack as the
 desktop, in the same theme. greetd does the authenticating (PAM, through
 `/etc/pam.d/greetd`); the greeter only relays the conversation over
@@ -685,8 +687,6 @@ portal's backend (`src/portal.rs`: bus name
 the same field; so does the `mindos-wallpaper PATH` command from
 `mindos-apps`. The host's file monitor picks the change up either way.
 
-**Widget settings.** Widgets declare `settings: { key: { label, type, min?,
-max?, step?, unit?, slider?, options?, segmented?, help?, placeholder?,
 The backend name is claimed in `main`, *before* `gtk::init()`. It has to be:
 `xdg-desktop-portal` does not finish starting until every backend it was
 configured with is on the bus, and GTK's first act is to ask that same portal
@@ -694,6 +694,8 @@ for the colour scheme. Claiming the name after GTK starts makes the two wait
 for each other until D-Bus gives up 25 seconds later, which is 25 seconds of
 the startup screen on every boot.
 
+**Widget settings.** Widgets declare `settings: { key: { label, type, min?,
+max?, step?, unit?, slider?, options?, segmented?, help?, placeholder?,
 when? } }` with `type` one of `boolean | number | string | text | enum |
 list`; `widget-settings` builds its form from that (falling back to the
 types of `defaults`). A `number` with `min` and `max` gets a slider next to

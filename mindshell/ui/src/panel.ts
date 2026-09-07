@@ -44,6 +44,26 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
 
   const mounted = new Map<string, Mounted>();
   let current: PanelDef | undefined;
+
+  // At rest the bar steps back (app.css `.rest`): a few seconds after the
+  // pointer leaves, unless a popup opened from it is still up.
+  let restTimer: ReturnType<typeof setTimeout> | undefined;
+  const wake = () => {
+    if (restTimer) clearTimeout(restTimer);
+    restTimer = undefined;
+    root.classList.remove('rest');
+  };
+  const settle = () => {
+    if (restTimer) clearTimeout(restTimer);
+    restTimer = setTimeout(() => {
+      restTimer = undefined;
+      if (!root.matches(':hover') && !root.querySelector('.w.open, .task.open')) root.classList.add('rest');
+    }, 2500);
+  };
+  root.addEventListener('pointerenter', wake);
+  root.addEventListener('pointermove', wake);
+  root.addEventListener('pointerleave', settle);
+  settle();
   let geomKey = '';
   let selected: string | undefined;
   /** Measured length of a fit-to-content panel (0 until known). */

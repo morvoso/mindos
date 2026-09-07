@@ -77,13 +77,6 @@ layer-shell panels. When a panel appears, resizes or goes away, every
 maximised window on that output is re-fitted, and fullscreen windows keep
 covering the whole output (panels are not drawn over a fullscreen window).
 
-## Window layouts and decorations
-
-`src/layout.rs` owns the three modes; the current one is saved in
-`$XDG_STATE_HOME/mindos/mindwm.json` (`src/prefs.rs`, with the other
-preferences the shell edits: whether the Mind bar shows its tool lines, the
-primary output, per-output settings) and announced to the shell as a
-`layout_mode` event.
 ## The pointer
 
 mindwm draws the pointer itself. A client either attaches its own cursor
@@ -105,6 +98,13 @@ the applications and sends `set_prefs { cursor_theme, cursor_size }`, which
 reloads the compositor's own cursor and updates the environment for whatever
 it starts next.
 
+## Window layouts and decorations
+
+`src/layout.rs` owns the three modes; the current one is saved in
+`$XDG_STATE_HOME/mindos/mindwm.json` (`src/prefs.rs`, with the other
+preferences the shell edits: whether the Mind bar shows its tool lines, the
+primary output, per-output settings) and announced to the shell as a
+`layout_mode` event.
 
 * **Floating** (`floating`, like KDE). Every window keeps the size it asks
   for and opens centred on the output it appears on; a second window that
@@ -143,11 +143,25 @@ in 260 ms (ease-out, recomputed every frame). Clicking a dock icon of a
 running app focuses that window; in floating mode a second click minimises
 it, in the tiling modes tiles are never minimised.
 
-The title bar (`src/shell/ssd.rs`) is rendered on the CPU with the same
-tokens and fonts as the shell and only redrawn when its title, focus, hover
-or width changes; drag it to move the window, double-click to maximise
-(floating windows), and the glyphs on the right minimise, maximise and close
-(close only on a tile). A window that asks for
+The title bar (`src/shell/ssd.rs`) is a 32 px glass card rendered on the CPU
+with the same tokens and fonts as the shell: a translucent fill, a light sheen
+over its top half, a 1 px light line along its top edge and a cyan line along
+its bottom edge when the window has the focus (a faint white one when it does
+not). It is only redrawn when its title, focus, hover or width changes; drag
+it to move the window, double-click to maximise (floating windows), and the
+glyphs on the right minimise, maximise and close (close only on a tile).
+
+Every decorated window that is not maximised also gets a frame
+(`src/shell/frame.rs`): a soft drop shadow, 40 px wide on a floating window
+and 12 px on a tile, with a 1 px light ring around the window. The shadow is
+darker on the focused window. The frame is a nine-piece set of small images
+(four corners, four strips) drawn once per look and scale, then stretched on
+the GPU around each window, so a window of any size costs the same eight small
+textures to composite. The window itself is drawn over the frame.
+Maximised and fullscreen windows have no frame; windows that draw their own
+decorations get neither the bar nor the frame.
+
+A window that asks for
 client-side decorations gets none from the compositor; one that never asks
 gets none either, except the shell's app windows (`mindos-settings`), which
 open undecorated so they get the same bar as
@@ -173,6 +187,7 @@ window.
 | `Super+Tab` / `Alt+Tab` | Cycle windows |
 | `Super+1..9` | Move the pointer to output *n* |
 | `Super+Shift+D` | Toggle server/client-side decorations on the focused window |
+| `Super+L` | Lock the screen |
 | `Super+Shift+E`, `Ctrl+Alt+Backspace` | Quit the compositor (ends the session) |
 | `Ctrl+Alt+F1..F12` | Switch virtual terminal |
 | `Super+Shift+P` / `Super+Shift+M` | Output scale up / down |
@@ -187,10 +202,12 @@ protocol get everything.
 
 * Type to filter installed applications (XDG desktop entries from
   `$XDG_DATA_DIRS`); `Enter` launches the highlighted one, `↑`/`↓`/`Tab` select.
-| `Super+L` | Lock the screen |
 * Anything that is not an application, a query prefixed with `?`, or
-  `Shift+Enter`, is sent to Mind. The answer streams in; tool calls show as
-  `⚙ run: nvidia-smi`, results as `✓ run_command: …`.
+  `Shift+Enter`, is sent to Mind. While the request is in flight the header
+  reads *THINKING* with a breathing dot and the conversation ends in an
+  animated *Thinking* line (the panel redraws every 60 ms until the first
+  token). The answer streams in; tool calls show as `⚙ run: nvidia-smi`,
+  results as `✓ run_command: …`.
 * When Mind wants to change the system (install packages, restart a service,
   edit a config) and autopilot is off, the bar shows *Mind wants to: …* and
   waits for `Y` or `N`. The daemon's policy layer decides what needs confirmation
@@ -211,23 +228,6 @@ The bar talks to `mindd` over `/run/mindos/mind.sock` (newline-delimited JSON,
 see `mindd/src/proto.rs`). If the daemon is not running the bar still works as a
 launcher and says so in its status line; it reconnects automatically.
 
-## The shell IPC
-
-`mindshell` (and anything else in the session) talks to the compositor over
-`$XDG_RUNTIME_DIR/mindwm-<wayland socket>.sock`, exported as `MINDWM_SOCKET`
-to every program mindwm starts and imported into `systemd --user` by
-`session-startup`. Newline-delimited JSON, one request per line, replies echo
-the request's `id`; subscribers get `windows`, `outputs`, `layout_mode`,
-`prefs`, `idle`, `shortcut`, `mindbar` and `mind_status` events, and can change the
-layout mode, the preferences and the outputs (mode, scale, position,
-rotation, VRR, primary) from the Settings app. The full request/event tables are in `docs/SHELL.md`
-("The compositor IPC"); `src/ipc.rs` implements them.
-
-* Window ids are stable for the life of a window and follow creation order.
-  Override-redirect X11 windows (menus, tooltips) and toplevels that have not
-  drawn yet are not listed.
-* Snapshots are compared after every event-loop turn and only sent when a
-  listed field changed, so an idle desktop costs nothing.
 ## Idling
 
 The compositor keeps the idle clock, because it is the only process that sees
@@ -283,6 +283,23 @@ Where it all stands is broadcast as the `idle` event
 (`{ stage, locked, inhibited, saver }`) and can be asked for with `get_idle`;
 `lock`, `unlock`, `wake` and `blank` drive it from the shell.
 
+## The shell IPC
+
+`mindshell` (and anything else in the session) talks to the compositor over
+`$XDG_RUNTIME_DIR/mindwm-<wayland socket>.sock`, exported as `MINDWM_SOCKET`
+to every program mindwm starts and imported into `systemd --user` by
+`session-startup`. Newline-delimited JSON, one request per line, replies echo
+the request's `id`; subscribers get `windows`, `outputs`, `layout_mode`,
+`prefs`, `idle`, `shortcut`, `mindbar` and `mind_status` events, and can change the
+layout mode, the preferences and the outputs (mode, scale, position,
+rotation, VRR, primary) from the Settings app. The full request/event tables are in `docs/SHELL.md`
+("The compositor IPC"); `src/ipc.rs` implements them.
+
+* Window ids are stable for the life of a window and follow creation order.
+  Override-redirect X11 windows (menus, tooltips) and toplevels that have not
+  drawn yet are not listed.
+* Snapshots are compared after every event-loop turn and only sent when a
+  listed field changed, so an idle desktop costs nothing.
 * A stalled subscriber (4 MiB of unread events) or one that sends a line over
   64 KiB is disconnected.
 
@@ -364,7 +381,7 @@ cd mindwm
 cargo build --release
 # nested, inside any Wayland/X11 session; talks to a test daemon if MIND_SOCKET is set
 MIND_SOCKET=/run/user/1000/mind-test.sock ./target/release/mindwm --winit
-# preview the Mind bar and desktop backdrop rendering without a display
+# preview the Mind bar and startup screen rendering without a display
 # (writes bar-empty/bar-launcher/bar-chat/desktop .ppm files)
 MINDWM_PREVIEW_DIR=/tmp/preview cargo test --release --lib renders_preview
 # IPC framing/reply/socket unit tests
@@ -390,6 +407,13 @@ use `wl_shm`, which is fine for terminals and the installer.
 
 Set `ANVIL_DRM_DEVICE=/dev/dri/cardN` in the session environment to force a
 specific device.
+
+Everything mindwm draws itself (title bars, window frames and shadows, the
+Mind bar, the desktop wordmark) is rasterised on the CPU into small images
+that are uploaded once and composited by the GPU together with the windows,
+so a decoration costs nothing per frame beyond a textured quad. The GLES
+context is requested at high priority so the desktop keeps its frame rate
+while a game is running.
 
 ## Boot hand-over
 

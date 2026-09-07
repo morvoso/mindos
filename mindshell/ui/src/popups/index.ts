@@ -42,6 +42,13 @@ export function placePopup(anchor: Anchor | undefined, w: number, h: number, out
   const maxX = Math.max(MARGIN, out.width - w - MARGIN);
   const maxY = Math.max(MARGIN, out.height - h - MARGIN);
   if (!anchor) return { x: Math.round((out.width - w) / 2), y: Math.round((out.height - h) / 2), origin: 'center' };
+  // An anchor from a panel whose output has since changed size can sit outside
+  // the screen; keep it inside, or the popup follows it off the edge.
+  anchor = {
+    ...anchor,
+    x: clamp(anchor.x, 0, Math.max(0, out.width - anchor.w)),
+    y: clamp(anchor.y, 0, Math.max(0, out.height - anchor.h)),
+  };
   let x = anchor.x;
   let y = anchor.y;
   let origin = 'top left';
@@ -83,7 +90,14 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
   const a = (arg && typeof arg === 'object' ? arg : {}) as Record<string, unknown>;
   const anchor = a.anchor as Anchor | undefined;
   const outInfo = store.output(output);
-  const out = { width: outInfo?.width ?? root.offsetWidth, height: outInfo?.height ?? root.offsetHeight };
+  // The popup lives in a layer surface that covers the whole output, so its
+  // own box is the truth about how much room there is; the output as the host
+  // reported it is the fallback until the page has been laid out. Taking the
+  // smaller of the two keeps the popup on the screen when they disagree (a
+  // mode change the shell has not caught up with, an unknown output name).
+  const size = (surface: number, reported: number | undefined) =>
+    surface > 0 && reported ? Math.min(surface, reported) : surface || reported || 0;
+  const out = { width: size(root.offsetWidth, outInfo?.width), height: size(root.offsetHeight, outInfo?.height) };
   const pop = h('div', { class: `pop pop-${name}`, role: 'dialog' });
   const backdrop = h('div', { class: 'pop-backdrop' });
   let closed = false;
@@ -114,8 +128,10 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
   const place = () => {
     const s = rootScale(root);
     const r = pop.getBoundingClientRect();
-    const w = content.w ?? r.width / s;
-    const hh = content.h ?? r.height / s;
+    // What it asked for or what it grew to, whichever is wider: a popup whose
+    // content does not fit its declared width must still be placed on screen.
+    const w = Math.max(content.w ?? 0, r.width / s);
+    const hh = Math.max(content.h ?? 0, r.height / s);
     const p = placePopup(anchor, w, hh, out);
     pop.style.left = `${p.x}px`;
     pop.style.top = `${p.y}px`;

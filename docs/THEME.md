@@ -86,11 +86,6 @@ Every toolkit is told the desktop is dark, from `mindos-session`:
 Users override any of these in the usual places (`~/.config/gtk-3.0/settings.ini`,
 `gsettings set org.gnome.desktop.interface color-scheme default`, `about:config`).
 
-### Fonts
-
-| Font | Role | Comes from |
-| --- | --- | --- |
-| Inter (Regular, Medium, SemiBold, Bold) | the system face: body text, UI labels, everything you read | `inter-font` |
 ### The pointer
 
 `mindos-cursors` draws the MindOS cursor theme into
@@ -123,6 +118,11 @@ is told over IPC and reloads its own cursor without a restart, and
 everything that only looks at the environment (SDL, Qt, XWayland). Programs
 that read the size once at start pick a new one up the next time they run.
 
+### Fonts
+
+| Font | Role | Comes from |
+| --- | --- | --- |
+| Inter (Regular, Medium, SemiBold, Bold) | the system face: body text, UI labels, everything you read | `inter-font` |
 | JetBrains Mono (Regular, Bold) | commands, key names, clocks, the terminal | `ttf-jetbrains-mono` |
 | Orbitron (Regular, Medium, Bold, Black) | the wordmark and display text only | `mindos-theme`, in `/usr/share/fonts/mindos/` |
 | Share Tech Mono | the Plymouth caption | `mindos-theme`, in `/usr/share/fonts/mindos/` |
@@ -211,11 +211,16 @@ rounded glass tile with a cyan M).
 
 ### Compositor and shell
 
-`mindwm` clears to the void, draws the MINDOS wordmark and key hints on an
-empty desktop, renders the Mind bar as a rounded translucent card with the
-cyan accent glowing along its top edge, and gives every decorated window the
-same 30 px glass title bar with rounded top corners
-(`mindwm/src/mindbar.rs`, `mindwm/src/shell/ssd.rs`, `docs/COMPOSITOR.md`).
+`mindwm` clears to the void, carries the boot splash on as its startup screen
+until the shell's desktop is up (the same wordmark, progress line, sweeping
+hairline and HUD corners, captioned `STARTING THE DESKTOP`), renders the Mind
+bar as a rounded translucent card with the
+cyan accent glowing along its top edge and a soft shadow beneath it, and
+gives every decorated window the same 32 px glass title bar with rounded top
+corners, a 1 px light ring and a drop shadow (40 px on floating windows,
+12 px on tiles, none when maximised)
+(`mindwm/src/mindbar.rs`, `mindwm/src/shell/ssd.rs`,
+`mindwm/src/shell/frame.rs`, `docs/COMPOSITOR.md`).
 `mindshell` draws the bottom bar, the desktop icons, the popups, the
 Settings app and the desktop widgets from the same tokens
 (`mindshell/ui/src/app.css`, `mindshell/ui/src/glass.ts`, `docs/SHELL.md`). The compositor colours can
