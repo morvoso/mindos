@@ -7,6 +7,7 @@ import './layout-mode';
 import './tray';
 import './audio';
 import './network';
+import './vpn';
 import './battery';
 import './mind';
 import './notifications';

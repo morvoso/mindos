@@ -18,6 +18,7 @@ export function defaultLayout(): Layout {
           { id: 'tray', type: 'tray', config: {} },
           { id: 'audio', type: 'audio', config: {} },
           { id: 'net', type: 'network', config: {} },
+          { id: 'vpn', type: 'vpn', config: {} },
           { id: 'bat', type: 'battery', config: {} },
           { id: 'mode', type: 'layout-mode', config: {} },
           { id: 'perf', type: 'perf', config: {} },

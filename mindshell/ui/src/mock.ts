@@ -7,7 +7,7 @@ import { parseWindowInfo, setApi, type MindosGlobal } from './bridge';
 import { letterIcon, hashHue } from './icons';
 import { defaultLayout } from './layout';
 import * as mfs from './mock-fs';
-import type { AppInfo, AudioState, CatalogEntry, DlssGame, DlssLibraryEntry, HealthReport, Layout, MenuItem, MindNotice, ModelEntry, ModelsInfo, Notification, PerfStatus, PolkitRequest, Prefs, ShellState, Stats, TrayItem, UpdateStatus, WindowInfo, WmOutput } from './types';
+import type { AppInfo, AudioState, CatalogEntry, DlssGame, DlssLibraryEntry, HealthReport, Layout, LockState, MenuItem, MindNotice, ModelEntry, ModelsInfo, Notification, PerfStatus, PolkitRequest, Prefs, ShellState, Stats, TrayItem, UpdateStatus, VpnState, VpnTunnel, WindowInfo, WmOutput } from './types';
 
 type Listener = (payload: unknown) => void;
 
@@ -54,6 +54,15 @@ const CATALOG: CatalogEntry[] = [
 export const mockHooks: MockHooks = {};
 
 function app(id: string, name: string, categories: string[], opts: Partial<AppInfo> = {}): AppInfo {
+const vpn: VpnTunnel[] = [
+  { id: '33b8e36a-5b64-42fb-8f29-230894f4d8b4', name: 'office', iface: 'office', address: '10.66.0.2/24', endpoint: 'vpn.example.net:51820', peers: 1, active: true, activating: false, autoconnect: true },
+  { id: '9a1c2d3e-4f50-4617-8899-aabbccddeeff', name: 'mullvad-se', iface: 'wg-se', address: '10.64.12.7/32', endpoint: '185.65.134.1:51820', peers: 1, active: false, activating: false, autoconnect: false },
+];
+const vpnState = (): VpnState => {
+  const mode = new URLSearchParams(location.search).get('vpn');
+  return { available: mode !== '0', tunnels: mode === 'none' ? [] : vpn.map((t) => ({ ...t })) };
+};
+
   return {
     id: id.endsWith('.desktop') ? id : id + '.desktop',
     name,
@@ -139,6 +148,13 @@ export function installMock(): MindosGlobal {
     listeners.get(event)?.forEach((cb) => cb(payload));
   };
   let layout: Layout = defaultLayout();
+  const vpnSet = (id: string, patch: Partial<VpnTunnel>): VpnState => {
+    const t = vpn.find((x) => x.id === id);
+    if (!t) throw new Error('Could not connect: no such tunnel');
+    Object.assign(t, patch);
+    emit('vpn', vpnState());
+    return vpnState();
+  };
   let editMode = q.get('edit') === '1';
   const windows: WindowInfo[] = [
     win(1, 'Steam', 'steam', { x11: true }),
@@ -669,6 +685,12 @@ export function installMock(): MindosGlobal {
     'battery.status': () => (q.get('battery') === '1' ? { present: true, percent: 67, charging: false, timeToEmpty: 8200 } : { present: false }),
     'icons.resolve': (p) => letterIcon(String(p.name), hashHue(String(p.name))),
     'panel.fit': (p) => {
+    'lock.info': () => ({ name: 'morvoso', display: 'Justin', avatar: null, host: 'mindos-dev', idle: { ...idle } }),
+    'lock.state': () => ({ ...idle }),
+    'lock.unlock': (p) => (p.password === 'hunter2' ? (pushIdle({ locked: false, stage: 'active' }), { ok: true }) : { ok: false, error: 'That password did not work.' }),
+    'lock.now': () => pushIdle({ locked: true, stage: 'active' }),
+    'lock.wake': () => pushIdle({ stage: 'active' }),
+    'lock.blank': () => pushIdle({ stage: 'blank', locked: prefs.idle?.lock_on_blank ?? true }),
       mockHooks.panelFit?.(String(p.panel ?? ''), Number(p.length) || 0);
       return {};
     },

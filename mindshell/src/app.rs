@@ -157,6 +157,8 @@ impl App {
             tracing::warn!(dir = %ui_dir.display(), "UI bundle not found; windows will be empty");
         }
         let app_mode = opts.app.map(|name| AppMode {
+    /// The pending re-read of the network state (NetworkManager's changes come in bursts).
+    network_refresh: RefCell<Option<glib::SourceId>>,
             name,
             page: opts.page.unwrap_or_default(),
             arg: opts.arg.unwrap_or_default(),
@@ -253,6 +255,7 @@ impl App {
             return;
         }
         let weak = Rc::downgrade(self);
+            network_refresh: RefCell::new(None),
         glib::timeout_add_local_once(Duration::from_millis(300), move || {
             if let Some(app) = weak.upgrade() {
                 app.sync_pending.set(false);
@@ -1327,6 +1330,40 @@ impl App {
     /// Tell every view the notification list changed. `added` is the new
     /// notification (the toast window shows it), `closed` an id that went.
     fn notify_changed(&self, added: Option<&Value>, closed: Option<u32>) {
+            // ---- WireGuard tunnels (NetworkManager connections of type wireguard)
+            "vpn.list" => Ok(blocking(system::vpn_list).await),
+            "vpn.connect" | "vpn.disconnect" => {
+                let id = str_param("id")?;
+                let up = method == "vpn.connect";
+                blocking(move || system::vpn_set_active(&id, up)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.autoconnect" => {
+                let id = str_param("id")?;
+                let on = params.get("on").and_then(Value::as_bool).ok_or("vpn.autoconnect: missing 'on'")?;
+                blocking(move || system::vpn_set_autoconnect(&id, on)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.remove" => {
+                let id = str_param("id")?;
+                blocking(move || system::vpn_remove(&id)).await?;
+                Ok(self.network_changed().await)
+            }
+            "vpn.import" => {
+                // A file chooser for a wg-quick configuration; `path` skips it.
+                let path = match params.get("path").and_then(Value::as_str) {
+                    Some(p) => PathBuf::from(p),
+                    None => match self.pick_file("Import a WireGuard configuration", &[("WireGuard configuration", "*.conf")]).await {
+                        Some(p) => p,
+                        None => return Ok(json!({ "imported": false })),
+                    },
+                };
+                let id = blocking(move || system::vpn_import(&path)).await?;
+                let mut v = self.network_changed().await;
+                v["imported"] = json!(true);
+                v["id"] = json!(id);
+                Ok(v)
+            }
         let mut v = Self::notify_json_locked(&self.state.borrow());
         v["added"] = added.cloned().unwrap_or(Value::Null);
         v["closed"] = closed.map(|id| json!(id)).unwrap_or(Value::Null);
@@ -1821,6 +1858,68 @@ impl App {
         // Settings (Updates, Mind) shows the daemon's notices, update
         // status and health, so an --app window subscribes too.
         if !self.is_greeter() {
+    /// Re-read the network state once the burst of change events has settled:
+    /// a tunnel going down is several lines from `nmcli monitor`, and only the
+    /// last one shows the final state.
+    fn schedule_network_refresh(self: &Rc<Self>) {
+        if let Some(id) = self.network_refresh.borrow_mut().take() {
+            id.remove();
+        }
+        let app = self.clone();
+        let id = glib::timeout_add_local_once(Duration::from_millis(400), move || {
+            app.network_refresh.borrow_mut().take();
+            let app = app.clone();
+            glib::spawn_future_local(async move {
+                app.network_changed().await;
+            });
+        });
+        *self.network_refresh.borrow_mut() = Some(id);
+    }
+
+    /// Read the network and tunnel state again and tell every window; the
+    /// tunnel list is also the answer to the `vpn.*` calls.
+    async fn network_changed(&self) -> Value {
+        let vpn = blocking(system::vpn_list).await;
+        let network = blocking(system::network_status).await;
+        self.broadcast("vpn", &vpn);
+        self.broadcast("network", &network);
+        vpn
+    }
+
+    /// A native open-file dialog; `None` when the user dismissed it.
+    async fn pick_file(&self, title: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
+        let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
+        let list = gio::ListStore::new::<gtk::FileFilter>();
+        for (name, pattern) in filters {
+            let f = gtk::FileFilter::new();
+            f.set_name(Some(name));
+            f.add_pattern(pattern);
+            list.append(&f);
+        }
+        let all = gtk::FileFilter::new();
+        all.set_name(Some("All files"));
+        all.add_pattern("*");
+        list.append(&all);
+        dialog.set_filters(Some(&list));
+        if let Some(first) = list.item(0).and_downcast::<gtk::FileFilter>() {
+            dialog.set_default_filter(Some(&first));
+        }
+        if let Some(home) = system::home_dir() {
+            dialog.set_initial_folder(Some(&gio::File::for_path(home)));
+        }
+        // A layer-shell surface cannot parent a dialog, so it opens as its own
+        // window and the compositor places it.
+        match dialog.open_future(None::<&gtk::Window>).await {
+            Ok(file) => file.path(),
+            Err(e) => {
+                if !e.matches(gtk::DialogError::Dismissed) {
+                    tracing::warn!(%e, "file dialog");
+                }
+                None
+            }
+        }
+    }
+
             crate::mindwatch::start(self.events.clone());
         }
         if self.app_mode.is_some() {
@@ -1954,3 +2053,34 @@ fn xembed_item_json(item: &Value) -> Option<Value> {
         "pid": item.get("pid").cloned().unwrap_or(Value::Null),
     }))
 }
+            HostEvent::Network => self.schedule_network_refresh(),
+        // NetworkManager's own change feed: one line per event, which is the
+        // cue to read the connection and tunnel state again.
+        let events = self.events.clone();
+        std::thread::Builder::new()
+            .name("mindshell-network".into())
+            .spawn(move || {
+                use std::io::BufRead;
+                let Ok(mut child) = std::process::Command::new("nmcli")
+                    .arg("monitor")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                else {
+                    tracing::debug!("nmcli is not available; network changes are polled");
+                    return;
+                };
+                let Some(stdout) = child.stdout.take() else { return };
+                let mut lines = std::io::BufReader::new(stdout).lines();
+                // Every line is reported; the main loop settles the burst.
+                while let Some(Ok(_)) = lines.next() {
+                    if events.send_blocking(HostEvent::Network).is_err() {
+                        let _ = child.kill();
+                        return;
+                    }
+                }
+                let _ = child.wait();
+            })
+            .expect("spawn network thread");
+

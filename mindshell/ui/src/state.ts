@@ -4,9 +4,9 @@
 import * as bridge from './bridge';
 import { deepClone } from './dom';
 import { normalizeLayout } from './layout';
-import type { AudioState, HealthReport, Layout, LayoutModeInfo, MindNotice, MindStatus, Notification, NotifyState, OutputInfo, PolkitRequest, Prefs, ShellState, TrayItem, UpdateStatus, WindowInfo, AppInfo } from './types';
+import type { AudioState, HealthReport, Layout, LayoutModeInfo, LockState, MindNotice, MindStatus, Notification, NotifyState, OutputInfo, PolkitRequest, Prefs, ShellState, TrayItem, UpdateStatus, WindowInfo, AppInfo, VpnState, NetworkState } from './types';
 
-export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth' | 'polkit';
+export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'config' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth' | 'polkit' | 'game' | 'vpn' | 'network' | 'lock';
 
 type Cb = (state: ShellState) => void;
 
@@ -122,6 +122,14 @@ export class Store {
       this.emit('shortcut');
     });
     bridge.on<LayoutModeInfo>('layout_mode', (p) => {
+    bridge.on<VpnState>('vpn', (p) => {
+      this.state.vpn = p;
+      this.emit('vpn');
+    });
+    bridge.on<NetworkState>('network', (p) => {
+      this.state.network = p;
+      this.emit('network');
+    });
       this.layoutMode = { mode: p.mode, label: p.label, modes: p.modes ?? this.layoutMode?.modes };
       this.emit('layoutMode');
     });

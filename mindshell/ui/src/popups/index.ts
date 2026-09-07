@@ -16,6 +16,7 @@ import { perfPopup } from './perf';
 import { powerPopup } from './power';
 import type { PopupContent, PopupCtx, PopupFactory } from './shared';
 import { trayMenuPopup } from './tray-menu';
+import { vpnPopup } from './vpn';
 import { widgetCatalogPopup } from './widget-catalog';
 import { widgetSettingsPopup } from './widget-settings';
 
@@ -29,6 +30,7 @@ export const POPUPS: Record<string, PopupFactory> = {
   perf: perfPopup,
   'context-menu': contextMenuPopup,
   'tray-menu': trayMenuPopup,
+  vpn: vpnPopup,
   'widget-catalog': widgetCatalogPopup,
   'widget-settings': widgetSettingsPopup,
 };

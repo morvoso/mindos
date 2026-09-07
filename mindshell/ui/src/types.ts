@@ -138,6 +138,28 @@ export interface NetworkState {
   ip?: string;
 }
 
+/** A WireGuard tunnel (a NetworkManager connection of type wireguard). */
+export interface VpnTunnel {
+  /** The connection UUID: what every `vpn.*` call takes. */
+  id: string;
+  name: string;
+  iface?: string;
+  /** The tunnel's own address, e.g. 10.66.0.2/24. */
+  address?: string;
+  /** The first peer's endpoint, host:port. */
+  endpoint?: string;
+  peers: number;
+  active: boolean;
+  activating: boolean;
+  autoconnect: boolean;
+}
+
+export interface VpnState {
+  /** False when NetworkManager (nmcli) is not there. */
+  available: boolean;
+  tunnels: VpnTunnel[];
+}
+
 export interface BatteryState {
   present: boolean;
   percent?: number;
@@ -430,6 +452,10 @@ export interface LayoutModeInfo {
 export interface Prefs {
   layout_mode?: string | null;
   mind_show_tools?: boolean | null;
+  /** Read on demand (`vpn.list`) and pushed as `vpn`. */
+  vpn?: VpnState;
+  /** Pushed as `network` whenever NetworkManager reports a change. */
+  network?: NetworkState;
   primary_output?: string | null;
   outputs?: Record<string, unknown>;
 }

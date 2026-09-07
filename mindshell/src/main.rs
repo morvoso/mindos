@@ -24,6 +24,7 @@ mod pointer;
 mod portal;
 mod scheme;
 mod system;
+mod sleepwatch;
 mod tray;
 mod windows;
 

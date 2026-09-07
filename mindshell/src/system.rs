@@ -269,6 +269,170 @@ fn ip_for(dev: &str) -> Option<String> {
         .map(|s| s.split('/').next().unwrap_or(s).to_string())
 }
 
+// ---------------------------------------------------------------- WireGuard
+//
+// Tunnels are NetworkManager connections of type `wireguard`, driven through
+// nmcli: the shell never touches keys or the interface itself, and NetworkManager
+// keeps the tunnel up across shell restarts. `nmcli -t` separates fields with
+// ':' and escapes a ':' inside a value as '\:'.
+
+fn nmcli_fields(line: &str) -> Vec<String> {
+    let mut fields = vec![String::new()];
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    fields.last_mut().unwrap().push(next);
+                }
+            }
+            ':' => fields.push(String::new()),
+            _ => fields.last_mut().unwrap().push(c),
+        }
+    }
+    fields
+}
+
+/// One property of a connection, from `nmcli -t connection show <id>`.
+fn nmcli_prop<'a>(lines: &'a str, key: &str) -> Option<&'a str> {
+    lines
+        .lines()
+        .find_map(|l| l.strip_prefix(key).and_then(|rest| rest.strip_prefix(':')))
+        .map(str::trim)
+}
+
+fn nmcli_error(out: &std::process::Output, what: &str) -> String {
+    let err = String::from_utf8_lossy(&out.stderr);
+    let msg = err.trim().lines().last().unwrap_or("").trim_start_matches("Error: ").to_string();
+    if msg.is_empty() {
+        format!("{what} failed")
+    } else {
+        format!("{what}: {msg}")
+    }
+}
+
+fn nmcli_run(args: &[&str], what: &str) -> Result<String, String> {
+    let out = Command::new("nmcli").args(args).output().map_err(|e| format!("nmcli: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(nmcli_error(&out, what))
+    }
+}
+
+/// True when the argument is a NetworkManager connection UUID (the only way
+/// the UI names a tunnel to the host, so a name can never be mistaken for an
+/// nmcli option).
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36 && s.bytes().enumerate().all(|(i, b)| match i {
+        8 | 13 | 18 | 23 => b == b'-',
+        _ => b.is_ascii_hexdigit(),
+    })
+}
+
+/// Every WireGuard tunnel NetworkManager knows, active ones first.
+pub fn vpn_list() -> Value {
+    if !have("nmcli") {
+        return json!({"available": false, "tunnels": []});
+    }
+    let Some(out) = run("nmcli", &["-t", "-f", "NAME,UUID,TYPE,DEVICE,ACTIVE,AUTOCONNECT", "connection", "show"]) else {
+        return json!({"available": false, "tunnels": []});
+    };
+    let mut tunnels = Vec::new();
+    for line in out.lines() {
+        let f = nmcli_fields(line);
+        if f.len() < 6 || f[2] != "wireguard" {
+            continue;
+        }
+        let (name, uuid, device, active, autoconnect) = (&f[0], &f[1], &f[3], f[4] == "yes", f[5] == "yes");
+        let detail = run("nmcli", &["-t", "-f", "connection.interface-name,ipv4.addresses,wireguard.peers,GENERAL.STATE", "connection", "show", uuid])
+            .unwrap_or_default();
+        // A deleted profile whose tunnel is still coming down is listed for a
+        // moment longer, without any settings; nothing can be done with it.
+        if !detail.lines().any(|l| l.starts_with("connection.interface-name:")) {
+            continue;
+        }
+        let iface = nmcli_prop(&detail, "connection.interface-name")
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| Some(device.clone()).filter(|s| !s.is_empty()));
+        let address = nmcli_prop(&detail, "ipv4.addresses")
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        // `wireguard.peers` lists every peer as `<key> allowed-ips=… endpoint=host:port …`.
+        let peers = nmcli_prop(&detail, "wireguard.peers").unwrap_or("");
+        let endpoint = peers
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("endpoint="))
+            .map(str::to_string);
+        let peer_count = peers.split(',').filter(|p| !p.trim().is_empty()).count();
+        let state = nmcli_prop(&detail, "GENERAL.STATE").unwrap_or("").to_string();
+        tunnels.push(json!({
+            "id": uuid, "name": name, "iface": iface, "address": address,
+            "endpoint": endpoint, "peers": peer_count,
+            "active": active, "activating": state == "activating", "autoconnect": autoconnect,
+        }));
+    }
+    tunnels.sort_by(|a, b| {
+        let act = |v: &Value| v["active"].as_bool().unwrap_or(false);
+        act(b).cmp(&act(a)).then_with(|| a["name"].as_str().unwrap_or("").to_lowercase().cmp(&b["name"].as_str().unwrap_or("").to_lowercase()))
+    });
+    json!({"available": true, "tunnels": tunnels})
+}
+
+/// Bring a tunnel up or down.
+pub fn vpn_set_active(id: &str, up: bool) -> Result<(), String> {
+    if !is_uuid(id) {
+        return Err("not a tunnel id".into());
+    }
+    let verb = if up { "up" } else { "down" };
+    nmcli_run(&["connection", verb, "uuid", id], if up { "Could not connect" } else { "Could not disconnect" }).map(|_| ())
+}
+
+/// Whether NetworkManager brings the tunnel up on its own at start-up.
+pub fn vpn_set_autoconnect(id: &str, on: bool) -> Result<(), String> {
+    if !is_uuid(id) {
+        return Err("not a tunnel id".into());
+    }
+    nmcli_run(
+        &["connection", "modify", "uuid", id, "connection.autoconnect", if on { "yes" } else { "no" }],
+        "Could not change the tunnel",
+    )
+    .map(|_| ())
+}
+
+/// Forget a tunnel (its keys go with it).
+pub fn vpn_remove(id: &str) -> Result<(), String> {
+    if !is_uuid(id) {
+        return Err("not a tunnel id".into());
+    }
+    nmcli_run(&["connection", "delete", "uuid", id], "Could not remove the tunnel").map(|_| ())
+}
+
+/// Import a `wg-quick` style configuration file. The connection takes the
+/// file's name (`office.conf` → `office`) and NetworkManager brings it up at
+/// once; returns the new connection's UUID.
+pub fn vpn_import(path: &std::path::Path) -> Result<String, String> {
+    if !path.is_file() {
+        return Err("That file does not exist".into());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("Could not read the file: {e}"))?;
+    if !text.lines().any(|l| l.trim().eq_ignore_ascii_case("[interface]")) {
+        return Err("That is not a WireGuard configuration (no [Interface] section)".into());
+    }
+    let out = nmcli_run(&["connection", "import", "type", "wireguard", "file", &path.to_string_lossy()], "Could not import the tunnel")?;
+    // "Connection 'office' (uuid) successfully added."
+    let uuid = out
+        .split('(')
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .map(str::to_string)
+        .filter(|s| is_uuid(s))
+        .unwrap_or_default();
+    Ok(uuid)
+}
+
 pub fn battery_status() -> Value {
     let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") else {
         return json!({"present": false});
@@ -306,4 +470,28 @@ pub fn host_name() -> String {
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_else(|| "mindos".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nmcli_terse_fields_unescape() {
+        assert_eq!(nmcli_fields("office:33b8:wireguard:office:yes:yes"), ["office", "33b8", "wireguard", "office", "yes", "yes"]);
+        assert_eq!(nmcli_fields(r"Home\: VPN:1:wireguard::no:no"), ["Home: VPN", "1", "wireguard", "", "no", "no"]);
+        assert_eq!(nmcli_fields(""), [""]);
+    }
+
+    #[test]
+    fn nmcli_props_and_ids() {
+        let detail = "connection.interface-name:wg0\nipv4.addresses:10.66.0.2/24\nwireguard.peers:KEY= allowed-ips=0.0.0.0/0 endpoint=vpn.example.net:51820\n";
+        assert_eq!(nmcli_prop(detail, "connection.interface-name"), Some("wg0"));
+        assert_eq!(nmcli_prop(detail, "wireguard.peers").unwrap().split_whitespace().find_map(|w| w.strip_prefix("endpoint=")), Some("vpn.example.net:51820"));
+        assert_eq!(nmcli_prop(detail, "ipv6.addresses"), None);
+        assert!(is_uuid("33b8e36a-5b64-42fb-8f29-230894f4d8b4"));
+        assert!(!is_uuid("office"));
+        assert!(!is_uuid("--ask"));
+        assert!(vpn_set_active("--ask", true).is_err());
+    }
 }

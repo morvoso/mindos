@@ -104,6 +104,7 @@ the next save writes version 2).
     "icons": true,
     "widgets": []
   }
+        { "id": "vpn", "type": "vpn", "config": {} },
 }
 ```
 
@@ -163,6 +164,7 @@ widget (a panel widget or a desktop one) and pick *… settings*; the same
 menu offers *Edit the panel* / *Edit desktop*, *Add widget* and *Remove*.
 Changes apply and save as they are made; *Defaults* clears the widget's
 config. In edit mode the gear button on each widget opens the same form.
+| `vpn` | panel | WireGuard tunnels (NetworkManager connections of type `wireguard`): a shield, lit green while a tunnel is up, with the tunnel's name; click opens the tunnel list popup (a switch per tunnel, details on click: interface, address, endpoint, connect at start-up, remove; *Import…* opens a file chooser for a wg-quick `.conf`), middle-click drops the active tunnel or brings up the only one. Settings: `name`, `hideWhenNone` |
 
 Adding a widget type = one TypeScript module registering `{ type, name,
 description, containers, defaults, settings?, create(ctx) }` in the widget
@@ -288,6 +290,11 @@ data so the UI can be developed in Chromium/Firefox.
 | `mind_updates` | the mindd `updates` status (`{ checked_at, packages: [{ name, from, to, tag }], news, risk, summary, warnings, manual_intervention, reboot, assessed_by_model, assessing, checking, applying, auto_apply, last_update, error }`) whenever it changes |
 | `mind_health` | `{ checked_at, findings: [{ id, level, title, body, actions }] }` after a health check |
 | `notify` | `{ items, dnd, added?, closed? }` on every notification change (`added`: the new notification, `closed`: the id that went) |
+| `vpn.list` | → `{ available, tunnels: [{ id, name, iface?, address?, endpoint?, peers, active, activating, autoconnect }] }` — every NetworkManager connection of type `wireguard`, active ones first (`id` is the connection UUID; `available` is false without nmcli) |
+| `vpn.connect` / `vpn.disconnect` | `{ id }` → the new `vpn.list` (`nmcli connection up/down`; NetworkManager's polkit rules apply, so the authentication dialog may appear) |
+| `vpn.autoconnect` | `{ id, on }` → the new `vpn.list` (whether NetworkManager brings the tunnel up at start-up) |
+| `vpn.remove` | `{ id }` → the new `vpn.list` (deletes the connection and its keys) |
+| `vpn.import` | `{ path? }` → `{ imported, id?, available, tunnels }` — without `path` a native file chooser asks for a wg-quick `.conf`; `imported` is false when it was dismissed. NetworkManager names the tunnel after the file and brings it up at once |
 | `perf_changed` | `{ argv }` after a `shell.run` of `mindos-perf set\|config\|apply` succeeded in any window; read the status again |
 | `polkit` | the authorisation the polkit agent is waiting for — `{ id, action, message, icon, user, users, command, error, attempt, tries, busy }` — or `null` when it is done (also in `shell.state.polkit`) |
 | `audio` | `{ volume, muted }` |
@@ -316,6 +323,8 @@ What `mindshell` (the Rust host in `mindshell/`) does beyond the tables above:
   monitor list, which is also `outputs[0]` in `shell.state`).
 * **Popup anchors pass through.** `popup.open` / `popup.toggle` take the
   `anchor` in output-local logical pixels, as the UI conventions below say
+| `vpn` | the `vpn.list` payload whenever NetworkManager reports a change (the host follows `nmcli monitor`) or a `vpn.*` call changed something |
+| `network` | the `network.status` payload, on the same cue |
   (the UI adds the panel window's origin itself); the host does not translate
   it. The popup receives it as `mindos.window.anchor` (the `&anchor=<json>`
   URL parameter) and inside `mindos.window.arg.anchor`, and places itself.
