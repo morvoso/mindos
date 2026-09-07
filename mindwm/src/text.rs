@@ -182,6 +182,70 @@ impl Canvas {
         }
     }
 
+    /// Coverage (0..1) of the pixel at (lx, ly) of a w×h rectangle whose
+    /// selected corners are rounded with radius `r`: 1 inside, 0 outside, a
+    /// fraction on the curve so the edge is anti-aliased.
+    #[inline]
+    fn rounded_coverage(lx: i32, ly: i32, w: i32, h: i32, r: i32, corners: u8) -> f32 {
+        if lx < 0 || ly < 0 || lx >= w || ly >= h {
+            return 0.0;
+        }
+        if r <= 0 {
+            return 1.0;
+        }
+        // which corner circle (if any) governs this pixel
+        let (cx, cy) = if lx < r && ly < r && corners & TOP_LEFT != 0 {
+            (r, r)
+        } else if lx >= w - r && ly < r && corners & TOP_RIGHT != 0 {
+            (w - r, r)
+        } else if lx >= w - r && ly >= h - r && corners & BOTTOM_RIGHT != 0 {
+            (w - r, h - r)
+        } else if lx < r && ly >= h - r && corners & BOTTOM_LEFT != 0 {
+            (r, h - r)
+        } else {
+            return 1.0;
+        };
+        // distance from the pixel centre to the circle centre (pixel centres
+        // sit at +0.5; the circle centre sits on a pixel corner)
+        let dx = lx as f32 + 0.5 - cx as f32;
+        let dy = ly as f32 + 0.5 - cy as f32;
+        let d = (dx * dx + dy * dy).sqrt();
+        (r as f32 - d + 0.5).clamp(0.0, 1.0)
+    }
+
+    /// Filled rectangle with the selected corners rounded (anti-aliased).
+    pub fn fill_rounded_rect(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, corners: u8, color: Rgba) {
+        let r = r.clamp(0, w.min(h) / 2);
+        for yy in y.max(0)..(y + h).min(self.height) {
+            for xx in x.max(0)..(x + w).min(self.width) {
+                let cov = Self::rounded_coverage(xx - x, yy - y, w, h, r, corners);
+                if cov > 0.0 {
+                    self.blend(xx, yy, [color[0], color[1], color[2], color[3] * cov]);
+                }
+            }
+        }
+    }
+
+    /// 1px anti-aliased outline of a rounded rectangle, just inside the shape.
+    pub fn stroke_rounded_rect(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, corners: u8, color: Rgba) {
+        let r = r.clamp(0, w.min(h) / 2);
+        for yy in y.max(0)..(y + h).min(self.height) {
+            for xx in x.max(0)..(x + w).min(self.width) {
+                let (lx, ly) = (xx - x, yy - y);
+                let outer = Self::rounded_coverage(lx, ly, w, h, r, corners);
+                if outer <= 0.0 {
+                    continue;
+                }
+                // the same shape shrunk by one pixel; the ring between is the stroke
+                let inner = Self::rounded_coverage(lx - 1, ly - 1, w - 2, h - 2, (r - 1).max(0), corners);
+                let cov = (outer - inner).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    self.blend(xx, yy, [color[0], color[1], color[2], color[3] * cov]);
+                }
+            }
+        }
+    }
+
     /// Horizontal line of `thickness` rows with a soft glow of `spread` rows
     /// fading out above and below.
     pub fn hline_glow(&mut self, x: i32, y: i32, w: i32, thickness: i32, spread: i32, color: Rgba) {

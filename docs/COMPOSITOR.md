@@ -17,17 +17,17 @@
   (like Niri: windows line up on a strip that scrolls sideways). Dialogs
   always float, centred over their parent. Fullscreen requests get direct
   scanout.
-* **Server-side decorations in the MindOS look**: a 30 px title bar with the
-  window title and minimise / maximise / close glyphs, a cyan line along the
-  top of the focused window. Drawn for every toplevel that negotiates
+* **Server-side decorations in the MindOS look**: a 30 px translucent title
+  bar with rounded top corners, the window title and minimise / maximise /
+  close glyphs, a cyan line under the bar of the focused window. Drawn for every toplevel that negotiates
   server-side decorations through xdg-decoration (Qt, foot, SDL/libdecor,
   Chromium, Firefox, ...), for X11 windows that are not undecorated, and for
   the shell's own app windows (`mindos-*` app ids). GTK applications keep the
   bars they draw themselves, like on KDE and GNOME.
-* **Dark HUD theme.** The desktop is the MindOS void (`#05070a`) with
-  off-white text (`#e6edf3`) and one electric-cyan accent (`#19e3ff`);
-  chamfered corners, hairline strokes and a soft accent glow instead of
-  rounded blobs and shadows. Red is reserved for the kernel console, GRUB and
+* **Dark glass theme.** The desktop is the MindOS void (`#05070a`) with
+  off-white text (`#e6edf3`) and one electric-cyan accent (`#19e3ff`); the
+  Mind bar and the title bars are rounded, translucent dark cards with a
+  light hairline and a soft accent glow (`docs/THEME.md`). Red is reserved for the kernel console, GRUB and
   the boot stages and never appears in the session. When no window is open
   the `MINDOS` wordmark (Orbitron) and the key hints are drawn behind
   everything.
@@ -237,7 +237,7 @@ show_wordmark = true
 | `src/main.rs` | Backend selection (`--tty-udev` on a TTY, `--winit` nested, auto-detected) |
 | `src/config.rs` | Config loading and merging |
 | `src/mindbar.rs` | Mind bar state machine and CPU rendering (panel, results, conversation, desktop backdrop) |
-| `src/text.rs` | fontdue text rasteriser into premultiplied BGRA memory buffers; embedded Inter (body and labels), JetBrains Mono, Orbitron (display) and DejaVu Sans (glyph fallback); macOS-style compositing (gamma-corrected coverage, subpixel glyph placement); chamfered rectangles and glow lines |
+| `src/text.rs` | fontdue text rasteriser into premultiplied BGRA memory buffers; embedded Inter (body and labels), JetBrains Mono, Orbitron (display) and DejaVu Sans (glyph fallback); macOS-style compositing (gamma-corrected coverage, subpixel glyph placement); anti-aliased rounded rectangles, chamfered rectangles and glow lines |
 | `src/ipc.rs` | The shell IPC socket: framing, request/event types, calloop wiring, request handlers |
 | `src/launcher.rs` | Desktop-entry index and ranking |
 | `src/mind.rs` | Threaded client for `mindd`; events arrive through a calloop channel |

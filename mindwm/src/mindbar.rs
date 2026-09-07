@@ -7,7 +7,7 @@
 //!
 //! Everything is drawn on the CPU into a memory buffer, so the bar renders on
 //! any backend and costs nothing while it is closed. The look is the MindOS
-//! HUD: a chamfered dark panel, hairlines, one cyan accent, no red.
+//! look: a rounded translucent dark card, light hairlines, one cyan accent, no red.
 
 use serde_json::Value;
 use smithay::backend::allocator::Fourcc;
@@ -19,7 +19,7 @@ use smithay::utils::{Logical, Point, Size, Transform};
 
 use crate::launcher::{self, AppEntry};
 use crate::mind::{Event, MindEvent};
-use crate::text::{alpha, hex, Canvas, Face, Rgba, TextRenderer, DIAGONAL};
+use crate::text::{alpha, hex, Canvas, Face, Rgba, TextRenderer, ALL_CORNERS};
 
 // MindOS design tokens (see docs/SHELL.md); the accent and foreground come
 // from the config and default to these.
@@ -35,8 +35,10 @@ pub const WARN: Rgba = hex(0xffb454);
 pub const DANGER: Rgba = hex(0xff5d8f);
 pub const OK: Rgba = hex(0x3ddc97);
 
-const PANEL_BG: Rgba = alpha(BG0, 0.94);
-const INPUT_BG: Rgba = alpha(VOID, 0.85);
+const PANEL_BG: Rgba = alpha(BG0, 0.88);
+const INPUT_BG: Rgba = alpha(VOID, 0.55);
+const WHITE: Rgba = hex(0xffffff);
+const RADIUS: i32 = 18;
 
 const PAD: i32 = 16;
 const HEADER_H: i32 = 26;
@@ -476,18 +478,17 @@ impl MindBar {
         let w = size.w * s;
         let h = size.h * s;
         let pad = PAD * s;
-        let cut = 12 * s;
+        let r = RADIUS * s;
         let fg = self.foreground;
         let accent = self.accent;
         let font = |px: f32| px * s as f32;
         let mut canvas = Canvas::new(w, h);
 
-        // The card: chamfered, hairline border, an accent line along the top.
-        canvas.fill_chamfered_rect(0, 0, w, h, cut, DIAGONAL, PANEL_BG);
-        canvas.stroke_chamfered_rect(0, 0, w, h, cut, DIAGONAL, LINE_STRONG);
-        canvas.hline_glow(cut, 0, w - cut, 2 * s, 4 * s, accent);
-        // a small accent tick on the cut corner
-        canvas.fill_rect(w - 1 - 24 * s, h - 1, 24 * s, 1, alpha(accent, 0.6));
+        // The card: glass (translucent dark, blended over the desktop by the
+        // compositor), a light hairline, an accent glow along the top edge.
+        canvas.fill_rounded_rect(0, 0, w, h, r, ALL_CORNERS, PANEL_BG);
+        canvas.stroke_rounded_rect(0, 0, w, h, r, ALL_CORNERS, alpha(WHITE, 0.14));
+        canvas.hline_glow(r, 0, w - 2 * r, s, 5 * s, alpha(accent, 0.85));
 
         // Header: ◈ MIND · status dot · status · model            hints
         let hy = pad;
@@ -527,9 +528,9 @@ impl MindBar {
         // Input row: inset box with an accent bar and a caret.
         let iy = pad + HEADER_H * s;
         let ih = INPUT_H * s;
-        canvas.fill_rect(pad, iy, w - 2 * pad, ih, INPUT_BG);
-        canvas.stroke_rect(pad, iy, w - 2 * pad, ih, HAIRLINE);
-        canvas.fill_rect(pad, iy, 3 * s, ih, accent);
+        canvas.fill_rounded_rect(pad, iy, w - 2 * pad, ih, 10 * s, ALL_CORNERS, INPUT_BG);
+        canvas.stroke_rounded_rect(pad, iy, w - 2 * pad, ih, 10 * s, ALL_CORNERS, alpha(WHITE, 0.10));
+        canvas.fill_rounded_rect(pad, iy + 10 * s, 3 * s, ih - 20 * s, s, ALL_CORNERS, accent);
         let prompt_x = pad + 16 * s;
         self.text
             .draw(&mut canvas, prompt_x, iy + 7 * s, None, "›", font(24.0), accent, Face::BodyBold);
@@ -568,8 +569,8 @@ impl MindBar {
                 let y = body_y + i as i32 * row_h;
                 let selected = i == self.selected;
                 let name_color = if selected {
-                    canvas.fill_rect(pad, y, w - 2 * pad, row_h - 2 * s, alpha(accent, 0.10));
-                    canvas.fill_rect(pad, y, 3 * s, row_h - 2 * s, accent);
+                    canvas.fill_rounded_rect(pad, y, w - 2 * pad, row_h - 2 * s, 8 * s, ALL_CORNERS, alpha(accent, 0.12));
+                    canvas.stroke_rounded_rect(pad, y, w - 2 * pad, row_h - 2 * s, 8 * s, ALL_CORNERS, alpha(accent, 0.35));
                     accent
                 } else {
                     fg

@@ -40,13 +40,14 @@ use super::WindowElement;
 /// Height of the bar in logical pixels.
 pub const HEADER_BAR_HEIGHT: i32 = 30;
 const BUTTON_WIDTH: i32 = 40;
-const CHAMFER: i32 = 7;
+const RADIUS: i32 = 11;
 const TITLE_PX: f32 = 14.5;
 const DOUBLE_CLICK: Duration = Duration::from_millis(350);
 const BTN_LEFT: u32 = 0x110;
 
 const BG: Rgba = hex(0x0a0d12);
 const HAIRLINE: Rgba = hex(0x223041);
+const WHITE: Rgba = hex(0xffffff);
 const FG: Rgba = hex(0xe6edf3);
 const FG_DIM: Rgba = hex(0x8b9bb0);
 const FG_FAINT: Rgba = hex(0x55657a);
@@ -357,28 +358,23 @@ impl HeaderBar {
         let s = s.max(1);
         let w = self.width * s;
         let h = HEADER_BAR_HEIGHT * s;
-        let cut = if self.maximized { 0 } else { CHAMFER * s };
+        let r = if self.maximized { 0 } else { RADIUS * s };
         let corners = if self.maximized { 0 } else { TOP_LEFT | TOP_RIGHT };
         let mut c = Canvas::new(w, h);
-        c.fill_chamfered_rect(0, 0, w, h, cut, corners, alpha(BG, 0.985));
-
-        // Top edge following the chamfer: accent (with a soft glow into the
-        // bar) when focused, a hairline otherwise.
-        let edge = if self.focused { ACCENT } else { HAIRLINE };
-        c.fill_rect(cut, 0, w - 2 * cut, s, edge);
-        for i in 0..cut {
-            c.fill_rect(cut - 1 - i, i, s, s, edge);
-            c.fill_rect(w - cut + i, i, s, s, edge);
-        }
+        // Glass: a translucent dark fill (the compositor blends it over what
+        // is behind the window), a light hairline catching the top edge.
+        c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, if self.focused { 0.84 } else { 0.76 }));
+        c.stroke_rounded_rect(0, 0, w, h + r, r, corners, alpha(WHITE, 0.10));
+        // Bottom line between the bar and the window: the accent, with a
+        // soft glow into the bar, when focused; a hairline otherwise.
         if self.focused {
-            for (row, a) in [(0.22, 1), (0.12, 2), (0.06, 3)].iter().map(|(a, r)| (*r, *a)) {
-                let y = s * row;
-                let inset = (cut - y).max(0);
-                c.fill_rect(inset, y, w - 2 * inset, s, alpha(ACCENT, a));
+            for (row, a) in [(1, 0.20), (2, 0.11), (3, 0.05)] {
+                c.fill_rect(0, h - s - s * row, w, s, alpha(ACCENT, a));
             }
+            c.fill_rect(0, h - s, w, s, alpha(ACCENT, 0.9));
+        } else {
+            c.fill_rect(0, h - s, w, s, alpha(WHITE, 0.08));
         }
-        // Bottom hairline between the bar and the window.
-        c.fill_rect(0, h - s, w, s, HAIRLINE);
 
         // Title.
         let buttons = self.buttons();
@@ -406,12 +402,12 @@ impl HeaderBar {
             let danger = *button == Button::Close;
             if hovered || pressed {
                 let bg = match (danger, pressed) {
-                    (true, true) => alpha(DANGER, 0.28),
-                    (true, false) => alpha(DANGER, 0.16),
-                    (false, true) => alpha(FG, 0.12),
-                    (false, false) => alpha(FG, 0.07),
+                    (true, true) => alpha(DANGER, 0.30),
+                    (true, false) => alpha(DANGER, 0.18),
+                    (false, true) => alpha(FG, 0.14),
+                    (false, false) => alpha(FG, 0.08),
                 };
-                c.fill_rect(bx, s, bw, h - 2 * s, bg);
+                c.fill_circle(bx + bw / 2, h / 2, 11 * s, bg);
             }
             let glyph = if hovered || pressed {
                 if danger {
@@ -431,7 +427,7 @@ impl HeaderBar {
                     if self.maximized {
                         // Two overlapping squares: restore.
                         stroke_square(&mut c, cx - r + 3 * s, cy - r - s, 2 * r - 2 * s, s, glyph);
-                        c.fill_rect(cx - r - s, cy - r + 2 * s, 2 * r - s, 2 * r - s, alpha(BG, 1.0));
+                        c.fill_rect(cx - r - s, cy - r + 2 * s, 2 * r - s, 2 * r - s, alpha(BG, 0.9));
                         stroke_square(&mut c, cx - r - s, cy - r + 2 * s, 2 * r - 2 * s, s, glyph);
                     } else {
                         stroke_square(&mut c, cx - r, cy - r, 2 * r, s, glyph);
@@ -605,7 +601,8 @@ mod tests {
         bar.redraw(640, 1);
         let c = bar.draw(1);
         assert_eq!((c.width, c.height), (640, HEADER_BAR_HEIGHT));
-        // top-left corner is cut (transparent), the middle of the bar is not
+        // top-left corner is rounded away (transparent); the glass itself is
+        // translucent but clearly there
         assert_eq!(c.data[3], 0);
         let mid = ((HEADER_BAR_HEIGHT / 2) * 640 + 320) as usize * 4;
         assert!(c.data[mid + 3] > 200);
@@ -614,7 +611,7 @@ mod tests {
         let c = bar.draw(2);
         assert_eq!((c.width, c.height), (1280, HEADER_BAR_HEIGHT * 2));
         // maximised bars keep square corners
-        assert!(c.data[3] > 200);
+        assert!(c.data[3] > 150);
     }
 
     #[test]
