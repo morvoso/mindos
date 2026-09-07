@@ -6,6 +6,7 @@
 #   * the host's source tree (virtiofs tag "mindos") mounted at ~/mindos
 #   * pacman prefers packages built on the host (build/repo on the share)
 #   * CARGO_TARGET_DIR on the VM disk so host and guest builds never collide
+#   * a 120 Hz mode for the virtual display (QEMU's EDID only offers 75 Hz)
 #
 # Typical use from the VM's root console (Ctrl+Alt+F2 on the live ISO):
 #   mkdir -p /run/share && mount -t virtiofs mindos /run/share \
@@ -46,6 +47,21 @@ if ! grep -q "$home/mindos/build/repo" "$T/etc/pacman.conf"; then
     "$T/etc/pacman.conf"
 fi
 
+# QEMU's virtio-gpu only advertises its EDID mode, 1920x1080@75, which caps the
+# compositor at 75 fps. Add a 120 Hz mode for the virtual connector and select it
+# up front (mindwm keys modes by mHz, so 120.04 Hz is "1920x1080@120040").
+if ! grep -q 'video=Virtual-1' "$T/etc/default/grub"; then
+  sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 video=Virtual-1:1920x1080@120"/' \
+    "$T/etc/default/grub"
+  arch-chroot "$T" grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1
+fi
+install -d -o "$uid" -g "$gid" "$T$home/.local" "$T$home/.local/state" "$T$home/.local/state/mindos"
+if [[ ! -e $T$home/.local/state/mindos/mindwm.json ]]; then
+  echo '{"outputs":{"Virtual-1":{"mode":"1920x1080@120040"}}}' \
+    > "$T$home/.local/state/mindos/mindwm.json"
+  chown "$uid:$gid" "$T$home/.local/state/mindos/mindwm.json"
+fi
+
 cat > "$T/etc/profile.d/mindos-dev-vm.sh" <<'PROFILE'
 # MindOS dev VM: the host's source tree is shared at ~/mindos. Build
 # artifacts stay on the VM disk so host and guest toolchains never collide.
@@ -56,5 +72,6 @@ echo "== summary"
 echo "  disk      $MINDOS_DISK      hostname $MINDOS_HOSTNAME      user $MINDOS_USER / $MINDOS_PASSWORD"
 echo "  share     $MINDOS_SHARE_TAG -> $home/mindos (virtiofs)"
 echo "  pacman    [mindos] = $home/mindos/build/repo, then /var/lib/mindos/repo"
+echo "  display   1920x1080@120 (host: scripts/vm/mindos-vm.sh gl on for virgl)"
 echo "  next      poweroff, then start the VM again to boot from disk"
 echo GUEST-INSTALL-OK

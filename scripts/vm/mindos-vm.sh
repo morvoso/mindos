@@ -4,6 +4,7 @@
 #   scripts/vm/mindos-vm.sh create [iso]      define + start the VM booting the live ISO
 #   scripts/vm/mindos-vm.sh install           run the unattended install inside the live VM
 #   scripts/vm/mindos-vm.sh start|stop|console|shot out.png|state
+#   scripts/vm/mindos-vm.sh gl on|off        virgl 3D for the guest GPU (breaks shot)
 #   scripts/vm/mindos-vm.sh snapshot NAME [description]     libvirt snapshot (also in virt-manager)
 #   scripts/vm/mindos-vm.sh revert NAME
 #   scripts/vm/mindos-vm.sh snapshots
@@ -11,7 +12,7 @@
 #
 # Environment: VM_NAME (mindos-dev) VM_MEM_MB (16384) VM_VCPUS (8) VM_DISK_GB (80)
 #              VM_SHARE (repo root, exported to the guest as virtiofs tag "mindos")
-#              VM_IMAGES (/var/lib/libvirt/images)
+#              VM_IMAGES (/var/lib/libvirt/images) VM_RENDERNODE (/dev/dri/renderD129)
 # The guest side of the install lives in guest-install.sh; typing into the VM goes
 # through vdrive.py (virsh send-key / screenshot), no guest agent needed.
 set -euo pipefail
@@ -23,6 +24,10 @@ VM_VCPUS=${VM_VCPUS:-8}
 VM_DISK_GB=${VM_DISK_GB:-80}
 VM_SHARE=${VM_SHARE:-$repo}
 VM_IMAGES=${VM_IMAGES:-/var/lib/libvirt/images}
+# The host GPU virglrenderer draws on. The iGPU is the safe default: QEMU runs as
+# the "qemu" user, and libvirt's device ACL keeps it out of /dev/nvidia*, so EGL
+# will not initialise on the NVIDIA render node.
+VM_RENDERNODE=${VM_RENDERNODE:-/dev/dri/renderD129}
 URI=qemu:///system
 export VDOM=$VM_NAME
 v() { virsh -c $URI "$@"; }
@@ -73,6 +78,28 @@ kill)    v destroy "$VM_NAME" ;;
 state)   v domstate "$VM_NAME" ;;
 console) virt-manager --connect $URI --show-domain-console "$VM_NAME" & ;;
 shot)    "$here/vdrive.py" shot "${1:?out.png}" ;;
+gl)
+  # virtio-vga-gl plus an egl-headless display: the guest renders through virgl on
+  # the host GPU instead of llvmpipe, and QEMU reads the result back so the SPICE
+  # console keeps working. The cost is that QMP screendump then has no surface, so
+  # `shot` (vdrive.py, refresh.sh, bootshots.sh) needs GL off.
+  want=${1:?on|off}
+  [[ $want == on || $want == off ]] || die "gl takes on or off"
+  running=no
+  [[ $(v domstate "$VM_NAME") == running ]] && running=yes
+  if [[ $running == yes ]]; then
+    v shutdown "$VM_NAME"
+    for _ in $(seq 60); do [[ $(v domstate "$VM_NAME") == "shut off" ]] && break; sleep 2; done
+  fi
+  [[ $(v domstate "$VM_NAME") == "shut off" ]] || die "$VM_NAME did not shut down"
+  tmp=$(mktemp)
+  v dumpxml "$VM_NAME" --inactive > "$tmp"
+  WANT=$want NODE=$VM_RENDERNODE python3 "$here/vm-gl.py" "$tmp"
+  v define "$tmp" >/dev/null
+  rm -f "$tmp"
+  echo "3D acceleration $want ($VM_RENDERNODE)"
+  if [[ $running == yes ]]; then v start "$VM_NAME"; fi
+  ;;
 snapshot)
   name=${1:?snapshot name}; shift
   v snapshot-create-as "$VM_NAME" "$name" ${1:+--description "$*"}
@@ -85,5 +112,5 @@ destroy)
   v destroy "$VM_NAME" 2>/dev/null || true
   v undefine "$VM_NAME" --nvram --snapshots-metadata --remove-all-storage
   ;;
-*) sed -n '2,16p' "$0"; exit 1 ;;
+*) sed -n '2,17p' "$0"; exit 1 ;;
 esac

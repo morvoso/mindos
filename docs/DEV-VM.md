@@ -85,6 +85,7 @@ straight into the compositor as the configured user, with mindd running.
 scripts/vm/mindos-vm.sh start | stop | kill | state | console
 scripts/vm/mindos-vm.sh snapshot NAME [description] | revert NAME | snapshots
 scripts/vm/mindos-vm.sh shot out.png            # screenshot of the VM display
+scripts/vm/mindos-vm.sh gl on | off             # virgl 3D for the guest GPU
 scripts/vm/vdrive.py exec 'systemctl status mindd'   # run in the guest (guest agent)
 scripts/vm/vdrive.py keys meta_l-ret            # send a key combo
 scripts/vm/vdrive.py type 'echo hello'          # type text (throttled for the PS/2 keyboard)
@@ -94,6 +95,34 @@ virt-manager does the same from its GUI: the console tab is the VM's display,
 View > Snapshots takes and reverts snapshots, and the toolbar sends
 Ctrl+Alt+F2 for the root console. Internal snapshots work with the UEFI
 firmware on libvirt 12.7.
+
+## Display and refresh rate
+
+Three things cap how smooth the VM looks, and they are independent:
+
+1. **The guest's mode.** QEMU's virtio-gpu writes an EDID that advertises a
+   single mode, 1920x1080@75, and the compositor paces itself to it. The
+   installer adds `video=Virtual-1:1920x1080@120` to the guest's kernel command
+   line, which makes the kernel synthesise a 120 Hz mode, and seeds
+   `~/.local/state/mindos/mindwm.json` with `"1920x1080@120040"` so mindwm picks
+   it. Settings > Displays lists both; `journalctl -t mindwm -b | grep vrefresh`
+   says which one is live.
+2. **How the guest renders.** Without 3D acceleration mindwm falls back to
+   llvmpipe and every pixel is composited on the guest's CPUs.
+   `scripts/vm/mindos-vm.sh gl on` switches the video device to `virtio-vga-gl`
+   and adds an `egl-headless` display, so the guest gets a real GL renderer
+   through virgl on the host GPU (`GL Renderer: "virgl (...radeonsi...)"` in the
+   mindwm log). `VM_RENDERNODE` picks the host GPU; it defaults to the iGPU
+   because QEMU runs as the `qemu` user and libvirt's device ACL keeps it out of
+   `/dev/nvidia*`, where EGL then fails to initialise.
+3. **The viewer.** virt-manager's SPICE console redraws from a read-back of the
+   guest's framebuffer, so it is the slowest link in the chain and never shows
+   the full guest frame rate.
+
+**GL on costs screenshots.** With a GL scanout QEMU's `screendump` has no
+surface, so `mindos-vm.sh shot`, `vdrive.py shot`, `refresh.sh` and
+`bootshots.sh` all fail with `screendump: no surface`. Turn GL off for a
+screenshot run and back on afterwards; each toggle restarts the VM.
 
 ## Development loops
 
@@ -129,9 +158,10 @@ ISO in virt-manager and boot from it.
 
 ## What the VM cannot do
 
-* No GPU: the compositor uses Mesa's software renderer, so it is fine for
-  window management, the Mind bar and Wayland/XWayland clients, not for
-  measuring frame rates or NVIDIA driver work.
+* No real GPU: with `gl off` the compositor uses Mesa's software renderer, and
+  with `gl on` it uses virgl on the host GPU. Either way it is fine for window
+  management, the Mind bar and Wayland/XWayland clients, not for measuring
+  frame rates or NVIDIA driver work.
 * The gaming stack is skipped by default for the same reason.
 * Keys typed by scripts go through an emulated PS/2 keyboard that drops
   keys sent too fast; `vdrive.py type` throttles accordingly.
