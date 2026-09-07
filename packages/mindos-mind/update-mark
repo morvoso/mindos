@@ -1,0 +1,16 @@
+#!/bin/bash
+# Pacman hook: record what the last transaction touched so the Mind (mindd)
+# can verify the system afterwards and point at the pre-update snapshot.
+set -u
+out=/var/lib/mindos/last-update.json
+mkdir -p "$(dirname "$out")"
+pkgs=()
+while IFS= read -r p; do [[ -n $p ]] && pkgs+=("$p"); done
+[[ ${#pkgs[@]} -gt 0 ]] || exit 0
+{
+  printf '{"time": %d, "ok": true, "verified": "", "report": "", "pre_snapshot": null, "packages": [' "$(date +%s)"
+  sep=""
+  for p in "${pkgs[@]}"; do printf '%s"%s"' "$sep" "${p//\"/}"; sep=", "; done
+  printf ']}\n'
+} > "$out.tmp" && mv -f "$out.tmp" "$out"
+exit 0

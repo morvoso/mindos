@@ -41,7 +41,15 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef { name: "run_command", description: "Run a shell command as root and return its output. Read-only commands run immediately; anything that changes the system is shown to the user for confirmation first.", parameters: json!({"type":"object","properties":{"command":{"type":"string"},"timeout_secs":{"type":"integer","default":120}},"required":["command"]}), policy: Policy::Change, category: "shell" },
         ToolDef { name: "set_kernel_parameter", description: "Add or remove a kernel command-line parameter for future boots (GRUB and systemd-boot are updated).", parameters: json!({"type":"object","properties":{"add":{"type":"string","description":"parameter to add, e.g. nvidia_drm.modeset=1"},"remove":{"type":"string","description":"parameter (or prefix) to remove"}}}), policy: Policy::Change, category: "boot" },
         ToolDef { name: "reboot", description: "Reboot the machine (after confirming with the user).", parameters: none.clone(), policy: Policy::Change, category: "power" },
-        ToolDef { name: "arch_news", description: "Latest Arch Linux news headlines: manual interventions required before updating are announced here.", parameters: none, policy: Policy::Observe, category: "update" },
+        ToolDef { name: "arch_news", description: "Latest Arch Linux news headlines: manual interventions required before updating are announced here.", parameters: none.clone(), policy: Policy::Observe, category: "update" },
+        ToolDef { name: "update_status", description: "What the update watcher knows: pending packages with their risk tags, the risk assessment, warnings, Arch news, and the last update with its pre-update snapshot and verification result. Use `check: true` to run a fresh check first.", parameters: json!({"type":"object","properties":{"check":{"type":"boolean","default":false}}}), policy: Policy::Observe, category: "update" },
+        ToolDef { name: "health_check", description: "Run the system health checks now: failed services, kernel/driver state, NVIDIA module, disk space, pacnew files, kernel errors. Returns the findings.", parameters: none.clone(), policy: Policy::Observe, category: "info" },
+        ToolDef { name: "notices", description: "The notices the Mind has shown the user (update assessments, health findings, update reports). `dismiss` removes one by id, or all with \"*\".", parameters: json!({"type":"object","properties":{"dismiss":{"type":"string","description":"notice id to dismiss, or * for all"}}}), policy: Policy::Observe, category: "info" },
+        ToolDef { name: "list_snapshots", description: "System snapshots (snapper) that the boot menu offers and `rollback` can restore: number, date, description.", parameters: none.clone(), policy: Policy::Observe, category: "boot" },
+        ToolDef { name: "rollback", description: "Make snapshot N the system again (mindos-boot restore) and reboot. The current state is kept as a new snapshot so the rollback can be undone.", parameters: json!({"type":"object","properties":{"snapshot":{"type":"integer"}},"required":["snapshot"]}), policy: Policy::Change, category: "boot" },
+        ToolDef { name: "performance_mode", description: "Read or switch the MindOS performance mode: balanced (default), performance (governor performance, sched_ext scx_lavd, no proactive compaction, NVIDIA persistence; GameMode switches here while a game runs) or quiet (powersave, no boost). Without `mode` it only reports the current state.", parameters: json!({"type":"object","properties":{"mode":{"type":"string","enum":["balanced","performance","quiet"]}}}), policy: Policy::Observe, category: "perf" },
+        ToolDef { name: "dlss", description: "The DLSS/FSR/XeSS swapper (mindos-dlss), run as the user: `scan` lists the user's games and the upscaler DLLs they ship with versions; `library` the DLL versions on hand; `versions KIND` what can be downloaded; `download KIND VERSION|latest`; `swap GAME KIND VERSION|latest` (the original is kept as a backup); `restore GAME [KIND]`. Kinds: dlss, dlss_d, dlss_g, fsr_31_dx12, fsr_31_vk, xess, xess_fg, xess_dx11, xell.", parameters: json!({"type":"object","properties":{"args":{"type":"string","description":"the mindos-dlss command line, e.g. \"scan\" or \"swap Cyberpunk dlss latest\""}},"required":["args"]}), policy: Policy::Observe, category: "games" },
+        ToolDef { name: "mind_sleep", description: "Unload the language model from the GPU (sleep) or load it again (wake). GameMode does this automatically while a game runs.", parameters: json!({"type":"object","properties":{"sleeping":{"type":"boolean"}},"required":["sleeping"]}), policy: Policy::Observe, category: "mind" },
     ]
 }
 
@@ -79,6 +87,22 @@ pub fn policy_for(def: &ToolDef, args: &Value, cfg: &Config) -> Policy {
                 Policy::Change
             } else {
                 Policy::Forbidden
+            }
+        }
+        "performance_mode" => {
+            if args["mode"].as_str().map(|m| !m.is_empty()).unwrap_or(false) {
+                Policy::Change
+            } else {
+                Policy::Observe
+            }
+        }
+        "dlss" => {
+            let a = args["args"].as_str().unwrap_or("").trim();
+            let verb = a.split_whitespace().next().unwrap_or("");
+            match verb {
+                "scan" | "games" | "library" | "versions" | "kinds" => Policy::Observe,
+                "download" | "swap" | "restore" | "import" | "delete" => Policy::Change,
+                _ => Policy::Forbidden,
             }
         }
         "remove_packages" => {
@@ -138,11 +162,87 @@ fn pkg_list(args: &Value) -> Result<String> {
     Ok(names.join(" "))
 }
 
+/// Who asked (for tools that act in the user's own files).
+pub struct Caller {
+    pub uid: u32,
+}
+
+fn user_name(uid: u32) -> Option<String> {
+    let s = std::fs::read_to_string("/etc/passwd").ok()?;
+    s.lines().find_map(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        (f.len() > 2 && f[2].parse::<u32>().ok() == Some(uid)).then(|| f[0].to_string())
+    })
+}
+
+/// Run `command` as the calling user (their home, their Steam library).
+async fn sh_as(caller: &Caller, command: &str, timeout: Duration) -> Result<(bool, String)> {
+    if caller.uid == 0 || caller.uid == u32::MAX {
+        return sh(command, timeout).await;
+    }
+    let user = user_name(caller.uid).ok_or_else(|| anyhow!("unknown uid {}", caller.uid))?;
+    sh(&format!("runuser -u {} -- /bin/sh -c {}", shell_quote(&user), shell_quote(command)), timeout).await
+}
+
 /// Execute a tool. Returns a JSON value for the model.
-pub async fn execute(name: &str, args: &Value, cfg: &Config) -> Result<Value> {
+pub async fn execute(name: &str, args: &Value, cfg: &Config, d: &super::Daemon, caller: &Caller) -> Result<Value> {
     let timeout = Duration::from_secs(cfg.daemon.tool_timeout_secs);
     let ok_out = |(ok, out): (bool, String)| json!({"ok": ok, "output": out});
     match name {
+        "update_status" => {
+            let s = if args["check"].as_bool().unwrap_or(false) { super::updates::check(d, true).await } else { d.updates.lock().unwrap().clone() };
+            Ok(json!({"ok": true, "checked_at": s.checked_at, "risk": s.risk, "summary": s.summary, "warnings": s.warnings, "manual_intervention": s.manual_intervention, "reboot": s.reboot, "assessed_by_model": s.assessed_by_model, "auto_apply": s.auto_apply, "packages": s.packages.iter().map(|p| format!("{} {} -> {}{}", p.name, p.from, p.to, if p.tag.is_empty() { String::new() } else { format!(" [{}]", p.tag) })).collect::<Vec<_>>(), "news": s.news.iter().take(6).map(|n| format!("{} {}", n.date, n.title)).collect::<Vec<_>>(), "last_update": s.last_update, "error": s.error}))
+        }
+        "health_check" => {
+            let findings = super::health::run_and_notify(d).await;
+            if findings.is_empty() {
+                Ok(json!({"ok": true, "output": "no problems found: services, kernel, GPU driver, disks and configuration look fine"}))
+            } else {
+                Ok(json!({"ok": true, "findings": findings.iter().map(|f| json!({"level": f.level, "title": f.title, "detail": f.body})).collect::<Vec<_>>()}))
+            }
+        }
+        "notices" => {
+            if let Some(id) = args["dismiss"].as_str().filter(|s| !s.trim().is_empty()) {
+                let gone = d.notices.dismiss(id.trim());
+                return Ok(json!({"ok": true, "dismissed": gone}));
+            }
+            Ok(json!({"ok": true, "notices": d.notices.list()}))
+        }
+        "list_snapshots" => Ok(ok_out(sh("mindos-boot list 2>&1 || snapper --no-dbus -c root list", timeout).await?)),
+        "rollback" => {
+            let n = args["snapshot"].as_u64().ok_or_else(|| anyhow!("snapshot number required"))?;
+            let (ok, out) = sh(&format!("mindos-boot restore {} 2>&1", n), Duration::from_secs(600)).await?;
+            if ok {
+                tokio::spawn(async {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let _ = Command::new("systemctl").arg("reboot").status().await;
+                });
+            }
+            Ok(json!({"ok": ok, "output": format!("{}\n{}", out, if ok { "rebooting in 5 seconds" } else { "" })}))
+        }
+        "performance_mode" => {
+            let mode = args["mode"].as_str().unwrap_or("").trim();
+            if !mode.is_empty() {
+                let (ok, out) = sh(&format!("mindos-perf set {}", shell_quote(mode)), Duration::from_secs(60)).await?;
+                if !ok {
+                    return Ok(json!({"ok": false, "output": out}));
+                }
+            }
+            let (ok, out) = sh("mindos-perf status", Duration::from_secs(30)).await?;
+            Ok(json!({"ok": ok, "output": out}))
+        }
+        "dlss" => {
+            let a = args["args"].as_str().unwrap_or("").trim();
+            if a.is_empty() || a.contains(|c: char| c == ';' || c == '&' || c == '|' || c == '`' || c == '$' || c == '>' || c == '<') {
+                return Err(anyhow!("args must be a plain mindos-dlss command line"));
+            }
+            Ok(ok_out(sh_as(caller, &format!("mindos-dlss {}", a), Duration::from_secs(900)).await?))
+        }
+        "mind_sleep" => {
+            let sleeping = args["sleeping"].as_bool().ok_or_else(|| anyhow!("sleeping required"))?;
+            d.set_sleep(sleeping);
+            Ok(json!({"ok": true, "output": if sleeping { "the model unloads now; the next question wakes it (takes a few seconds)" } else { "waking up" }}))
+        }
         "system_info" => Ok(sysinfo::summary()),
         "gpu_info" => {
             let mut parts = vec![];

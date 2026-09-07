@@ -57,6 +57,33 @@ enum Cmd {
         #[arg(long)]
         keep: bool,
     },
+    /// Notices the Mind has for you (update assessments, health findings).
+    Notices {
+        /// Dismiss a notice by id, or "*" for all.
+        #[arg(long)]
+        dismiss: Option<String>,
+    },
+    /// Pending updates and the Mind's risk assessment.
+    Updates {
+        /// Check the repositories and Arch news now.
+        #[arg(long)]
+        check: bool,
+        /// Install the pending updates (snapshots are taken around it).
+        #[arg(long)]
+        apply: bool,
+        /// Install low-risk updates automatically from now on (on|off).
+        #[arg(long, value_parser = ["on", "off"])]
+        auto: Option<String>,
+    },
+    /// Run the health checks: services, kernel, GPU driver, disks, configuration.
+    Health,
+    /// Unload the model from the GPU (on) or bring it back (off).
+    Sleep {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Watch the Mind's notices as they arrive (Ctrl-C to stop).
+    Watch,
 }
 
 #[tokio::main]
@@ -76,8 +103,8 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Some(Cmd::Status) => {
             client.send(&Request::Status).await?;
-            if let Some(Event::Status { version, model, ready, sessions, uptime_secs, backend }) = client.next().await? {
-                println!("mindd {}  model {}  {}  backend {}  sessions {}  up {}s", version, model, if ready { "ready" } else { "loading" }, backend, sessions, uptime_secs);
+            if let Some(Event::Status { version, model, ready, sessions, uptime_secs, backend, sleeping, notices }) = client.next().await? {
+                println!("mindd {}  model {}  {}  backend {}  sessions {}  up {}s  notices {}", version, model, if sleeping { "sleeping" } else if ready { "ready" } else { "loading" }, backend, sessions, uptime_secs, notices);
             }
         }
         Some(Cmd::History { limit }) => {
@@ -169,6 +196,91 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Some(Cmd::Notices { dismiss }) => {
+            match dismiss {
+                Some(id) => client.send(&Request::DismissNotice { id }).await?,
+                None => client.send(&Request::Notices).await?,
+            }
+            if let Some(Event::Notices { notices }) = client.next().await? {
+                if notices.is_empty() {
+                    println!("no notices");
+                }
+                for n in notices {
+                    let when = chrono::DateTime::from_timestamp(n.time as i64, 0).map(|d| d.with_timezone(&chrono::Local).format("%d %b %H:%M").to_string()).unwrap_or_default();
+                    println!("\x1b[1m[{}] {}\x1b[0m  {}  ({})", n.level, n.title, when, n.id);
+                    for line in n.body.lines() {
+                        println!("    {}", line);
+                    }
+                    if !n.actions.is_empty() {
+                        println!("    actions: {}", n.actions.iter().map(|a| a.label.clone()).collect::<Vec<_>>().join(", "));
+                    }
+                }
+            }
+        }
+        Some(Cmd::Updates { check, apply, auto }) => {
+            if let Some(a) = auto {
+                client.send(&Request::SetAutoUpdate { enabled: a == "on" }).await?;
+                let _ = client.next().await?;
+                println!("automatic low-risk updates {}", a);
+            }
+            if apply {
+                client.send(&Request::ApplyUpdates).await?;
+                eprintln!("updating (pacman -Syu)…");
+            } else {
+                client.send(&Request::Updates { check }).await?;
+                if check {
+                    eprintln!("checking…");
+                }
+            }
+            loop {
+                match client.next().await? {
+                    Some(Event::Updates(s)) => {
+                        if s.checking || s.assessing || s.applying {
+                            continue;
+                        }
+                        print_updates(&s);
+                        break;
+                    }
+                    Some(Event::Error { message }) => return Err(anyhow!("{}", message)),
+                    Some(_) => {}
+                    None => return Err(anyhow!("mindd closed the connection")),
+                }
+            }
+        }
+        Some(Cmd::Health) => {
+            client.send(&Request::Health).await?;
+            if let Some(Event::Health { findings, .. }) = client.next().await? {
+                if findings.is_empty() {
+                    println!("\x1b[32mall good\x1b[0m: services, kernel, GPU driver, disks and configuration look fine");
+                }
+                for f in findings {
+                    println!("\x1b[1m[{}] {}\x1b[0m", f.level, f.title);
+                    for line in f.body.lines() {
+                        println!("    {}", line);
+                    }
+                }
+            }
+        }
+        Some(Cmd::Sleep { state }) => {
+            client.send(&Request::SetSleep { sleeping: state == "on" }).await?;
+            if let Some(Event::Sleep { sleeping }) = client.next().await? {
+                println!("mind {}", if sleeping { "sleeping (model unloaded)" } else { "awake" });
+            }
+        }
+        Some(Cmd::Watch) => {
+            client.send(&Request::Subscribe).await?;
+            loop {
+                match client.next().await? {
+                    Some(Event::Notice(n)) => println!("[{}] {} — {}", n.level, n.title, n.body.lines().next().unwrap_or("")),
+                    Some(Event::NoticeGone { id }) => println!("(dismissed {})", id),
+                    Some(Event::Notices { notices }) => println!("{} notice(s)", notices.len()),
+                    Some(Event::Updates(s)) => println!("(updates: {} pending, risk {}{})", s.packages.len(), s.risk, if s.checking { ", checking" } else if s.assessing { ", assessing" } else if s.applying { ", applying" } else { "" }),
+                    Some(Event::Sleep { sleeping }) => println!("(mind {})", if sleeping { "asleep" } else { "awake" }),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        }
         Some(Cmd::Update) => {
             chat(&mut client, "Update this system. First check the Arch news for required manual interventions, then check what would be updated, apply the updates, and report: what changed, any .pacnew files to merge, and whether a reboot is needed.".into(), cli.session, true, cli.thinking).await?;
         }
@@ -199,7 +311,7 @@ async fn main() -> Result<()> {
         }
         None => {
             if text.trim().is_empty() {
-                eprintln!("usage: mind <what you want> | mind update | mind doctor | mind status | mind history | mind chat | mind models | mind model <file|auto> | mind download <id> | mind thinking on|off");
+                eprintln!("usage: mind <what you want> | mind update | mind updates [--check|--apply|--auto on|off] | mind health | mind notices | mind doctor | mind status | mind history | mind chat | mind models | mind model <file|auto> | mind download <id> | mind thinking on|off | mind sleep on|off | mind watch");
                 return Ok(());
             }
             chat(&mut client, text, cli.session, cli.autopilot, cli.thinking).await?;
@@ -288,6 +400,31 @@ async fn chat(client: &mut Client, text: String, session: Option<String>, autopi
                 return Err(anyhow!("{}", message));
             }
             Event::Welcome { .. } | Event::Status { .. } | Event::History { .. } | Event::Models { .. } | Event::Download(_) => {}
+            Event::Notices { .. } | Event::Notice(_) | Event::NoticeGone { .. } | Event::Updates(_) | Event::Health { .. } | Event::Sleep { .. } => {}
+        }
+    }
+}
+
+fn print_updates(s: &mindos_mind::proto::UpdateStatus) {
+    let when = if s.checked_at == 0 { "never".to_string() } else { chrono::DateTime::from_timestamp(s.checked_at as i64, 0).map(|d| d.with_timezone(&chrono::Local).format("%d %b %H:%M").to_string()).unwrap_or_default() };
+    if !s.error.is_empty() {
+        println!("check failed: {}", s.error);
+    }
+    println!("checked {}   risk \x1b[1m{}\x1b[0m{}   auto-update {}", when, if s.risk.is_empty() { "unknown" } else { &s.risk }, if s.assessed_by_model { " (Mind)" } else { " (rules)" }, if s.auto_apply { "on" } else { "off" });
+    println!("{}", s.summary);
+    for w in &s.warnings {
+        println!("  ! {}", w);
+    }
+    if !s.packages.is_empty() {
+        println!();
+        for p in &s.packages {
+            println!("  {:<32} {:>18} -> {:<18} {}", p.name, p.from, p.to, p.tag);
+        }
+    }
+    if let Some(l) = &s.last_update {
+        println!("\nlast update: {} packages{}; verification: {}", l.packages.len(), l.pre_snapshot.map(|n| format!(", snapshot {} before it", n)).unwrap_or_default(), if l.verified.is_empty() { "pending" } else { &l.verified });
+        if !l.report.is_empty() {
+            println!("{}", l.report);
         }
     }
 }

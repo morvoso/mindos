@@ -146,7 +146,101 @@ async fn handle(d: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     sessions: d.sessions.lock().await.len(),
                     uptime_secs: d.started.elapsed().as_secs(),
                     backend,
+                    sleeping: d.is_sleeping(),
+                    notices: d.notices.count(),
                 });
+            }
+            Request::Subscribe => {
+                d.notices.subscribe(conn.tx.clone());
+                conn.send(Event::Notices { notices: d.notices.list() });
+                conn.send(Event::Updates(d.updates.lock().unwrap().clone()));
+                let (checked_at, findings) = d.last_health.lock().unwrap().clone();
+                if checked_at > 0 {
+                    conn.send(Event::Health { checked_at, findings });
+                }
+                conn.send(Event::Sleep { sleeping: d.is_sleeping() });
+            }
+            Request::Notices => conn.send(Event::Notices { notices: d.notices.list() }),
+            Request::DismissNotice { id } => {
+                let gone = d.notices.dismiss(&id);
+                d.audit.record("notice_dismissed", "", conn.uid, serde_json::json!({"ids": gone}));
+                conn.send(Event::Notices { notices: d.notices.list() });
+            }
+            Request::Updates { check } => {
+                if check {
+                    let d2 = d.clone();
+                    let tx = conn.tx.clone();
+                    tokio::spawn(async move {
+                        let s = super::updates::check(&d2, true).await;
+                        let _ = tx.send(Event::Updates(s));
+                    });
+                    // the caller sees progress (checking/assessing) through Updates pushes
+                    conn.send(Event::Updates(d.updates.lock().unwrap().clone()));
+                } else {
+                    conn.send(Event::Updates(d.updates.lock().unwrap().clone()));
+                }
+            }
+            Request::ApplyUpdates => {
+                let d2 = d.clone();
+                let tx = conn.tx.clone();
+                let uid = conn.uid;
+                d.audit.record("update_requested", "", uid, serde_json::json!({"client": conn.client}));
+                tokio::spawn(async move {
+                    match super::updates::apply(&d2, uid).await {
+                        Ok(s) => { let _ = tx.send(Event::Updates(s)); }
+                        Err(e) => { let _ = tx.send(Event::Error { message: format!("{:#}", e) }); }
+                    }
+                });
+            }
+            Request::SetAutoUpdate { enabled } => match d.set_auto_update(enabled) {
+                Ok(()) => {
+                    d.audit.record("auto_update", "", conn.uid, serde_json::json!({"enabled": enabled}));
+                    conn.send(Event::Updates(d.updates.lock().unwrap().clone()));
+                }
+                Err(e) => conn.send(Event::Error { message: format!("{:#}", e) }),
+            },
+            Request::Health => {
+                let findings = super::health::run_and_notify(&d).await;
+                conn.send(Event::Health { checked_at: super::notices::now(), findings });
+            }
+            Request::SetSleep { sleeping } => {
+                d.audit.record("sleep", "", conn.uid, serde_json::json!({"sleeping": sleeping, "client": conn.client}));
+                d.set_sleep(sleeping);
+                conn.send(Event::Sleep { sleeping: d.is_sleeping() });
+            }
+            Request::Power { action } => {
+                let verb = match action.as_str() {
+                    "reboot" => "reboot",
+                    "poweroff" | "shutdown" => "poweroff",
+                    _ => {
+                        conn.send(Event::Error { message: format!("unknown power action {}", action) });
+                        continue;
+                    }
+                };
+                d.audit.record("power", "", conn.uid, serde_json::json!({"action": verb, "client": conn.client}));
+                let verb = verb.to_string();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let _ = tokio::process::Command::new("systemctl").arg(&verb).status().await;
+                });
+                conn.send(Event::Notices { notices: d.notices.list() });
+            }
+            Request::Rollback { snapshot } => {
+                d.audit.record("rollback", "", conn.uid, serde_json::json!({"snapshot": snapshot, "client": conn.client}));
+                let out = tokio::process::Command::new("mindos-boot").arg("restore").arg(snapshot.to_string()).output().await;
+                match out {
+                    Ok(o) if o.status.success() => {
+                        d.notices.dismiss("updates:problems");
+                        d.notices.post(crate::proto::Notice { id: "updates:rolled-back".into(), level: "ok".into(), title: format!("Rolled back to snapshot {}", snapshot), body: "Rebooting into the restored system.".into(), source: "updates".into(), time: 0, actions: vec![] });
+                        conn.send(Event::Notices { notices: d.notices.list() });
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            let _ = tokio::process::Command::new("systemctl").arg("reboot").status().await;
+                        });
+                    }
+                    Ok(o) => conn.send(Event::Error { message: format!("mindos-boot restore failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()) }),
+                    Err(e) => conn.send(Event::Error { message: format!("mindos-boot: {}", e) }),
+                }
             }
             Request::History { limit } => {
                 conn.send(Event::History { entries: d.audit.tail(limit.min(1000)) });
@@ -172,6 +266,13 @@ async fn handle(d: Arc<Daemon>, stream: UnixStream) -> Result<()> {
             }
             Request::CancelDownload => d.cancel_download(),
             Request::Chat { session, text, autopilot } => {
+                if d.is_sleeping() {
+                    conn.send(Event::Delta { text: String::new(), kind: "status".into() });
+                    if !d.wake_and_wait(120).await {
+                        conn.send(Event::Error { message: "the Mind is waking up (a game asked it to sleep); try again in a moment".into() });
+                        continue;
+                    }
+                }
                 if !d.is_ready() {
                     conn.send(Event::Error { message: "the model is still loading, try again in a moment".into() });
                     continue;
@@ -182,6 +283,7 @@ async fn handle(d: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     let mut all = d.sessions.lock().await;
                     all.remove(&sid).unwrap_or_else(|| Session { id: sid.clone(), messages: vec![crate::daemon::llm::Message::system(d.system_prompt.clone())], created: std::time::Instant::now() })
                 };
+                agent::refresh_status(&d, &mut sess);
                 let res = agent::run_chat(&d, &mut conn, &mut sess, text, autopilot).await;
                 // keep the context bounded: drop the oldest turns beyond a budget
                 trim_session(&mut sess, 60);
@@ -206,14 +308,14 @@ fn trim_session(s: &mut Session, max_messages: usize) {
     if s.messages.len() <= max_messages {
         return;
     }
-    let system = s.messages[0].clone();
+    let head: Vec<_> = s.messages.iter().take_while(|m| m.role == "system").cloned().collect();
     let keep = s.messages.len() - max_messages;
-    let mut rest: Vec<_> = s.messages.drain(1..).collect();
-    rest.drain(..keep);
+    let mut rest: Vec<_> = s.messages.drain(head.len()..).collect();
+    rest.drain(..keep.min(rest.len()));
     // never start with a tool result whose call was dropped
     while rest.first().map(|m| m.role == "tool").unwrap_or(false) {
         rest.remove(0);
     }
-    s.messages = vec![system];
+    s.messages = head;
     s.messages.extend(rest);
 }

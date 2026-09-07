@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Recording the transaction for the Mind's post-update check...
+When = PostTransaction
+Exec = /usr/lib/mindos/update-mark
+NeedsTargets

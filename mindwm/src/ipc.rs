@@ -157,7 +157,14 @@ pub enum Request {
     ToggleMinimize { window: u64 },
     ToggleFullscreen { window: u64 },
     ToggleMaximize { window: u64 },
-    Mindbar { action: PanelAction },
+    Mindbar {
+        action: PanelAction,
+        /// Text for the input; with `ask` it is sent to the Mind at once.
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        ask: bool,
+    },
     Overview { action: PanelAction },
     Launch {
         exec: String,
@@ -706,11 +713,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 state.unminimize_window(&window);
                 state.toggle_maximize_window(&window);
             }),
-            Request::Mindbar { action } => {
-                match action {
-                    PanelAction::Toggle => self.mindbar.toggle(),
-                    PanelAction::Open => self.mindbar.open(),
-                    PanelAction::Close => self.mindbar.close(),
+            Request::Mindbar { action, text, ask } => {
+                match (action, text) {
+                    (PanelAction::Close, _) => self.mindbar.close(),
+                    (_, Some(text)) if !text.trim().is_empty() => {
+                        let bar_action = self.mindbar.open_with(&text, ask);
+                        self.handle_bar_action(bar_action);
+                    }
+                    (PanelAction::Toggle, _) => self.mindbar.toggle(),
+                    (PanelAction::Open, _) => self.mindbar.open(),
                 }
                 ok()
             }
@@ -827,7 +838,9 @@ mod tests {
         assert_eq!(
             req,
             Ok(Request::Mindbar {
-                action: PanelAction::Open
+                action: PanelAction::Open,
+                text: None,
+                ask: false,
             })
         );
 

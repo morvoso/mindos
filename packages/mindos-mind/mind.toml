@@ -43,3 +43,16 @@ autopilot = false
 autopilot_categories = []
 # Extra read-only commands allowed through run_command without confirmation.
 extra_observe_commands = []
+
+[updates]
+# The update watcher: checks the repositories and Arch news this often
+# (hours; 0 = off), rates the pending updates (rules + the model) and posts a
+# notice. Every pacman run is recorded and the health checks verify the
+# system afterwards, pointing at the pre-update snapshot if something broke.
+check_interval_hours = 6
+assess = true
+# Install updates the assessment rates "low" risk without asking. Settings ›
+# Updates toggles this at runtime (mind-prefs.json overrides this value).
+auto_apply = false
+# Health checks (failed services, drivers, disks, pacnew) every N minutes; 0 = off.
+health_interval_mins = 30

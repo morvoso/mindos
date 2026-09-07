@@ -9,6 +9,29 @@ pub struct Config {
     pub model: ModelConfig,
     pub daemon: DaemonConfig,
     pub policy: PolicyConfig,
+    pub updates: UpdatesConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    /// Check for updates (and Arch news) this often; 0 disables the watcher.
+    pub check_interval_hours: u64,
+    /// Ask the model to assess each new set of updates.
+    pub assess: bool,
+    /// Install updates the assessment rates "low" risk without asking
+    /// (Settings › Updates toggles this at runtime through mind-prefs.json).
+    pub auto_apply: bool,
+    /// Run the health checks this often (minutes); 0 disables them.
+    pub health_interval_mins: u64,
+    /// Where the pacman hook and the Mind record the last transaction.
+    pub last_update: PathBuf,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        UpdatesConfig { check_interval_hours: 6, assess: true, auto_apply: false, health_interval_mins: 30, last_update: PathBuf::from("/var/lib/mindos/last-update.json") }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +85,7 @@ pub struct PolicyConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { model: ModelConfig::default(), daemon: DaemonConfig::default(), policy: PolicyConfig::default() }
+        Config { model: ModelConfig::default(), daemon: DaemonConfig::default(), policy: PolicyConfig::default(), updates: UpdatesConfig::default() }
     }
 }
 

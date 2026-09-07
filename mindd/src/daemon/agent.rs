@@ -35,11 +35,58 @@ the name exists in none of them, so suggest search_packages, never 'install it f
 - For updates: check Arch news for manual interventions first, apply the update, then report pacnew files \
 and whether a reboot is needed (new kernel or NVIDIA driver).
 - Never touch the mind's own audit log, never disable mindd, never format disks.
+- You also look after the user: the update watcher (update_status) rates pending updates and posts notices; the \
+health checks (health_check) verify the system after every update; snapshots (list_snapshots, rollback) are the way \
+back from a bad update, and every pacman run is bracketed by them. When something looks broken after an update, say which \
+package is the likely cause and offer the rollback, explaining that the current state is kept so it can be undone.
+- Performance: performance_mode switches balanced/performance/quiet; GameMode already goes to performance while a game runs \
+and unloads you from the GPU meanwhile (mind_sleep). Suggest performance mode for benchmarks or a stuttering game, quiet for \
+a warm room or a laptop on battery.
+- Games: the dlss tool swaps DLSS / FSR / XeSS DLLs per game with a backup; suggest it when a game's DLSS is old \
+(Super Resolution 310.x is current) or the user asks about upscaling quality. Proton 10+ also honours PROTON_DLSS_UPGRADE=1 \
+in a game's launch options.
+- Developers: the mindos-dev stack (Rust, Node, Python, Go, Docker/Podman, distrobox, lazygit, delta, starship) is installed \
+or one `install_packages mindos-dev` away; `mindos-dev-setup` finishes the per-user setup.
+- Guide, do not lecture: one clear recommendation, the reason in a sentence, then act (with confirmation) or stop.
 
 This machine:
 {facts}",
         facts = facts
     )
+}
+
+/// A short "right now" block refreshed on every turn: performance mode,
+/// notices, pending updates, sleep state. It is folded into the one system
+/// message (chat templates such as Qwen's reject a system message anywhere
+/// but first), after the fixed prompt.
+pub fn refresh_status(d: &Daemon, session: &mut Session) {
+    let perf = std::fs::read_to_string("/run/mindos/perf/effective").map(|s| s.trim().to_string()).unwrap_or_else(|_| "balanced".into());
+    let game = std::fs::read_to_string("/run/mindos/perf/game").map(|s| s.trim() != "0" && !s.trim().is_empty()).unwrap_or(false);
+    let u = d.updates.lock().unwrap().clone();
+    let updates = if u.packages.is_empty() {
+        if u.checked_at == 0 { "not checked yet".to_string() } else { "none pending".to_string() }
+    } else {
+        format!("{} pending, risk {}{}", u.packages.len(), if u.risk.is_empty() { "unknown" } else { &u.risk }, if u.manual_intervention { ", MANUAL INTERVENTION announced" } else { "" })
+    };
+    let last = u.last_update.as_ref().map(|l| format!("{} ({} packages, verification: {})", super::health::date(l.time), l.packages.len(), if l.verified.is_empty() { "pending" } else { &l.verified })).unwrap_or_else(|| "none recorded".into());
+    let text = format!(
+        "Right now ({}):\n- performance mode: {}{}\n- updates: {}\n- last update: {}\n- notices shown to the user:\n{}",
+        chrono::Local::now().format("%a %d %b %H:%M"),
+        perf,
+        if game { " (a game is running)" } else { "" },
+        updates,
+        last,
+        d.notices.summary_text()
+    );
+    let content = format!("{}\n\n{}", d.system_prompt, text);
+    match session.messages.first_mut() {
+        Some(m) if m.role == "system" => m.content = Some(content),
+        _ => session.messages.insert(0, llm::Message::system(content)),
+    }
+    // Sessions saved by an older daemon carried the block as a second system message.
+    if session.messages.get(1).map(|m| m.role == "system" && m.name.as_deref() == Some("status")).unwrap_or(false) {
+        session.messages.remove(1);
+    }
 }
 
 fn tool_result_summary(v: &Value) -> String {
@@ -149,7 +196,7 @@ async fn run_tool(d: &Daemon, conn: &mut Conn, session: &Session, defs: &[tools:
         }
     }
     let started = std::time::Instant::now();
-    let result = tools::execute(&call.name, args, &d.config).await;
+    let result = tools::execute(&call.name, args, &d.config, d, &tools::Caller { uid: conn.uid }).await;
     let elapsed = started.elapsed().as_secs_f64();
     match &result {
         Ok(v) => {

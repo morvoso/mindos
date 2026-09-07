@@ -69,6 +69,147 @@ pub enum Request {
         use_after: bool,
     },
     CancelDownload,
+    /// Receive `Notice` pushes on this connection (the desktop shell); the
+    /// current list arrives first as `Notices`.
+    Subscribe,
+    /// The current notices (answered with `Notices`).
+    Notices,
+    /// Dismiss one notice (`id`) or every notice (`id` = "*").
+    DismissNotice { id: String },
+    /// What the update watcher knows (answered with `Updates`); `check`
+    /// runs a fresh check first (and an assessment when the model is ready).
+    Updates {
+        #[serde(default)]
+        check: bool,
+    },
+    /// Apply every pending update now (snapper snapshots around it, a
+    /// report as a notice). Answered with `Updates` when the run is done.
+    ApplyUpdates,
+    /// Install low-risk updates automatically when the watcher finds them.
+    SetAutoUpdate { enabled: bool },
+    /// Run the health checks now (answered with `Health`).
+    Health,
+    /// Unload the model (a game needs the GPU) or bring it back. A chat
+    /// while asleep wakes the Mind automatically.
+    SetSleep { sleeping: bool },
+    /// Reboot or power off (notice actions; the shell confirms first).
+    Power { action: String },
+    /// Roll the root filesystem back to a snapper snapshot (`mindos-boot
+    /// restore N`) and reboot. The shell confirms first. Answered with
+    /// `Notices` after the restore started, `Error` otherwise.
+    Rollback { snapshot: u64 },
+}
+
+/// Something the Mind wants the user to know: an update assessment, a
+/// health finding, a report after an update. Shown by the desktop shell as
+/// a notification and kept until dismissed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Notice {
+    /// Stable id: "updates:available", "health:failed-units", ...
+    pub id: String,
+    /// "info" | "warn" | "danger" | "ok"
+    pub level: String,
+    pub title: String,
+    pub body: String,
+    /// "updates" | "health" | "mind"
+    pub source: String,
+    /// Unix time.
+    pub time: u64,
+    /// Buttons the shell offers: `chat` sends `arg` to the Mind, `request`
+    /// sends the JSON request in `arg`, `command` runs `arg` in the user's
+    /// session, `settings` opens the Settings page named by `arg`.
+    pub actions: Vec<NoticeAction>,
+}
+
+impl Default for Notice {
+    fn default() -> Self {
+        Notice { id: String::new(), level: "info".into(), title: String::new(), body: String::new(), source: "mind".into(), time: 0, actions: vec![] }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct NoticeAction {
+    pub label: String,
+    /// "chat" | "request" | "command" | "settings"
+    pub kind: String,
+    pub arg: Value,
+}
+
+/// One package the update check found.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PackageUpdate {
+    pub name: String,
+    pub from: String,
+    pub to: String,
+    /// "kernel" | "gpu" | "graphics" | "core" | "mindos" | "gaming" | "" — what a
+    /// breakage would hit; set by the watcher's own rules.
+    pub tag: String,
+}
+
+/// What the update watcher knows.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UpdateStatus {
+    /// Unix time of the last successful check (0 = never).
+    pub checked_at: u64,
+    pub packages: Vec<PackageUpdate>,
+    /// Arch news headlines with their dates, newest first.
+    pub news: Vec<NewsItem>,
+    /// "low" | "medium" | "high" | "" (not assessed yet)
+    pub risk: String,
+    /// The Mind's assessment in a few sentences.
+    pub summary: String,
+    /// Specific things to watch out for.
+    pub warnings: Vec<String>,
+    /// News items published since the last update that mention manual steps.
+    pub manual_intervention: bool,
+    pub reboot: bool,
+    /// The assessment came from the language model (else from rules only).
+    pub assessed_by_model: bool,
+    pub assessing: bool,
+    pub checking: bool,
+    pub applying: bool,
+    pub auto_apply: bool,
+    /// The last update run: when, how many packages, ok, and the snapshot to go back to.
+    pub last_update: Option<LastUpdate>,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct NewsItem {
+    pub title: String,
+    pub date: String,
+    pub url: String,
+}
+
+/// The last pacman transaction (written by the pacman hook and by the Mind).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LastUpdate {
+    pub time: u64,
+    pub packages: Vec<String>,
+    /// Snapper snapshot taken before the transaction, if any.
+    pub pre_snapshot: Option<u64>,
+    pub ok: bool,
+    /// Health verification after the update: "" (pending), "ok", "problems".
+    pub verified: String,
+    pub report: String,
+}
+
+/// One health finding.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Finding {
+    pub id: String,
+    /// "ok" | "info" | "warn" | "danger"
+    pub level: String,
+    pub title: String,
+    pub body: String,
+    pub actions: Vec<NoticeAction>,
 }
 
 /// A GGUF file in the models directory.
@@ -184,6 +325,10 @@ pub enum Event {
         sessions: usize,
         uptime_secs: u64,
         backend: String,
+        #[serde(default)]
+        sleeping: bool,
+        #[serde(default)]
+        notices: usize,
     },
     History { entries: Vec<Value> },
     /// Answer to `Models` (and after `SetModel` / `SetThinking`).
@@ -207,6 +352,15 @@ pub enum Event {
         download: Option<DownloadState>,
     },
     Download(DownloadState),
+    /// Answer to `Notices`/`Subscribe`/`DismissNotice`: every current notice.
+    Notices { notices: Vec<Notice> },
+    /// A new or changed notice (subscribed connections only).
+    Notice(Notice),
+    /// A notice was dismissed or resolved (subscribed connections only).
+    NoticeGone { id: String },
+    Updates(UpdateStatus),
+    Health { checked_at: u64, findings: Vec<Finding> },
+    Sleep { sleeping: bool },
     Error { message: String },
 }
 

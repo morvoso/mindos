@@ -48,6 +48,25 @@ async fn main() -> Result<()> {
         let d = d.clone();
         tokio::spawn(async move { server::serve(d).await })
     };
+    // the update watcher and the health checks
+    let watch = {
+        let d = d.clone();
+        tokio::spawn(async move { mindos_mind::daemon::updates::watch(d).await })
+    };
+    let health = {
+        let d = d.clone();
+        tokio::spawn(async move {
+            let mins = d.config.updates.health_interval_mins;
+            if mins == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(45)).await;
+            loop {
+                let _ = tokio::time::timeout(Duration::from_secs(120), mindos_mind::daemon::health::run_and_notify(&d)).await;
+                tokio::time::sleep(Duration::from_secs(mins * 60)).await;
+            }
+        })
+    };
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -56,6 +75,8 @@ async fn main() -> Result<()> {
         r = srv => { if let Ok(Err(e)) = r { eprintln!("mindd: server failed: {:#}", e); } }
     }
     sup.abort();
+    watch.abort();
+    health.abort();
     let _ = std::fs::remove_file(&d.config.daemon.socket);
     Ok(())
 }
@@ -79,6 +100,11 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
     let mut backoff = 2u64;
     let mut last_model: Option<std::path::PathBuf> = None;
     loop {
+        if d.is_sleeping() {
+            *d.model_name.lock().unwrap() = "(sleeping)".into();
+            d.restart.notified().await;
+            continue;
+        }
         let model = match llm::select_model(&d.config.model) {
             Ok(m) => m,
             Err(e) => {

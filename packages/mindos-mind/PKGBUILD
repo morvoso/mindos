@@ -2,7 +2,7 @@
 # The Mind: mindd (local-LLM system daemon) and the `mind` CLI, built from ../../mindd.
 pkgname=mindos-mind
 pkgver=0.1.0
-pkgrel=4
+pkgrel=8
 pkgdesc="MindOS Mind: local LLM system daemon (mindd) and its CLI (mind)"
 arch=(x86_64)
 url="https://mindos.local"
@@ -15,8 +15,9 @@ makedepends=(rust clang lld rsync)
 backup=(etc/mindos/mind.toml etc/mindos/model-catalog.json)
 install=mindos-mind.install
 options=(!lto !debug)
-source=(mind.toml model-catalog.json mindd.service mindos.sysusers mindos.tmpfiles mindos-pkg 20-mindos-build.sudoers)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+source=(mind.toml model-catalog.json mindd.service mindos.sysusers mindos.tmpfiles mindos-pkg 20-mindos-build.sudoers
+        96-mindos-update-mark.hook update-mark)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 _srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export CARGO_HOME="${CARGO_HOME:-$_srcroot/build/cargo-home}"
@@ -45,6 +46,9 @@ package() {
   install -Dm644 "$srcdir/model-catalog.json" "$pkgdir/etc/mindos/model-catalog.json"
   install -Dm755 "$srcdir/mindos-pkg" "$pkgdir/usr/bin/mindos-pkg"
   install -Dm440 "$srcdir/20-mindos-build.sudoers" "$pkgdir/etc/sudoers.d/20-mindos-build"
+  # Every pacman transaction is recorded so mindd can verify the system after it.
+  install -Dm644 "$srcdir/96-mindos-update-mark.hook" "$pkgdir/usr/share/libalpm/hooks/96-mindos-update-mark.hook"
+  install -Dm755 "$srcdir/update-mark" "$pkgdir/usr/lib/mindos/update-mark"
   install -dm755 "$pkgdir/var/lib/mindos/models"
   install -Dm644 "$srcdir/mindd/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md" 2>/dev/null || true
 }

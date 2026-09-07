@@ -183,6 +183,33 @@ impl MindBar {
         self.dirty = true;
     }
 
+    /// Open the bar with `text` in the input; with `ask` the question is
+    /// sent to the Mind right away (a notice's "Explain" button).
+    pub fn open_with(&mut self, text: &str, ask: bool) -> BarAction {
+        self.open();
+        if self.busy || self.pending.is_some() {
+            return BarAction::None;
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            return BarAction::None;
+        }
+        if ask {
+            self.input.clear();
+            self.results.clear();
+            self.push(LineKind::User, text.to_string());
+            self.busy = true;
+            self.streaming.clear();
+            self.thinking.clear();
+            self.dirty = true;
+            BarAction::Ask(text.to_string())
+        } else {
+            self.input = format!("?{}", text);
+            self.refresh_results();
+            BarAction::None
+        }
+    }
+
     fn refresh_results(&mut self) {
         self.results = if self.input.starts_with('?') || self.input.starts_with('!') {
             Vec::new()

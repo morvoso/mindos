@@ -27,6 +27,8 @@ pub struct Prefs {
     /// bundled Qwen3.5 spends its whole token budget thinking about trivial
     /// questions when this is on, and most answers do not need it.
     pub thinking: Option<bool>,
+    /// Install low-risk updates automatically (Settings › Updates).
+    pub auto_update: Option<bool>,
 }
 
 pub fn prefs_path(state_dir: &Path) -> PathBuf {
