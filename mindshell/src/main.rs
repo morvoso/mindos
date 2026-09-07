@@ -19,6 +19,7 @@ mod layout;
 mod mind;
 mod mindwatch;
 mod notify;
+mod polkit;
 mod portal;
 mod scheme;
 mod system;
@@ -49,6 +50,8 @@ pub enum HostEvent {
     NotifyClosed(u32, u32),
     /// A line from the Mind daemon subscription (`notice`, `updates`, `sleep`, ...).
     Mind(Value),
+    /// The polkit agent wants the password dialog shown, updated or closed.
+    Polkit(Value),
     Quit,
 }
 

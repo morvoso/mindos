@@ -277,6 +277,29 @@ export interface NotifyState {
   dnd: boolean;
 }
 
+/* ----- polkit: the authentication dialog ----- */
+
+/** An authorisation the polkit agent is waiting for (`shell.state.polkit`). */
+export interface PolkitRequest {
+  id: number;
+  /** The polkit action, e.g. org.freedesktop.systemd1.manage-units. */
+  action: string;
+  message: string;
+  icon: string;
+  /** The account that will authenticate. */
+  user: string;
+  /** Every account polkit would accept. */
+  users: string[];
+  /** The command behind a pkexec call, when polkit knows it. */
+  command: string;
+  /** Why the last attempt failed, empty on the first one. */
+  error: string;
+  attempt: number;
+  tries: number;
+  /** The password went to PAM and the answer is not in yet. */
+  busy: boolean;
+}
+
 /* ----- performance modes (mindos-perf) ----- */
 
 export type PerfMode = 'balanced' | 'performance' | 'quiet';
@@ -390,6 +413,7 @@ export interface ShellState {
   config: ShellConfig;
   mind?: MindStatus;
   notify?: NotifyState;
+  polkit?: PolkitRequest | null;
   audio?: AudioState;
   app?: AppMode | null;
   version?: string;

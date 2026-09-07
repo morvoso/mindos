@@ -7,6 +7,7 @@ import { glassLayer } from '../glass';
 import { store } from '../state';
 import type { Anchor } from '../types';
 import { audioPopup } from './audio';
+import { authPopup } from './auth';
 import { calendarPopup } from './calendar';
 import { contextMenuPopup } from './context-menu';
 import { layoutModePopup } from './layout-mode';
@@ -19,6 +20,7 @@ import { widgetCatalogPopup } from './widget-catalog';
 import { widgetSettingsPopup } from './widget-settings';
 
 export const POPUPS: Record<string, PopupFactory> = {
+  auth: authPopup,
   calendar: calendarPopup,
   'layout-mode': layoutModePopup,
   audio: audioPopup,
@@ -75,7 +77,7 @@ export function placePopup(anchor: Anchor | undefined, w: number, h: number, out
 }
 
 export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown, output: string, close: () => void): () => void {
-  root.classList.add('popup-window');
+  root.classList.add('popup-window', `popup-${name}`);
   const a = (arg && typeof arg === 'object' ? arg : {}) as Record<string, unknown>;
   const anchor = a.anchor as Anchor | undefined;
   const outInfo = store.output(output);

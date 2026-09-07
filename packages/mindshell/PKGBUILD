@@ -4,7 +4,7 @@
 # the user service and the session autostart entry.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=21
+pkgrel=24
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://mindos.local"
@@ -14,7 +14,7 @@ license=(MIT OFL-1.1)
 # mindos-base / mindos-session metapackages, and those cannot be listed here:
 # `makepkg -s` in the build box resolves dependencies from the Arch repos only.
 depends=(glibc gcc-libs gtk4 webkitgtk-6.0 gtk4-layer-shell glib2 libsoup3
-         breeze-icons hicolor-icon-theme)
+         breeze-icons hicolor-icon-theme polkit)
 optdepends=('mindos-session: starts the shell from the session autostart directory'
             'mindos-theme: Orbitron in /usr/share/fonts/mindos and the system font rendering defaults (the UI bundle ships its own copies of Inter, JetBrains Mono and Orbitron)'
             'wireplumber: audio widget (wpctl)'

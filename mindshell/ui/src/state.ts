@@ -4,9 +4,9 @@
 import * as bridge from './bridge';
 import { deepClone } from './dom';
 import { normalizeLayout } from './layout';
-import type { AudioState, HealthReport, Layout, LayoutModeInfo, MindNotice, MindStatus, Notification, NotifyState, OutputInfo, Prefs, ShellState, TrayItem, UpdateStatus, WindowInfo, AppInfo } from './types';
+import type { AudioState, HealthReport, Layout, LayoutModeInfo, MindNotice, MindStatus, Notification, NotifyState, OutputInfo, PolkitRequest, Prefs, ShellState, TrayItem, UpdateStatus, WindowInfo, AppInfo } from './types';
 
-export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth';
+export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth' | 'polkit';
 
 type Cb = (state: ShellState) => void;
 
@@ -50,6 +50,7 @@ export class Store {
       notify: raw.notify ?? { items: [], dnd: false },
       audio: raw.audio,
       app: raw.app ?? null,
+      polkit: raw.polkit ?? null,
       version: raw.version,
     };
     bridge.on<{ windows: WindowInfo[]; focused: number | null }>('windows', (p) => {
@@ -98,6 +99,10 @@ export class Store {
     bridge.on<UpdateStatus>('mind_updates', (p) => {
       if (this.state.mind) this.state.mind.updates = p;
       this.emit('mindUpdates');
+    });
+    bridge.on<PolkitRequest | null>('polkit', (p) => {
+      this.state.polkit = p && typeof p === 'object' ? p : null;
+      this.emit('polkit');
     });
     bridge.on<HealthReport>('mind_health', (p) => {
       if (this.state.mind) this.state.mind.health = p;

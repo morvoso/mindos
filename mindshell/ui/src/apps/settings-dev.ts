@@ -41,6 +41,28 @@ export function devPage(el: HTMLElement): () => void {
         void refresh();
       });
   });
+  // pkexec exits 126 when the dialog is dismissed (127 = it could not run).
+  const cancelled = (r: RunResult) => r.status === 126 && !r.stderr.trim();
+
+  // The privileged bits go through pkexec: the shell's polkit agent asks for
+  // the password, and nothing here needs a terminal.
+  const privileged = (label: string, argv: string[], done: string, kind = ''): HTMLElement => {
+    const btn = h('button', { class: `btn small${kind ? ` ${kind}` : ''}` }, label) as HTMLButtonElement;
+    btn.addEventListener('click', () => {
+      btn.classList.add('busy');
+      btn.disabled = true;
+      bridge
+        .call<RunResult>('shell.run', { argv })
+        .then((r) => note.show(r.ok ? done : cancelled(r) ? 'Cancelled.' : `${argv[1]} failed: ${r.stderr.trim() || r.stdout.trim()}`, r.ok ? 'ok' : cancelled(r) ? 'info' : 'error'))
+        .catch((e) => note.show(e instanceof Error ? e.message : String(e), 'error'))
+        .finally(() => {
+          btn.classList.remove('busy');
+          btn.disabled = false;
+          void refresh();
+        });
+    });
+    return btn;
+  };
   const dockerBody = h('div', { class: 'list' });
   const dockerCard = card('Docker', dockerBody);
   const tipsBody = h('table', { class: 'keys' }, ...TIPS.map(([k, v]) => h('tr', {}, h('td', { class: 'key mono' }, k), h('td', {}, v))));
@@ -61,8 +83,8 @@ export function devPage(el: HTMLElement): () => void {
     }
     const d = status.docker;
     dockerBody.replaceChildren(
-      row('Service', d.active ? 'Running.' : d.enabled ? 'Enabled, starts on demand.' : 'Not running.', d.active ? pill('Running', 'ok') : d.enabled ? pill('Enabled', '') : h('button', { class: 'btn small', onclick: () => bridge.send('shell.exec', { cmd: 'sudo systemctl enable --now docker.service; sleep 1', terminal: true }) }, 'Enable')),
-      row(`${store.state.user} in the docker group`, d.member ? 'Containers run without sudo.' : 'Needed to run containers without sudo. Log out and in again after joining.', d.member ? pill('Yes', 'ok') : h('button', { class: 'btn small accent', onclick: () => bridge.send('shell.exec', { cmd: `sudo usermod -aG docker ${store.state.user}`, terminal: true }) }, 'Join')),
+      row('Service', d.active ? 'Running.' : d.enabled ? 'Enabled, starts on demand.' : 'Not running.', d.active ? pill('Running', 'ok') : d.enabled ? pill('Enabled', '') : privileged('Enable', ['pkexec', 'systemctl', 'enable', '--now', 'docker.service'], 'Docker is running.')),
+      row(`${store.state.user} in the docker group`, d.member ? 'Containers run without sudo.' : 'Needed to run containers without sudo. Log out and in again after joining.', d.member ? pill('Yes', 'ok') : privileged('Join', ['pkexec', 'usermod', '-aG', 'docker', store.state.user], 'Joined the docker group. Log out and in again for it to take effect.', 'accent')),
     );
   };
   const refresh = () =>

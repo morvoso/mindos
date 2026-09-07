@@ -97,6 +97,7 @@ const P: Record<string, string> = {
   gauge: '<path d="M4.5 16.5a8.5 8.5 0 1 1 15 0"/><path d="M12 15l4-5"/><circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none"/>',
   leaf: '<path d="M5 19c0-8 5-13 14-13-1 9-6 13-13 13z"/><path d="M5 19c3-4 6-7 10-9"/>',
   package: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9M8 5.3l8 4.5"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
   shield: '<path d="M12 3l7.5 3v5.5c0 4.5-3 8-7.5 9.5-4.5-1.5-7.5-5-7.5-9.5V6z"/><path d="M9 12l2 2 4-4"/>',
   history: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4v5h5"/><path d="M12 8v4l2.5 2"/>',
   pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>',

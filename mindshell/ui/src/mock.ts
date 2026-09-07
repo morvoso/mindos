@@ -7,7 +7,7 @@ import { parseWindowInfo, setApi, type MindosGlobal } from './bridge';
 import { letterIcon, hashHue } from './icons';
 import { defaultLayout } from './layout';
 import * as mfs from './mock-fs';
-import type { AppInfo, AudioState, CatalogEntry, DlssGame, DlssLibraryEntry, HealthReport, Layout, MenuItem, MindNotice, ModelEntry, ModelsInfo, Notification, PerfStatus, Prefs, ShellState, Stats, TrayItem, UpdateStatus, WindowInfo, WmOutput } from './types';
+import type { AppInfo, AudioState, CatalogEntry, DlssGame, DlssLibraryEntry, HealthReport, Layout, MenuItem, MindNotice, ModelEntry, ModelsInfo, Notification, PerfStatus, PolkitRequest, Prefs, ShellState, Stats, TrayItem, UpdateStatus, WindowInfo, WmOutput } from './types';
 
 type Listener = (payload: unknown) => void;
 
@@ -190,6 +190,8 @@ export function installMock(): MindosGlobal {
   const notifyState = () => ({ items: notifications.map((n) => ({ ...n })), dnd });
   const pushNotify = (added?: Notification, closed?: number) => emit('notify', { ...notifyState(), added: added ?? null, closed: closed ?? null });
   const pushNotices = (added?: MindNotice) => emit('mind_notices', { notices: notices.map((n) => ({ ...n })), added: added ?? null });
+  // ----- the authentication dialog (polkit) -----
+  const polkit: PolkitRequest = { id: 1, action: 'org.freedesktop.systemd1.manage-units', message: 'Authentication is required to start "docker.service".', icon: '', user: 'morvoso', users: ['morvoso', 'root'], command: '/usr/bin/systemctl enable --now docker.service', error: '', attempt: 1, tries: 3, busy: false };
   const perf: PerfStatus = { mode: 'balanced', effective: 'balanced', game: 0, gameMode: 'performance', mindSleeps: true, cpu: 'AMD Ryzen 7 9800X3D 8-Core Processor', driver: 'amd-pstate-epp', governor: 'schedutil', epp: 'balance_performance', boost: true, platformProfile: 'balanced', thp: 'always', scheduler: 'EEVDF+BORE', scx: '', nvidia: false, gpu: 'NVIDIA GeForce RTX 4090', powerLimit: 'default' };
   const dlssGames: DlssGame[] = [
     { id: 'steam:1091500', name: 'Cyberpunk 2077', source: 'steam', path: `${mfs.HOME}/.local/share/Steam/steamapps/common/Cyberpunk 2077`, dlls: [{ kind: 'dlss', label: 'DLSS Super Resolution', file: 'bin/x64/nvngx_dlss.dll', version: '3.7.10.0', swapped: false }, { kind: 'dlss_g', label: 'DLSS Frame Generation', file: 'bin/x64/nvngx_dlssg.dll', version: '3.7.10.0', swapped: false }, { kind: 'dlss_d', label: 'DLSS Ray Reconstruction', file: 'bin/x64/nvngx_dlssd.dll', version: '3.7.10.0', swapped: false }] },
@@ -202,6 +204,21 @@ export function installMock(): MindosGlobal {
     { kind: 'dlss', label: 'DLSS Super Resolution', version: '3.8.10.0', path: `${mfs.HOME}/.local/share/mindos/dlss/dlss/3.8.10.0/nvngx_dlss.dll`, source: 'download', size: 44 * 1048576 },
   ];
   const KINDS = [['dlss', 'nvngx_dlss.dll', 'DLSS Super Resolution'], ['dlss_d', 'nvngx_dlssd.dll', 'DLSS Ray Reconstruction'], ['dlss_g', 'nvngx_dlssg.dll', 'DLSS Frame Generation'], ['fsr_31_dx12', 'amd_fidelityfx_dx12.dll', 'FSR 3.1 (DX12)'], ['fsr_31_vk', 'amd_fidelityfx_vk.dll', 'FSR 3.1 (Vulkan)'], ['xess', 'libxess.dll', 'XeSS'], ['xess_fg', 'libxess_fg.dll', 'XeSS Frame Generation']].map(([kind, dll, label]) => ({ kind, dll, label }));
+  const docker = { active: true, enabled: true, member: false };
+  // pkexec: the host would hand this to polkit, so the mock opens the same
+  // dialog and only runs the command once the password went through.
+  let pkexecPending: { argv: string[]; done: (r: unknown) => void } | undefined;
+  const askPolkit = (argv: string[]) =>
+    new Promise((done) => {
+      polkit.command = `/usr/bin/${argv.join(' ')}`;
+      polkit.message = `Authentication is required to run "${argv[0]}".`;
+      polkit.error = '';
+      polkit.attempt = 1;
+      polkit.busy = false;
+      pkexecPending = { argv, done };
+      emit('polkit', { ...polkit });
+      mockHooks.openPopup?.('auth', {}, true);
+    });
   const runHelper = (argv: string[]): unknown => {
     const ok = (json: unknown, stdout = '') => ({ status: 0, ok: true, stdout: stdout || JSON.stringify(json), stderr: '', json });
     const [a0, a1, a2, a3, a4] = argv[0] === 'sudo' ? argv.slice(2) : argv;
@@ -256,7 +273,7 @@ export function installMock(): MindosGlobal {
         return ok({});
       }
     }
-    if (a0 === 'mindos-dev-setup') return ok({ tools: [['gcc', '15.2.1'], ['clang', '20.1.8'], ['rustc', '1.90.0'], ['go', '1.25.1'], ['node', '24.8.0'], ['python', '3.13.7'], ['uv', '0.8.17'], ['docker', '28.4.0'], ['podman', '5.6.1'], ['distrobox', '1.8.1.2'], ['git', '2.51.0'], ['lazygit', '0.55.0'], ['just', '1.43.0'], ['mold', '2.40.4'], ['sccache', '0.10.0'], ['perf', '6.17'], ['gdb', '16.3'], ['hyperfine', '1.19.0'], ['starship', '1.23.0'], ['zoxide', '0.9.8'], ['shellcheck', null]].map(([name, version]) => ({ name, version })), docker: { active: true, enabled: true, member: false } });
+    if (a0 === 'mindos-dev-setup') return ok({ tools: [['gcc', '15.2.1'], ['clang', '20.1.8'], ['rustc', '1.90.0'], ['go', '1.25.1'], ['node', '24.8.0'], ['python', '3.13.7'], ['uv', '0.8.17'], ['docker', '28.4.0'], ['podman', '5.6.1'], ['distrobox', '1.8.1.2'], ['git', '2.51.0'], ['lazygit', '0.55.0'], ['just', '1.43.0'], ['mold', '2.40.4'], ['sccache', '0.10.0'], ['perf', '6.17'], ['gdb', '16.3'], ['hyperfine', '1.19.0'], ['starship', '1.23.0'], ['zoxide', '0.9.8'], ['shellcheck', null]].map(([name, version]) => ({ name, version })), docker: { ...docker } });
     if (a0 === 'mindos-boot') return ok(null, `    #  date              kind    kernel        description
    44* 2026-09-07 09:12  single  6.17.3-1      boot
    43  2026-09-04 18:40  post    6.17.3-1      pacman -Syu
@@ -265,6 +282,16 @@ export function installMock(): MindosGlobal {
    40  2026-08-28 20:15  post    6.17.2-1      pacman -S mindos-dev
    39  2026-08-28 20:14  pre     6.17.2-1      pacman -S mindos-dev
 * booted right now (changes stay in RAM); 'mindos-boot restore' makes it the system`);
+    if (a0 === 'pkexec') return askPolkit(argv.slice(1));
+    if (a0 === 'systemctl' && a1 === 'enable') {
+      docker.active = true;
+      docker.enabled = true;
+      return ok(null, '');
+    }
+    if (a0 === 'usermod') {
+      docker.member = true;
+      return ok(null, '');
+    }
     return { status: 127, ok: false, stdout: '', stderr: `mock: ${argv.join(' ')} not available`, json: null };
   };
   // A game "starts" after a while so the perf widget shows GameMode at work.
@@ -477,6 +504,7 @@ export function installMock(): MindosGlobal {
       config: { icon_theme: 'breeze-dark', hardware_acceleration: 'always', terminal: 'foot', icon_size: 48 },
       mind: { ...mind },
       notify: notifyState(),
+      polkit: { ...polkit },
       audio: { ...audio },
       app: info.kind === 'app' ? { name: info.id, page: appArg.page, arg: appArg.arg } : null,
       version: '0.2.0 (mock)',
@@ -517,6 +545,8 @@ export function installMock(): MindosGlobal {
       const name = String(p.name ?? parseWindowInfo().popup ?? '');
       popups.delete(name);
       mockHooks.closePopup?.(name);
+      // The host cancels the polkit request when its dialog goes away.
+      if (name === 'auth' && pkexecPending) methods['polkit.cancel']({});
       emit('popup_state', { name, open: false, output: 'Virtual-1' });
       return {};
     },
@@ -690,6 +720,32 @@ export function installMock(): MindosGlobal {
       return { enabled: dnd };
     },
     'toast.fit': () => ({ visible: true }),
+    'polkit.respond': (p: Record<string, unknown>) => {
+      polkit.busy = true;
+      emit('polkit', { ...polkit });
+      setTimeout(() => {
+        if (String(p.password) === 'mindos') {
+          emit('polkit', null);
+          mockHooks.closePopup?.('auth');
+          const pending = pkexecPending;
+          pkexecPending = undefined;
+          pending?.done(runHelper(pending.argv));
+          return;
+        }
+        polkit.busy = false;
+        polkit.error = 'That password did not work.';
+        polkit.attempt = Math.min(polkit.attempt + 1, polkit.tries);
+        emit('polkit', { ...polkit });
+      }, 700);
+      return {};
+    },
+    'polkit.cancel': () => {
+      emit('polkit', null);
+      const pending = pkexecPending;
+      pkexecPending = undefined;
+      pending?.done({ status: 126, ok: false, stdout: '', stderr: '', json: null });
+      return {};
+    },
     'shell.run': (p) => runHelper((p.argv as string[]) ?? []),
     'wallpaper.list': () => mfs.wallpapers(),
     'fs.desktop': () => ({ path: `${mfs.HOME}/Desktop` }),

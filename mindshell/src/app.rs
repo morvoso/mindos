@@ -24,6 +24,7 @@ use crate::ipc::{IpcClient, IpcEvent};
 use crate::layout::{Layout, Panel};
 use crate::mind;
 use crate::notify::NotifyHandle;
+use crate::polkit::PolkitHandle;
 use crate::system::{self, Audio};
 use crate::tray::TrayHandle;
 use crate::windows::{self, Kind, PanelSpec, ShellWindow};
@@ -97,6 +98,8 @@ struct State {
     mind_notices: Vec<Value>,
     mind_updates: Value,
     mind_health: Value,
+    /// The authorisation the polkit agent is waiting for (`Null` when none).
+    polkit: Value,
 }
 
 /// How many application notifications the centre keeps.
@@ -115,6 +118,8 @@ pub struct App {
     pub tray: Option<TrayHandle>,
     /// The notification server (the shell only).
     pub notify: Option<NotifyHandle>,
+    /// The polkit authentication agent (the shell only).
+    pub polkit: Option<PolkitHandle>,
     pub app_mode: Option<AppMode>,
     pub events: async_channel::Sender<HostEvent>,
     /// `--ui-dir` as given, handed to app windows this shell spawns.
@@ -188,6 +193,7 @@ impl App {
         let ipc = IpcClient::start(events.clone());
         let tray = if app_mode.is_some() { None } else { Some(TrayHandle::start(events.clone(), icon_theme.clone())) };
         let notify = if app_mode.is_some() { None } else { Some(NotifyHandle::start(events.clone())) };
+        let polkit = if app_mode.is_some() { None } else { Some(PolkitHandle::start(events.clone())) };
         if app_mode.is_none() {
             crate::portal::start();
         }
@@ -204,6 +210,7 @@ impl App {
             ipc,
             tray,
             notify,
+            polkit,
             app_mode,
             events,
             ui_dir_override,
@@ -996,6 +1003,19 @@ impl App {
                 }
                 Ok(json!({ "visible": show }))
             }
+            "polkit.respond" => {
+                let id = params.get("id").and_then(Value::as_u64).ok_or("polkit.respond: missing 'id'")?;
+                let password = params.get("password").and_then(Value::as_str).unwrap_or("").to_string();
+                self.polkit.as_ref().ok_or("polkit.respond: no agent in this window")?.respond(id, Some(password));
+                Ok(Value::Null)
+            }
+            "polkit.cancel" => {
+                let id = params.get("id").and_then(Value::as_u64).ok_or("polkit.cancel: missing 'id'")?;
+                if let Some(agent) = self.polkit.as_ref() {
+                    agent.respond(id, None);
+                }
+                Ok(Value::Null)
+            }
             "shell.run" => {
                 let argv: Vec<String> = params
                     .get("argv")
@@ -1208,6 +1228,7 @@ impl App {
             "version": env!("CARGO_PKG_VERSION"),
             "mind": self.mind_json_locked(&state),
             "notify": Self::notify_json_locked(&state),
+            "polkit": state.polkit.clone(),
             "audio": system::audio_value(&state.audio),
             "compositor": self.ipc.is_connected(),
             "devtools": self.devtools,
@@ -1351,6 +1372,9 @@ impl App {
             ["pacman", flag, ..] => !sudo && flag.starts_with("-Q"),
             ["checkupdates", ..] => !sudo,
             ["nvidia-smi", ..] => !sudo,
+            // Settings > Developer, through the authentication dialog.
+            ["pkexec", "systemctl", "enable", "--now", "docker.service"] => !sudo,
+            ["pkexec", "usermod", "-aG", "docker", who] => !sudo && *who == system::user_name(),
             _ => false,
         };
         if !allowed {
@@ -1531,8 +1555,30 @@ impl App {
         Ok(json!({ "name": name, "open": true, "output": output }))
     }
 
+    /// Show the authentication dialog for the pending polkit request: a
+    /// centred popup with the keyboard, on the primary output.
+    fn show_auth_popup(self: &Rc<Self>) {
+        if self.find_popup("auth").is_some() {
+            return;
+        }
+        let monitors = windows::monitors();
+        let Some(monitor) = monitors.first() else { return };
+        let name = windows::monitor_name(monitor, 0);
+        let url = bridge::window_url("popup", "auth", &name, Some("auth"), Some(&json!({})), None);
+        self.create_window(Kind::Popup, "auth", &name, monitor, None, true, &url);
+        self.broadcast("popup_state", &json!({ "name": "auth", "open": true, "output": name }));
+    }
+
     pub fn close_popup(self: &Rc<Self>, name: &str) -> bool {
         let Some(win) = self.find_popup(name) else { return false };
+        // Escape, or a click beside the authentication dialog, cancels the
+        // request the agent is still waiting on.
+        if name == "auth" {
+            let id = self.state.borrow().polkit.get("id").and_then(Value::as_u64);
+            if let (Some(id), Some(agent)) = (id, self.polkit.as_ref()) {
+                agent.respond(id, None);
+            }
+        }
         let output = win.output.clone();
         self.remove_window(&win);
         self.broadcast("popup_state", &json!({ "name": name, "open": false, "output": output }));
@@ -1636,6 +1682,33 @@ impl App {
                 self.close_notification(id, reason);
             }
             HostEvent::Mind(v) => self.mind_event(v),
+            HostEvent::Polkit(v) => {
+                match v.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "ask" => {
+                        self.state.borrow_mut().polkit = crate::polkit::request_json(&v);
+                        let payload = self.state.borrow().polkit.clone();
+                        self.broadcast("polkit", &payload);
+                        self.show_auth_popup();
+                    }
+                    "busy" => {
+                        {
+                            let mut state = self.state.borrow_mut();
+                            if state.polkit.is_object() {
+                                state.polkit["busy"] = json!(true);
+                            }
+                        }
+                        let payload = self.state.borrow().polkit.clone();
+                        self.broadcast("polkit", &payload);
+                    }
+                    // The agent is done (granted, refused or cancelled).
+                    "done" => {
+                        self.state.borrow_mut().polkit = Value::Null;
+                        self.close_popup("auth");
+                        self.broadcast("polkit", &Value::Null);
+                    }
+                    _ => {}
+                }
+            }
             HostEvent::Quit => {
                 tracing::info!("shutting down");
                 let mut all: Vec<Rc<ShellWindow>> = self.windows.borrow_mut().drain(..).collect();

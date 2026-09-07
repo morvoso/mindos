@@ -33,6 +33,7 @@ shot app-games           'kind=app&id=settings&arg=%7B%22page%22%3A%22games%22%7
 shot app-developer       'kind=app&id=settings&arg=%7B%22page%22%3A%22developer%22%7D' 1040,760
 shot preview-notifications 'kind=preview&popup=notifications'
 shot preview-perf        'kind=preview&popup=perf'
+shot preview-auth        'kind=preview&popup=auth'
 shot toast               'kind=toast&id=toast&output=Virtual-1' 400,300
 # The login screen (kind=greeter) on a full output.
 shot greeter             'kind=greeter&arg=%7B%22primary%22%3Atrue%7D'
