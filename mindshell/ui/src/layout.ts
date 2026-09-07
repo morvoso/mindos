@@ -8,31 +8,27 @@ export function defaultLayout(): Layout {
     version: 1,
     panels: [
       {
-        // The dock: centred, transparent, only as long as its icons (length 0 = fit).
-        id: 'dock', output: '*', edge: 'bottom', size: 56, length: 0, align: 'center', margin: 0, layer: 'top', opacity: 0,
+        // One bar along the bottom, flush with the edge: the apps centred,
+        // the tray, Mind and the clock at the right.
+        id: 'bar', output: '*', edge: 'bottom', size: 48, length: 100, align: 'center', margin: 0, layer: 'top', opacity: 0.85, float: false,
         widgets: [
+          { id: 'sp-l', type: 'spacer', config: { expand: true } },
           { id: 'tasks', type: 'taskbar', config: { pins: ['firefox.desktop', 'mindos-files.desktop', 'foot.desktop', 'steam.desktop', 'mindos-settings.desktop'] } },
-        ],
-      },
-      {
-        id: 'top', output: '*', edge: 'top', size: 30, length: 100, align: 'center', margin: 0, layer: 'top', opacity: 0.92,
-        widgets: [
-          { id: 'mind', type: 'mind', config: {} },
-          { id: 'sp2', type: 'spacer', config: { expand: true } },
+          { id: 'sp-r', type: 'spacer', config: { expand: true } },
           { id: 'tray', type: 'tray', config: {} },
           { id: 'audio', type: 'audio', config: {} },
           { id: 'net', type: 'network', config: {} },
           { id: 'bat', type: 'battery', config: {} },
           { id: 'mode', type: 'layout-mode', config: {} },
-          { id: 'clock', type: 'clock', config: { seconds: false, date: true, hour24: true } },
+          { id: 'mind', type: 'mind', config: {} },
+          { id: 'clock', type: 'clock', config: { seconds: false, date: true, hour24: false } },
         ],
       },
     ],
     desktop: {
       wallpaper: { mode: 'builtin' },
-      widgets: [
-        { id: 'd-clock', type: 'desktop-clock', output: '*', x: 64, y: 64, w: 320, h: 120, config: {} },
-      ],
+      icons: true,
+      widgets: [],
     },
   };
 }
@@ -67,10 +63,12 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
       margin: Number(p.margin) || 0,
       layer: p.layer ?? 'top',
       opacity: typeof p.opacity === 'number' ? p.opacity : 0.92,
+      ...(typeof p.float === 'boolean' ? { float: p.float } : {}),
       widgets: (p.widgets ?? []).map((w, j) => ({ id: w.id ?? `w-${i}-${j}`, type: w.type ?? 'unknown', config: w.config ?? {} })),
     })),
     desktop: {
       wallpaper: desktop.wallpaper ?? { mode: 'builtin' },
+      icons: desktop.icons !== false,
       widgets: (desktop.widgets ?? []).map((w, j) => ({
         id: w.id ?? `d-${j}`, type: w.type ?? 'unknown', output: w.output ?? '*',
         x: Number(w.x) || 0, y: Number(w.y) || 0, w: Number(w.w) || 240, h: Number(w.h) || 120, config: w.config ?? {},

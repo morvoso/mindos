@@ -244,17 +244,23 @@ mod tests {
     #[test]
     fn builtin_layout_parses() {
         let layout: Layout = serde_json::from_str(BUILTIN_LAYOUT).unwrap();
-        assert_eq!(layout.panels.len(), 2);
-        assert!(layout.panels.iter().any(|p| p.edge == "top"));
-        assert!(layout.panels.iter().any(|p| p.edge == "bottom"));
-        let dock = layout.panels.iter().find(|p| p.edge == "bottom").unwrap();
-        let names: Vec<&str> = dock.widgets.iter().map(|w| w.kind.as_str()).collect();
+        // One Windows-style bar along the bottom: the task bar centred
+        // between two expanding spacers, the tray, Mind and the clock after.
+        assert_eq!(layout.panels.len(), 1);
+        let bar = &layout.panels[0];
+        assert_eq!(bar.edge, "bottom");
+        assert_eq!(bar.length, 100, "the bar spans the edge");
+        assert_eq!(bar.extra.get("float"), Some(&Value::Bool(false)), "flush with the edge");
+        let names: Vec<&str> = bar.widgets.iter().map(|w| w.kind.as_str()).collect();
         assert!(names.contains(&"taskbar"));
+        assert!(names.contains(&"mind"));
+        assert!(names.contains(&"layout-mode"));
         assert!(!names.contains(&"start"));
-        assert_eq!(dock.length, 0, "the dock fits its icons");
-        assert_eq!(dock.opacity, 0.0, "the dock has no bar behind it");
-        let top = layout.panels.iter().find(|p| p.edge == "top").unwrap();
-        assert!(top.widgets.iter().any(|w| w.kind == "layout-mode"));
+        assert_eq!(names.iter().filter(|n| **n == "spacer").count(), 2, "two expanding spacers centre the apps");
+        let pos = |k: &str| names.iter().position(|n| *n == k).unwrap();
+        assert!(pos("taskbar") < pos("tray") && pos("tray") < pos("mind") && pos("mind") + 1 == pos("clock"), "Mind sits right, just left of the clock");
+        assert!(layout.desktop.widgets.is_empty(), "no desktop widgets by default");
+        assert_eq!(layout.desktop.extra.get("icons"), Some(&Value::Bool(true)), "desktop icons on");
         let round: Value = layout.to_value();
         assert_eq!(round["panels"][0]["widgets"][0]["type"], layout.panels[0].widgets[0].kind);
     }

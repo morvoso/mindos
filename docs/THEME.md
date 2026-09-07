@@ -6,9 +6,10 @@ MindOS has two visual stages with a hard line between them:
   paint white text (`#ffffff`) on MindOS red (`#8c1010`). Red means "the
   machine is still booting"; nothing after the kernel hands over to the splash
   uses it.
-* **System stage: the dark HUD.** Plymouth, the compositor and the desktop
-  shell share one dark, minimal, gamey palette with a single electric-cyan
-  accent. No red anywhere.
+* **System stage: dark glass.** Plymouth, the compositor and the desktop
+  shell share one dark palette with a single electric-cyan accent: a navy
+  void with a cyan and violet aurora behind everything, and translucent,
+  frosted surfaces with soft corners in front of it. No red anywhere.
 
 ## Boot stage (red)
 
@@ -19,7 +20,7 @@ MindOS has two visual stages with a hard line between them:
 | Kernel console | `linux-mindos` carries a patch that makes the VT default attribute white on red and sets the palette's red to `#8c1010`, so every message from the first kernel line onwards is white on red. On a stock kernel the same look comes from `vt.color=0x4f vt.default_red=... vt.default_grn=... vt.default_blu=...` | `packages/linux-mindos/` |
 | Virtual consoles after boot | `mindos-console-theme.service` re-applies the colours to tty1–6, so the tty2 recovery shell stays red | `packages/mindos-theme/console-theme` |
 
-## System stage (dark HUD)
+## System stage (dark glass)
 
 ### Tokens
 
@@ -40,8 +41,41 @@ MindOS has two visual stages with a hard line between them:
 | danger | `#ff5d8f` | errors (deliberately not red) |
 | ok | `#3ddc97` | success |
 
-Shapes are chamfered (cut corners) rather than rounded; borders are hairlines;
-glow is used sparingly on the accent. Labels are uppercase with wide tracking.
+### Glass
+
+Everything in front of the wallpaper is glass: a dark tint (`rgb(12 17 25)`
+at 45–80 % alpha) over a blurred copy of what is behind it, a 1 px light
+border (`white / 9 %`, `16 %` when raised), a lighter line catching the top
+edge, a soft drop shadow, and rounded corners — 9 px on buttons, 12–16 px on
+cards and popups, 22 px on the dock pill. Section labels stay uppercase with
+wide tracking; body text is Inter at normal tracking.
+
+| Where | How the glass is made |
+| --- | --- |
+| Desktop widgets | real `backdrop-filter: blur(28px) saturate(1.5)` — they live in the wallpaper's own window |
+| Panels, the dock, popups, app sidebars | separate WebKit windows cannot see the wallpaper, so `mindshell/ui/src/glass.ts` puts a `.glass-bd` layer under the surface: the wallpaper blurred once on a small canvas (or the aurora gradient), sized to the output and shifted by the surface's position on it, so the crop under the window shows through. Updated when the wallpaper, the layout or the window moves. |
+| Title bars and the Mind bar | drawn by the compositor as translucent rounded cards (`Canvas::fill_rounded_rect`); mindwm does not blur, the alpha alone reads as glass over the desktop |
+| App windows (Settings, Files) | opaque, over the same aurora; the sidebar is frosted with the wallpaper |
+| Terminals | `foot` runs at 92 % alpha with the MindOS palette (`packages/mindos-session/foot.ini`) |
+
+The aurora is `--aurora` in `mindshell/ui/src/app.css` (radial cyan, violet,
+blue and teal light over a navy-to-void diagonal); `wallpaper.png` from
+`mindos-theme` is the same composition rendered by `gen-assets.py`, so the
+built-in wallpaper and the file look alike.
+
+### Dark mode for applications
+
+Every toolkit is told the desktop is dark, from `mindos-session`:
+
+| Toolkit | Mechanism |
+| --- | --- |
+| GTK 3 / GTK 4 | `/etc/mindos/xdg/gtk-{3,4}.0/settings.ini` (via `XDG_CONFIG_DIRS`): `gtk-theme-name=Adwaita-dark`, `gtk-application-prefer-dark-theme=1`, `breeze-dark` icons |
+| libadwaita, GTK 4, Firefox, Electron | the Settings portal: `/usr/share/xdg-desktop-portal/mindos-portals.conf` picks `xdg-desktop-portal-gtk`, which reports `org.gnome.desktop.interface color-scheme` — defaulted to `prefer-dark` by `/usr/share/glib-2.0/schemas/90_mindos.gschema.override` (also the Inter / JetBrains Mono font names) |
+| Firefox | `/usr/lib/firefox/defaults/pref/mindos.js`: `ui.systemUsesDarkTheme=1`, dark toolbar and content themes, `prefers-color-scheme: dark` for pages, the compositor's title bar instead of Firefox's own |
+| foot | the palette in `foot.ini` |
+
+Users override any of these in the usual places (`~/.config/gtk-3.0/settings.ini`,
+`gsettings set org.gnome.desktop.interface color-scheme default`, `about:config`).
 
 ### Fonts
 
@@ -113,19 +147,20 @@ rerun it after changing colours or fonts:
 python3 packages/mindos-theme/gen-assets.py --preview /tmp/boot.png   # also renders a preview of the boot screen
 ```
 
-The same script produces `wallpaper.png` (2560×1440 void gradient, faint
-grid, cyan glow), `splash.png` (the boot screen as a still) and `mindos.png`
-(the OS icon: a chamfered tile with a cyan M).
+The same script produces `wallpaper.png` (2560×1440, the aurora),
+`splash.png` (the boot screen as a still) and `mindos.png` (the OS icon: a
+rounded glass tile with a cyan M).
 
 ### Compositor and shell
 
 `mindwm` clears to the void, draws the MINDOS wordmark and key hints on an
-empty desktop, and renders the Mind bar as a chamfered bg-0 panel with the
-cyan accent, and gives every decorated window the same 30 px title bar
+empty desktop, renders the Mind bar as a rounded translucent card with the
+cyan accent glowing along its top edge, and gives every decorated window the
+same 30 px glass title bar with rounded top corners
 (`mindwm/src/mindbar.rs`, `mindwm/src/shell/ssd.rs`, `docs/COMPOSITOR.md`).
-`mindshell` draws the top bar, the dock, the Settings and Files apps and the
-desktop widgets from the same tokens (`mindshell/ui/src/theme.css`,
-`docs/SHELL.md`). The compositor colours can
+`mindshell` draws the bottom bar, the desktop icons, the popups, the
+Settings and Files apps and the desktop widgets from the same tokens
+(`mindshell/ui/src/app.css`, `mindshell/ui/src/glass.ts`, `docs/SHELL.md`). The compositor colours can
 be changed in `/etc/mindos/mindwm.toml` (`[theme] background`, `foreground`,
 `accent`), but the defaults are the brand.
 

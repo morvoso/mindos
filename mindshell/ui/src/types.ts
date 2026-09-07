@@ -24,6 +24,8 @@ export interface PanelDef {
   margin: number;
   layer: PanelLayer;
   opacity: number;
+  /** Island (inset, rounded) or flush with the edge; unset = by thickness. */
+  float?: boolean;
   widgets: WidgetEntry[];
 }
 
@@ -46,6 +48,8 @@ export interface Layout {
   desktop: {
     wallpaper: Wallpaper;
     widgets: DesktopWidgetEntry[];
+    /** Show the Desktop folder as icons (default true). */
+    icons?: boolean;
   };
 }
 
@@ -348,7 +352,9 @@ export type Action =
   | { popup: string; arg?: unknown; keyboard?: boolean }
   | { editMode: boolean }
   | { exec: string }
-  | { pin: { panel: string; widget: string; app: string; pinned: boolean } };
+  | { pin: { panel: string; widget: string; app: string; pinned: boolean } }
+  | { desktopIcons: boolean }
+  | { removeWidget: { kind: Container; panel?: string; widget: string } };
 
 export interface MenuAction {
   label: string;

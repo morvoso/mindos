@@ -3,7 +3,9 @@
 
 import * as bridge from '../bridge';
 import { h } from '../dom';
+import { glassLayer } from '../glass';
 import { icon } from '../icons';
+import { store } from '../state';
 
 export interface NavItem {
   id: string;
@@ -29,6 +31,7 @@ export function appFrame(root: HTMLElement, title: string, items: NavItem[], onN
   const side = h('aside', { class: 'app-side' }, h('div', { class: 'app-brand' }, h('span', { class: 'app-brand-mark' }, icon('mind', 18)), h('span', { class: 'app-brand-text' }, title)), nav);
   const content = h('main', { class: 'app-content' });
   root.append(side, content);
+  frostSidebar(side);
   return {
     side,
     content,
@@ -36,6 +39,17 @@ export function appFrame(root: HTMLElement, title: string, items: NavItem[], onN
       for (const [k, b] of buttons) b.classList.toggle('on', k === id);
     },
   };
+}
+
+/**
+ * Frost an app sidebar with the wallpaper. An app window does not know where
+ * it is on the screen, so the crop is the wallpaper's left edge; it still
+ * ties the window to the desktop behind it.
+ */
+export function frostSidebar(side: HTMLElement): void {
+  const out = store.state.outputs[0];
+  if (!out) return;
+  glassLayer(side, { output: out.name, origin: () => ({ x: 0, y: Math.round(out.height * 0.25) }) });
 }
 
 export function pageHeader(title: string, sub?: string, ...extra: (HTMLElement | null)[]): HTMLElement {

@@ -166,9 +166,23 @@ fn special(kind: glib::UserDirectory) -> Option<PathBuf> {
     glib::user_special_dir(kind).filter(|p| p.is_dir())
 }
 
+/// The folder shown as icons on the desktop: the XDG Desktop directory,
+/// `~/Desktop` when none is configured; created if missing.
+pub fn desktop_dir() -> PathBuf {
+    let path = glib::user_special_dir(glib::UserDirectory::Desktop)
+        .filter(|p| p != &home())
+        .unwrap_or_else(|| home().join("Desktop"));
+    if let Err(e) = std::fs::create_dir_all(&path) {
+        tracing::warn!(path = %path.display(), %e, "cannot create the Desktop folder");
+    }
+    path
+}
+
 /// Sidebar entries: home, the XDG folders, the root and every mounted drive.
 pub fn places() -> Value {
-    let mut list = vec![json!({ "name": "Home", "path": home().to_string_lossy(), "icon": "user-home", "kind": "place" })];
+    // `kind` is the UI's vocabulary (ui/src/types.ts Place): home / folder /
+    // system / mount.
+    let mut list = vec![json!({ "name": "Home", "path": home().to_string_lossy(), "icon": "user-home", "kind": "home" })];
     let folders = [
         (glib::UserDirectory::Desktop, "Desktop", "user-desktop"),
         (glib::UserDirectory::Documents, "Documents", "folder-documents"),
@@ -180,11 +194,11 @@ pub fn places() -> Value {
     for (kind, name, icon) in folders {
         if let Some(path) = special(kind) {
             if path != home() {
-                list.push(json!({ "name": name, "path": path.to_string_lossy(), "icon": icon, "kind": "place" }));
+                list.push(json!({ "name": name, "path": path.to_string_lossy(), "icon": icon, "kind": "folder" }));
             }
         }
     }
-    list.push(json!({ "name": "System", "path": "/", "icon": "drive-harddisk", "kind": "drive" }));
+    list.push(json!({ "name": "System", "path": "/", "icon": "drive-harddisk", "kind": "system" }));
     let monitor = gio::VolumeMonitor::get();
     for mount in monitor.mounts() {
         let Some(path) = mount.root().path() else { continue };
@@ -201,7 +215,7 @@ pub fn places() -> Value {
             "name": mount.name().to_string(),
             "path": path.to_string_lossy(),
             "icon": icon,
-            "kind": "drive",
+            "kind": "mount",
             "removable": mount.can_eject() || mount.can_unmount(),
         }));
     }

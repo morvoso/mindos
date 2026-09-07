@@ -38,7 +38,7 @@ const root: Node = dir('', [
   dir('etc', [dir('mindos', [file('mind.toml', 1_200, 20), file('shell.toml', 640, 20), file('model-catalog.json', 3_400, 8)]), file('fstab', 512, 60), file('hostname', 11, 60)]),
   dir('home', [
     dir('morvoso', [
-      dir('Desktop', []),
+      dir('Desktop', [dir('Mods', []), file('firefox.desktop', 4_200, 30, 'application/x-desktop'), file('steam.desktop', 3_900, 30, 'application/x-desktop'), file('notes.md', 2_100, 1), file('screenshot.png', 610_000, 0), file('setup.sh', 1_800, 4)]),
       dir('Documents', [file('notes.md', 4_210, 1), file('budget.ods', 28_400, 9), file('thesis.pdf', 2_140_000, 40), dir('Scans', [file('passport.jpg', 1_900_000, 200)])]),
       dir('Downloads', [file('mindos-2026.09-x86_64.iso', 2_900_000_000, 0), file('Qwen3.5-9B-Q4_K_M.gguf', 5_700_000_000, 2), file('screenshot-2026-09-01.png', 388_000, 5), file('setup.sh', 3_100, 7)]),
       dir('Games', [dir('Cyberpunk 2077', []), dir('Hades II', []), dir('Factorio', []), file('saves.zip', 84_000_000, 3)]),

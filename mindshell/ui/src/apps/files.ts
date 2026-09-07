@@ -7,7 +7,7 @@ import { clamp, h } from '../dom';
 import { icon } from '../icons';
 import { store } from '../state';
 import type { FsEntry, FsListing, FsStat, Place } from '../types';
-import { dialog, fmtBytes, fmtDate, notice, row, setTitle, thumbUrl } from './shared';
+import { dialog, fmtBytes, fmtDate, frostSidebar, notice, row, setTitle, thumbUrl } from './shared';
 
 interface Clip {
   paths: string[];
@@ -101,6 +101,7 @@ export function renderFiles(root: HTMLElement, start?: string): void {
   const status = h('div', { class: 'files-status' });
   const menu = h('div', { class: 'inline-menu menu', hidden: true });
   root.append(h('div', { class: 'files-head' }, top, note.el), h('div', { class: 'files-main' }, side, body), status, menu);
+  frostSidebar(side);
 
   const setView = (v: 'grid' | 'list') => {
     view = v;
@@ -387,7 +388,8 @@ export function renderFiles(root: HTMLElement, start?: string): void {
   };
 
   const renderPlaces = () => {
-    side.replaceChildren();
+    // Keep the frosted backdrop (frostSidebar), drop the rest.
+    for (const el of Array.from(side.children)) if (!el.classList.contains('glass-bd')) el.remove();
     const group = (title: string, list: Place[]) => {
       if (!list.length) return;
       side.appendChild(h('div', { class: 'side-title' }, title));

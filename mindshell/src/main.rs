@@ -35,6 +35,8 @@ pub enum HostEvent {
     Gpu(Option<Value>),
     /// The user layout file changed on disk (another shell process saved it).
     LayoutFile,
+    /// Something in the Desktop folder changed (the desktop icons re-list).
+    DesktopDir,
     Quit,
 }
 

@@ -4,16 +4,23 @@ import * as actions from './actions';
 import * as bridge from './bridge';
 import { clamp, debounce, h, reconcile } from './dom';
 import { EDIT_EXTRA, isVertical, panelWindowRect, rectIn } from './geometry';
+import { glassLayer } from './glass';
 import { icon } from './icons';
 import { isFitPanel, panelById } from './layout';
 import { store } from './state';
 import { allWidgets, getWidget, mergedConfig, type WidgetCtx, type WidgetInstance } from './widgets/registry';
-import type { Align, Anchor, Edge, PanelDef, PanelLayer, WidgetEntry } from './types';
+import type { Align, Anchor, Edge, MenuAction, PanelDef, PanelLayer, WidgetEntry } from './types';
 
 interface Mounted {
   ctx: WidgetCtx;
   inst: WidgetInstance;
   slot: HTMLElement;
+}
+
+/** Island or flush: the layout's say, else thick panels float (app.css inset rule). */
+function panelFloats(p: PanelDef): boolean {
+  if (typeof p.float === 'boolean') return p.float;
+  return p.size > 30 || isFitPanel(p);
 }
 
 const EDGES: { edge: Edge; icon: string; label: string }[] = [
@@ -28,7 +35,10 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
   const glow = h('div', { class: 'panel-glow' });
   const widgetsEl = h('div', { class: 'panel-widgets' });
   const dropInd = h('div', { class: 'drop-ind', hidden: true });
-  const bar = h('div', { class: 'panel-bar' }, glow, widgetsEl, dropInd);
+  // The island is the visible bar, inset inside the window (app.css); the
+  // glass under it shows the wallpaper at the island's screen position.
+  const island = h('div', { class: 'panel-island' }, glow, widgetsEl, dropInd);
+  const bar = h('div', { class: 'panel-bar' }, island);
   const strip = h('div', { class: 'panel-strip', hidden: true });
   root.append(strip, bar);
 
@@ -47,15 +57,24 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     const r = panelWindowRect(current, out, editing(), store.state.layout.panels, fitLen || undefined);
     return { x: r.x, y: r.y };
   };
+  const glass = glassLayer(island, {
+    output,
+    origin: () => {
+      const o = origin();
+      const r = rectIn(root, island);
+      return { x: o.x + r.x, y: o.y + r.y };
+    },
+  });
 
   // ----- fit-to-content panels -------------------------------------------
   // The dock has no fixed length: after every render the slots are measured
   // and the host is told how long the window should be (`panel.fit`).
 
-  const PAD = 8;
   const measure = (): number => {
     if (!current) return 0;
     const vertical = isVertical(current);
+    // everything around the widgets box: the island's insets, border and padding
+    const chrome = vertical ? root.clientHeight - widgetsEl.clientHeight : root.clientWidth - widgetsEl.clientWidth;
     let lo = Infinity;
     let hi = -Infinity;
     for (const slot of Array.from(widgetsEl.children)) {
@@ -65,7 +84,7 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
       if (a < lo) lo = a;
       if (b > hi) hi = b;
     }
-    return hi > lo ? Math.ceil(hi - lo) + PAD : 0;
+    return hi > lo ? Math.ceil(hi - lo) + Math.max(0, chrome) : 0;
   };
   const report = debounce(() => {
     if (!current || !isFitPanel(current) || !root.isConnected) return;
@@ -73,8 +92,42 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     if (!len || len === fitLen) return;
     fitLen = len;
     bridge.send('panel.fit', { length: len });
+    glass.update();
   }, 30);
-  const sizer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => report()) : undefined;
+  const sizer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { report(); centre(); }) : undefined;
+
+  // ----- centring ---------------------------------------------------------
+  // With two expanding spacers the widgets between them are centred on the
+  // bar itself, not on the space left over (the Windows way: the tray on the
+  // right does not push the apps off centre). The first spacer gets a fixed
+  // length, the last one takes the rest. Falls back to equal spacers when the
+  // sides do not leave room.
+
+  const centre = () => {
+    if (!current || isFitPanel(current) || !root.isConnected) return;
+    const vertical = isVertical(current);
+    const slots = Array.from(widgetsEl.children) as HTMLElement[];
+    const isExpand = (el: HTMLElement) => !!el.querySelector(':scope > .w-spacer.expand');
+    const first = slots.findIndex(isExpand);
+    let lastIdx = -1;
+    for (let i = slots.length - 1; i > first; i--) if (isExpand(slots[i])) { lastIdx = i; break; }
+    if (first < 0 || lastIdx < 0) return;
+    // rectIn: unscaled pixels (the preview stage is scaled), like the flex-basis set below
+    const len = (el: HTMLElement) => (vertical ? rectIn(root, el).h : rectIn(root, el).w);
+    const cs = getComputedStyle(widgetsEl);
+    const gap = parseFloat(cs.columnGap || cs.gap) || 0;
+    const pad = vertical ? parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) : parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const total = len(widgetsEl) - pad;
+    const sum = (a: number, b: number) => slots.slice(a, b).reduce((acc, el) => acc + len(el) + gap, 0);
+    const left = sum(0, first);
+    const middle = sum(first + 1, lastIdx) - gap;
+    const right = sum(lastIdx + 1, slots.length) - gap;
+    const want = (total - middle) / 2 - left - gap;
+    const rest = total - left - gap - want - middle - gap - right;
+    const spacer = slots[first];
+    const value = want >= 0 && rest >= 0 ? `0 0 ${Math.round(want)}px` : '';
+    if (spacer.style.flex !== value) spacer.style.flex = value;
+  };
 
   const anchorOf = (el: Element): Anchor => {
     const o = origin();
@@ -116,9 +169,30 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     }
     slot.replaceChildren(inst.el);
     slot.dataset.type = entry.type;
+    slot.addEventListener('contextmenu', (e) => widgetMenu(e, slot, entry, p));
     mounted.set(entry.id, { ctx, inst, slot });
     sizer?.observe(slot);
     if (editing()) decorate(slot, entry);
+  };
+
+  // Right-click on a widget: its settings without going through edit mode.
+  // Widgets with a menu of their own (task bar items, tray icons) have
+  // already handled the event, so only the bare widget gets this one.
+  const widgetMenu = (e: MouseEvent, slot: HTMLElement, entry: WidgetEntry, p: PanelDef) => {
+    if (e.defaultPrevented) return;
+    e.preventDefault();
+    const def = getWidget(entry.type);
+    const target = { kind: 'panel' as const, id: p.id, widget: entry.id };
+    const items: MenuAction[] = [];
+    if (def?.settings && Object.keys(def.settings).length) items.push({ label: `${def.name} settings`, icon: 'gear', action: { popup: 'widget-settings', arg: { target, anchor: anchorOf(slot) } } });
+    items.push(
+      { label: editing() ? 'Leave edit mode' : 'Edit the panel', icon: editing() ? 'check' : 'edit', action: { editMode: !editing() } },
+      { label: 'Add widget', icon: 'plus', action: { popup: 'widget-catalog', arg: { target: { kind: 'panel', id: p.id }, anchor: anchorOf(slot) } } },
+      { label: '', separator: true },
+      { label: `Remove ${def?.name ?? entry.type}`, icon: 'x', danger: true, action: { removeWidget: target } },
+    );
+    const o = origin();
+    actions.openPopup('context-menu', { title: def?.name ?? entry.type, items, anchor: { x: o.x + e.clientX, y: o.y + e.clientY, w: 0, h: 0, edge: p.edge } });
   };
 
   const unmount = (id: string) => {
@@ -265,6 +339,10 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     h('button', { class: 'seg', dataset: { fit: '0' }, title: 'A share of the edge', onclick: () => patch((p) => { if (p.length <= 0) p.length = 100; }) }, '%'),
   ];
   const opacityIn = range(30, 100, 5, (v) => patch((p) => (p.opacity = v / 100)));
+  const floatBtns = [
+    h('button', { class: 'seg', dataset: { float: '1' }, title: 'Floats as a rounded island', onclick: () => patch((p) => (p.float = true)) }, 'FLOAT'),
+    h('button', { class: 'seg', dataset: { float: '0' }, title: 'Flush with the screen edge', onclick: () => patch((p) => (p.float = false)) }, 'EDGE'),
+  ];
   const sizeVal = h('span', { class: 'mono val' });
   const lengthVal = h('span', { class: 'mono val' });
   const opacityVal = h('span', { class: 'mono val' });
@@ -296,6 +374,7 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     field('Length', h('span', { class: 'segs' }, ...fitBtns), lengthIn, lengthVal),
     field('Align', h('span', { class: 'segs' }, ...alignBtns)),
     field('Layer', h('span', { class: 'segs' }, ...layerBtns)),
+    field('Style', h('span', { class: 'segs' }, ...floatBtns)),
     field('Opacity', opacityIn, opacityVal),
     h('span', { class: 'strip-gap' }),
     addBtn,
@@ -308,6 +387,8 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     for (const b of edgeBtns) b.classList.toggle('on', b.dataset.edge === p.edge);
     for (const b of alignBtns) b.classList.toggle('on', b.dataset.align === p.align);
     for (const b of layerBtns) b.classList.toggle('on', b.dataset.layer === p.layer);
+    const floats = panelFloats(p);
+    for (const b of floatBtns) b.classList.toggle('on', (b.dataset.float === '1') === floats);
     const set = (i: HTMLInputElement, v: number, out: HTMLElement, text: string) => {
       if (document.activeElement !== i) i.value = String(v);
       fill(i);
@@ -338,6 +419,7 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     root.classList.toggle('editing', edit);
     root.classList.toggle('fit', isFitPanel(p));
     root.classList.toggle('bare', p.opacity <= 0.02);
+    root.classList.toggle('edge', !panelFloats(p));
     root.style.setProperty('--panel-size', `${p.size}px`);
     root.style.setProperty('--panel-opacity', String(clamp(p.opacity, 0, 1)));
     root.style.setProperty('--edit-extra', `${EDIT_EXTRA}px`);
@@ -383,6 +465,10 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     syncSelection();
     if (isFitPanel(p)) report();
     else fitLen = 0;
+    requestAnimationFrame(() => {
+      centre();
+      glass.update();
+    });
   };
 
   render();
@@ -390,6 +476,7 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
   return () => {
     offs.forEach((off) => off());
     sizer?.disconnect();
+    glass.dispose();
     for (const id of Array.from(mounted.keys())) unmount(id);
     root.replaceChildren();
   };

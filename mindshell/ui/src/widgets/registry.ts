@@ -10,8 +10,17 @@ export interface SettingSpec {
   min?: number;
   max?: number;
   step?: number;
+  /** Shown after a number (px, %, s). */
+  unit?: string;
+  /** `number` with a min and max gets a slider unless this is false. */
+  slider?: boolean;
   options?: { value: string | number | boolean; label: string }[];
+  /** `enum`: a row of buttons instead of a drop-down (best for 2–4 short options). */
+  segmented?: boolean;
   help?: string;
+  placeholder?: string;
+  /** Hide the row unless this says otherwise (the form re-checks after every change). */
+  when?: (config: Config) => boolean;
 }
 
 export interface WidgetCtx {

@@ -10,14 +10,18 @@ registerWidget({
   description: 'Status icons from running applications (StatusNotifier).',
   icon: 'box',
   containers: ['panel'],
-  defaults: { hidePassive: true },
-  settings: { hidePassive: { label: 'Hide passive items', type: 'boolean' } },
+  defaults: { hidePassive: true, iconSize: 16 },
+  settings: {
+    hidePassive: { label: 'Hide passive items', type: 'boolean', help: 'Icons that say they need no attention' },
+    iconSize: { label: 'Icon size', type: 'number', min: 12, max: 28, step: 2, unit: 'px' },
+  },
   create(ctx) {
     const el = h('div', { class: 'w w-tray' });
     let cfg = ctx.config;
     const render = () => {
       const items = ctx.store.state.tray.filter((t) => !(cfg.hidePassive && t.status === 'passive'));
       el.classList.toggle('empty', items.length === 0);
+      el.style.setProperty('--tray-ic', `${Number(cfg.iconSize) || 16}px`);
       reconcile(
         el,
         items,

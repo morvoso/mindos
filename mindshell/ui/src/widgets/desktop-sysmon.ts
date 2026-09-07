@@ -4,7 +4,7 @@ import { registerWidget } from './registry';
 import { pct } from './common';
 import type { Stats } from '../types';
 
-const N = 90;
+const N_DEFAULT = 90;
 const SERIES = [
   { key: 'cpu', name: 'CPU', color: '#19e3ff' },
   { key: 'gpu', name: 'GPU', color: '#a78bfa' },
@@ -17,13 +17,16 @@ registerWidget({
   description: 'Rolling CPU, GPU and memory graph for the desktop.',
   icon: 'gpu',
   containers: ['desktop'],
-  defaults: { interval: 2, cpu: true, gpu: true, memory: true },
+  defaults: { title: 'SYSTEM LOAD', interval: 2, history: 90, cpu: true, gpu: true, memory: true, fill: true },
   defaultSize: { w: 360, h: 180 },
   settings: {
-    interval: { label: 'Refresh interval (s)', type: 'number', min: 1, max: 30, step: 1 },
+    title: { label: 'Title', type: 'string', placeholder: 'SYSTEM LOAD' },
     cpu: { label: 'CPU', type: 'boolean' },
     gpu: { label: 'GPU', type: 'boolean' },
     memory: { label: 'Memory', type: 'boolean' },
+    interval: { label: 'Refresh every', type: 'number', min: 1, max: 30, step: 1, unit: 's' },
+    history: { label: 'Samples kept', type: 'number', min: 30, max: 300, step: 10, help: 'The width of the graph in samples' },
+    fill: { label: 'Fill under the lines', type: 'boolean' },
   },
   create(ctx) {
     const canvas = h('canvas', { class: 'dsys-canvas' }) as HTMLCanvasElement;
@@ -34,8 +37,10 @@ registerWidget({
       legendVals.set(s.key, v);
       legend.appendChild(h('span', { class: 'dsys-key', dataset: { key: s.key } }, h('i', { style: { background: s.color } }), s.name, v));
     }
-    const el = h('div', { class: 'dw-body dsys' }, h('div', { class: 'dw-title' }, 'SYSTEM LOAD'), canvas, legend);
+    const title = h('div', { class: 'dw-title' }, 'SYSTEM LOAD');
+    const el = h('div', { class: 'dw-body dsys' }, title, canvas, legend);
     let cfg = ctx.config;
+    const N = () => Math.max(10, Number(cfg.history) || N_DEFAULT);
     const hist: Record<string, number[]> = { cpu: [], gpu: [], mem: [] };
     let stats: Stats | undefined;
     const enabled = (k: string) => (k === 'cpu' ? !!cfg.cpu : k === 'gpu' ? !!cfg.gpu && !!stats?.gpu : !!cfg.memory);
@@ -67,8 +72,9 @@ registerWidget({
         const data = hist[s.key];
         if (data.length < 2) continue;
         g.beginPath();
-        const step = w / (N - 1);
-        const start = N - data.length;
+        const n = N();
+        const step = w / (n - 1);
+        const start = Math.max(0, n - data.length);
         data.forEach((v, i) => {
           const x = (start + i) * step;
           const y = hgt - 2 - (Math.min(100, v) / 100) * (hgt - 4);
@@ -79,11 +85,13 @@ registerWidget({
         g.lineWidth = 1.5;
         g.lineJoin = 'round';
         g.stroke();
-        g.lineTo(w, hgt);
-        g.lineTo((start) * step, hgt);
-        g.closePath();
-        g.fillStyle = s.color + '14';
-        g.fill();
+        if (cfg.fill !== false) {
+          g.lineTo(w, hgt);
+          g.lineTo(start * step, hgt);
+          g.closePath();
+          g.fillStyle = s.color + '14';
+          g.fill();
+        }
       }
     };
 
@@ -91,9 +99,10 @@ registerWidget({
       if (v === undefined) return;
       const a = hist[k];
       a.push(v);
-      if (a.length > N) a.shift();
+      while (a.length > N()) a.shift();
     };
     const render = () => {
+      title.textContent = String(cfg.title || 'SYSTEM LOAD');
       for (const s of SERIES) {
         const row = legend.querySelector<HTMLElement>(`[data-key="${s.key}"]`)!;
         row.hidden = !enabled(s.key);

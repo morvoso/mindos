@@ -19,7 +19,7 @@ mindwm ──(layer-shell + IPC socket)── mindshell host ──(bridge)─�
                                           └── ~/.config/mindos/shell/layout.json
 ```
 
-![The default desktop in the dev VM: top bar, centred dock, desktop clock](img/shell-desktop.png)
+![The desktop in the dev VM (an earlier default: top bar, centred dock, desktop clock)](img/shell-desktop.png)
 
 Design rules: minimal, dark, futuristic. One accent (electric cyan). Red is
 reserved for the kernel/boot stages and never appears in the shell. No blur,
@@ -59,56 +59,47 @@ icon_size = 48                   # dock / taskbar icon size in logical pixels
 
 ## Layout (`layout.json`)
 
-The default (`mindshell/data/layout.json`): a centred, transparent dock at
-the bottom and a full-width bar at the top.
+The default (`mindshell/data/layout.json`): one 48 px bar flush with the
+bottom edge, Windows-style — the task bar centred on the screen; the tray,
+status widgets, Mind and the clock at the right; the Desktop folder as icons
+on the wallpaper and no desktop widgets. It is only a default: edit mode
+moves panels to any edge, adds a dock (a fit-to-content panel) or a top bar,
+adds widgets and re-orders them.
 
 ```json
 {
   "version": 1,
   "panels": [
     {
-      "id": "dock",
+      "id": "bar",
       "output": "*",
       "edge": "bottom",
-      "size": 56,
-      "length": 0,
-      "align": "center",
-      "margin": 0,
-      "layer": "top",
-      "opacity": 0,
-      "autohide": false,
-      "widgets": [
-        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "mindos-files.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } }
-      ]
-    },
-    {
-      "id": "top",
-      "output": "*",
-      "edge": "top",
-      "size": 30,
+      "size": 48,
       "length": 100,
       "align": "center",
       "margin": 0,
       "layer": "top",
-      "opacity": 0.92,
+      "opacity": 0.85,
+      "float": false,
       "autohide": false,
       "widgets": [
-        { "id": "mind", "type": "mind", "config": {} },
-        { "id": "sp2", "type": "spacer", "config": { "expand": true } },
+        { "id": "sp-l", "type": "spacer", "config": { "expand": true } },
+        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "mindos-files.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } },
+        { "id": "sp-r", "type": "spacer", "config": { "expand": true } },
         { "id": "tray", "type": "tray", "config": {} },
         { "id": "audio", "type": "audio", "config": {} },
         { "id": "net", "type": "network", "config": {} },
         { "id": "bat", "type": "battery", "config": {} },
-        { "id": "layout", "type": "layout-mode", "config": {} },
-        { "id": "clock", "type": "clock", "config": { "seconds": false, "date": true, "hour24": true } }
+        { "id": "mode", "type": "layout-mode", "config": {} },
+        { "id": "mind", "type": "mind", "config": {} },
+        { "id": "clock", "type": "clock", "config": { "seconds": false, "date": true, "hour24": false } }
       ]
     }
   ],
   "desktop": {
     "wallpaper": { "mode": "builtin" },
-    "widgets": [
-      { "id": "d-clock", "type": "desktop-clock", "output": "*", "x": 64, "y": 64, "w": 320, "h": 120, "config": {} }
-    ]
+    "icons": true,
+    "widgets": []
   }
 }
 ```
@@ -124,32 +115,53 @@ the bottom and a full-width bar at the top.
   windows). `margin`: distance from the edge. `opacity` is the panel
   background's alpha (`0` = the widgets float on the wallpaper, macOS-style);
   `autohide` slides the panel away until the pointer touches its edge.
+  `float`: `true` draws the bar as a rounded island inset from the edge,
+  `false` flush with the edge (one hairline on the inner side); when unset a
+  panel thicker than 30 px floats and a thinner one is flush (`--inset` and
+  `--r-island` in `app.css`).
 * Widgets are ordered left→right (or top→bottom on vertical panels). A
-  `spacer` with `expand: true` pushes what follows to the far end.
+  `spacer` with `expand: true` pushes what follows to the far end. With two
+  expanding spacers the widgets between them are centred on the bar itself
+  (the Windows way: a wide tray does not push the apps off centre); if the
+  sides leave no room the spacers fall back to sharing the space equally.
 * Desktop widgets have a position/size in logical pixels on their output.
+* `desktop.icons` (default `true`) shows the Desktop folder (`fs.desktop`:
+  the XDG desktop directory, `~/Desktop` otherwise, created if missing) as
+  icons on the wallpaper, column by column from the top left, clear of the
+  panels. Click selects (Ctrl adds), double-click opens (`.desktop` files
+  show as and launch their application, folders open in Files), right-click
+  offers open / show in Files / move to trash; the desktop's own menu toggles
+  the icons. The host watches the folder and broadcasts `desktop.changed`.
 * Unknown widget types render as an "unavailable" placeholder and are kept.
 
 ### Widget types (v1)
 
 | type | container | what |
 |---|---|---|
-| `taskbar` | panel | pinned apps + running windows (the dock); click focuses (a second click minimises in floating mode; tiles are never minimised, the columns strip slides to the window instead), middle-click new instance, right-click pin/unpin/close. Windows programs (a window with `wine: true`, or an entry with `wine: true`) show a small four-pane badge on the icon's corner and say so in the tooltip; the entry is matched to its windows through `wmClass` first |
+| `taskbar` | panel | pinned apps + running windows (the dock); click focuses (a second click minimises in floating mode; tiles are never minimised, the columns strip slides to the window instead), middle-click new instance, right-click pin/unpin/close. Windows programs (a window with `wine: true`, or an entry with `wine: true`) show a small four-pane badge on the icon's corner and say so in the tooltip; the entry is matched to its windows through `wmClass` first. Settings: `pins` (desktop ids), `showRunning` (off = a launcher of pinned apps only), `onlyThisOutput`, `labels`, `maxLabel`, `indicator` |
 | `spacer` | panel | flexible or fixed gap (`expand`, `size`) |
-| `clock` | panel | time (+ date); click opens the calendar popup |
-| `layout-mode` | panel | the compositor's window layout (floating / tiles / columns) as an icon; click opens the layout picker popup |
-| `tray` | panel | StatusNotifierItems; left-click activate, right-click menu, scroll |
-| `audio` | panel | default sink volume; scroll adjusts, click opens the slider popup, middle-click mutes |
-| `network` | panel | wired/wifi state |
-| `battery` | panel | charge state (hidden when no battery) |
-| `mind` | panel | Mind (mindd) status; click toggles the Mind bar |
-| `sysmon` | panel | compact CPU / memory / GPU bars |
-| `power` | panel | power menu button |
-| `desktop-clock` | desktop | large clock + date |
-| `desktop-sysmon` | desktop | CPU / memory / GPU graphs |
-| `desktop-notes` | desktop | a sticky note (plain text, stored in the widget config) |
+| `clock` | panel | time (+ date); click opens the calendar popup. Settings: `hour24` (default false: 12-hour with AM/PM), `suffix`, `leadingZero`, `seconds`, `date`, `dateFormat` (`short` Sun 6 Sep / `long` / `numeric` / `iso` / `weekday`), `stack` (date under the time), `size` (`small`/`normal`/`large`), `weekStart` (`monday`/`sunday`, for the calendar) |
+| `layout-mode` | panel | the compositor's window layout (floating / tiles / columns) as an icon; click opens the layout picker popup. Setting: `label` |
+| `tray` | panel | StatusNotifierItems; left-click activate, right-click menu, scroll. Settings: `hidePassive`, `iconSize` |
+| `audio` | panel | default sink volume; scroll adjusts, click opens the slider popup, middle-click mutes. Settings: `percent`, `scroll`, `step`, `hideWhenMuted` |
+| `network` | panel | wired/wifi state. Settings: `name`, `ip` |
+| `battery` | panel | charge state (hidden when no battery). Settings: `percent`, `warnAt`, `alwaysShow` |
+| `mind` | panel | Mind (mindd) status; click toggles the Mind bar. Settings: `label`, `model` |
+| `sysmon` | panel | compact CPU / memory / GPU bars. Settings: `cpu`, `memory`, `gpu`, `interval` |
+| `power` | panel | power menu button. Setting: `label` |
+| `desktop-clock` | desktop | large clock + date. Settings: the clock's time/date ones plus `year`, `size` (px), `align`, `glow` |
+| `desktop-sysmon` | desktop | CPU / memory / GPU graphs. Settings: `title`, `cpu`, `gpu`, `memory`, `interval`, `history` (samples), `fill` |
+| `desktop-notes` | desktop | a sticky note (plain text, stored in the widget config). Settings: `title`, `fontSize`, `mono` |
+
+Every widget's settings are reachable without edit mode: right-click the
+widget (a panel widget or a desktop one) and pick *… settings*; the same
+menu offers *Edit the panel* / *Edit desktop*, *Add widget* and *Remove*.
+Changes apply and save as they are made; *Defaults* clears the widget's
+config. In edit mode the gear button on each widget opens the same form.
 
 Adding a widget type = one TypeScript module registering `{ type, name,
-description, containers, defaults, create(ctx) }` in the widget registry.
+description, containers, defaults, settings?, create(ctx) }` in the widget
+registry.
 
 ## Windows the host creates
 
@@ -158,7 +170,7 @@ and one `mindos://shell/` origin.
 
 | kind | layer-shell | where |
 |---|---|---|
-| `desktop` (one per output) | `background`, anchored to all edges, exclusive −1, keyboard `none` (`on-demand` while in edit mode) | wallpaper, desktop widgets, edit-mode toolbar, right-click menu |
+| `desktop` (one per output) | `background`, anchored to all edges, exclusive −1, keyboard `none` (`on-demand` while in edit mode) | wallpaper, desktop icons, desktop widgets, edit-mode toolbar, right-click menu |
 | `panel` (one per panel × output) | `top`/`bottom` per layout, anchored to the panel edge (+ both sides when `length` = 100), exclusive zone = `size` + `margin`, keyboard `none` | the panel and its widgets; in edit mode the window is enlarged by 140 px toward the screen centre (exclusive zone unchanged) to show the panel settings strip |
 | `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus. Clicking the transparent area or pressing Escape closes it |
 | `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings and Files apps; one process per window, `app.close` ends it |
@@ -220,7 +232,8 @@ data so the UI can be developed in Chromium/Firefox.
 | `wm.setOutput` | `{ name, width?, height?, refresh? (mHz), scale?, position?: [x, y], transform?, enabled?, vrr?, primary? }` → applied and persisted by the compositor |
 | `prefs.get` / `prefs.set` | none / `{ prefs }` → `{ prefs }` (compositor preferences: `layout_mode`, `mind_show_tools`, `primary_output`, `outputs`); `prefs` is broadcast on every change |
 | `wallpaper.list` | → `[{ path, name, folder }]`: the images in `/usr/share/mindos/wallpapers`, `~/.local/share/mindos/wallpapers` and `Wallpapers/` under the pictures folder (images are shown through `mindos://shell/thumb/`) |
-| `fs.home` / `fs.places` | → `{ path }` / `[{ name, path, icon, kind: "place" \| "drive", removable? }]` (home and the XDG user folders, the root file system, mounted drives) |
+| `fs.desktop` | → `{ path }` the Desktop folder shown as icons |
+| `fs.home` / `fs.places` | → `{ path }` / `[{ name, path, icon, kind: "home" \| "folder" \| "system" \| "mount", removable? }]` (home and the XDG user folders, the root file system, mounted drives) |
 | `fs.list` | `{ path, hidden? }` → `{ path, parent, entries: [{ name, path, dir, size, mtime, hidden, symlink, mime, icon, image }] }` |
 | `fs.stat` / `fs.mkdir` / `fs.rename` | `{ path }` / `{ path, name }` / `{ path, name }` |
 | `fs.copy` / `fs.move` / `fs.trash` | `{ paths, dest }` / `{ paths, dest }` / `{ paths }` → `{ count }` (`cp` / `mv`; trash goes through GIO, so it lands in the freedesktop trash) |
@@ -252,6 +265,7 @@ data so the UI can be developed in Chromium/Firefox.
 | `shortcut` | `{ name }` forwarded from the compositor (`overview`) |
 | `layout_mode` | `{ mode, label, modes? }` whenever the compositor's window layout changes |
 | `prefs` | `{ prefs }` whenever a compositor preference changes |
+| `desktop.changed` | `{ path }` when something in the Desktop folder changed (debounced) |
 
 `mindos://shell/icon/<name>?size=N` serves an icon from the configured theme
 (`hicolor` fallback, SVG or PNG); an absolute path in place of `<name>` serves
@@ -426,7 +440,7 @@ output.
 
 | name | arg |
 |---|---|
-| `calendar` | `{ hour24? }` |
+| `calendar` | `{ hour24?, suffix?, weekStart? }` (the clock passes its own settings) |
 | `layout-mode` | none (lists the compositor's modes, the current one marked) |
 | `audio` | none |
 | `power` | none |
@@ -436,7 +450,8 @@ output.
 | `widget-settings` | `{ target: { kind: "panel", id, widget } \| { kind: "desktop", widget } }` |
 
 An `action` is one of `{ call, params }`, `{ popup, arg?, keyboard? }`,
-`{ editMode }`, `{ exec }` or `{ pin: { panel, widget, app, pinned } }`; menus
+`{ editMode }`, `{ exec }`, `{ pin: { panel, widget, app, pinned } }`,
+`{ desktopIcons }` or `{ removeWidget: { kind, panel?, widget } }`; menus
 run it through the host so a popup window can act on another window's
 behalf.
 
@@ -469,13 +484,21 @@ wallpaper. The Settings › Wallpaper page and the Files app's "Set as
 wallpaper" write `desktop.wallpaper` through `layout.save`.
 
 **Widget settings.** Widgets declare `settings: { key: { label, type, min?,
-max?, step?, options?, help? } }` with `type` one of `boolean | number |
-string | text | enum | list`; `widget-settings` builds its form from that
-(falling back to the types of `defaults`). `list` values are string arrays,
-one item per line in the form.
+max?, step?, unit?, slider?, options?, segmented?, help?, placeholder?,
+when? } }` with `type` one of `boolean | number | string | text | enum |
+list`; `widget-settings` builds its form from that (falling back to the
+types of `defaults`). A `number` with `min` and `max` gets a slider next to
+the field (`slider: false` to skip it); an `enum` with `segmented: true` is a
+row of buttons instead of a drop-down; `when(config)` hides a row until it
+applies (AM/PM only for 12-hour clocks). `list` values are string arrays,
+one item per line in the form. Every change is written through
+`layout.save` at once, so the widget itself is the preview.
 
 **Preview page.** `?kind=preview` renders one 1920×1080 output scaled to the
 window. Extra query flags: `edit=1` (edit mode), `popup=a,b` (open popups by
 clicking their widgets), `battery=1`, `vertical=1` (adds a left panel),
-`labels=1` (task titles), `demo=1` (shows the hover chrome on the task bar
-and the first desktop widget for screenshots).
+`labels=1` (task titles), `stack=1` (two-line clock), `dwidgets=1` (a big
+clock and a note on the desktop), `widget=TYPE` (which widget
+`popup=widget-settings` opens; `widget-menu` right-clicks the clock),
+`demo=1` (shows the hover chrome on the task bar and the first desktop
+widget for screenshots).

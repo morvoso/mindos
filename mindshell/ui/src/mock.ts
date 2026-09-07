@@ -444,6 +444,7 @@ export function installMock(): MindosGlobal {
     'wallpaper.list': () => mfs.wallpapers(),
     'fs.home': () => ({ path: mfs.HOME }),
     'fs.places': () => mfs.places(),
+    'fs.desktop': () => ({ path: `${mfs.HOME}/Desktop` }),
     'fs.list': (p) => mfs.list(String(p.path ?? mfs.HOME), !!p.hidden),
     'fs.stat': (p) => mfs.stat(String(p.path)),
     'fs.mkdir': (p) => mfs.mkdir(String(p.path), String(p.name)),

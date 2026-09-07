@@ -136,13 +136,27 @@ export function renderPreview(root: HTMLElement): void {
           el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 700, clientY: r.top + 520 }));
           break;
         }
+        case 'widget-menu':
+          context('.w-slot[data-type=clock]');
+          break;
         case 'widget-catalog':
           bridge.send('popup.open', { name, arg: { target: { kind: 'desktop', output: out.name } } });
           break;
         case 'widget-settings': {
-          const p = store.state.layout.panels.find((x) => x.widgets.some((w) => w.type === 'clock'));
-          const w = p?.widgets.find((x) => x.type === 'clock');
-          if (p && w) bridge.send('popup.open', { name, arg: { target: { kind: 'panel', id: p.id, widget: w.id } } });
+          const type = params.get('widget') ?? 'clock';
+          const dw = store.state.layout.desktop.widgets.find((x) => x.type === type);
+          if (dw) {
+            bridge.send('popup.open', { name, arg: { target: { kind: 'desktop', widget: dw.id } } });
+            break;
+          }
+          const p = store.state.layout.panels.find((x) => x.widgets.some((w) => w.type === type));
+          const w = p?.widgets.find((x) => x.type === type);
+          const slot = stage.querySelector(`.w-slot[data-type="${type}"]`);
+          const r = slot?.getBoundingClientRect();
+          const sr = stage.getBoundingClientRect();
+          const sc = sr.width / stage.offsetWidth || 1;
+          const anchor = r ? { x: (r.left - sr.left) / sc, y: (r.top - sr.top) / sc, w: r.width / sc, h: r.height / sc, edge: p?.edge } : undefined;
+          if (p && w) bridge.send('popup.open', { name, arg: { target: { kind: 'panel', id: p.id, widget: w.id }, anchor } });
           break;
         }
         default:
@@ -157,6 +171,19 @@ export function renderPreview(root: HTMLElement): void {
       p.size = 56;
       p.widgets = [newWidget('taskbar', { pins: ['firefox.desktop', 'steam.desktop'] }), newWidget('spacer', { expand: true }), newWidget('sysmon'), newWidget('layout-mode'), newWidget('clock')];
       l.panels.push(p);
+    });
+  }
+  if (params.get('dwidgets') === '1') {
+    void store.updateLayout((l) => {
+      l.desktop.widgets.push(
+        { ...newWidget('desktop-clock', { hour24: false, seconds: false, date: true }), output: out.name, x: 1400, y: 120, w: 420, h: 130 },
+        { ...newWidget('desktop-notes', { title: 'TODO', text: 'Flash the ISO\nTry the columns layout' }), output: out.name, x: 1500, y: 300, w: 320, h: 220 },
+      );
+    });
+  }
+  if (params.get('stack') === '1') {
+    void store.updateLayout((l) => {
+      for (const p of l.panels) for (const w of p.widgets) if (w.type === 'clock') Object.assign(w.config, { stack: true, dateFormat: 'numeric' });
     });
   }
   if (params.get('labels') === '1') {

@@ -12,7 +12,8 @@ Linux kernel and the Arch package ecosystem, with its own kernel package, its
 own packages, its own repository and its own image. Nothing in the Linux
 driver ecosystem has to be redone. The boot loader and the kernel console are
 white text on MindOS red (`#8c1010`); from the loading screen onwards MindOS is
-dark, minimal and futuristic: void black, electric cyan, chamfered HUD panels.
+dark glass: a navy void with a cyan and violet aurora behind everything,
+frosted translucent panels with soft corners, one electric-cyan accent.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐

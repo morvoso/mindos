@@ -11,8 +11,11 @@ registerWidget({
   description: 'Connection status. Shows the network name when connected.',
   icon: 'wifi',
   containers: ['panel'],
-  defaults: { name: false },
-  settings: { name: { label: 'Show the network name', type: 'boolean' } },
+  defaults: { name: false, ip: false },
+  settings: {
+    name: { label: 'Show the network name', type: 'boolean', help: 'The Wi-Fi name or the interface' },
+    ip: { label: 'Show the IP address', type: 'boolean' },
+  },
   create(ctx) {
     const el = panelItem(ctx, 'w-network', 'Network');
     const ic = h('span', { class: 'w-ic' });
@@ -28,8 +31,11 @@ registerWidget({
         ic.replaceChildren(icon(name, 18));
       }
       const text = state?.connected ? state.ssid || state.iface || state.kind : 'Offline';
-      label.textContent = text;
-      label.hidden = !cfg.name || !!ctx.panel?.vertical;
+      const parts: string[] = [];
+      if (cfg.name) parts.push(text);
+      if (cfg.ip && state?.connected && state.ip) parts.push(state.ip);
+      label.textContent = parts.join(' · ');
+      label.hidden = parts.length === 0 || !!ctx.panel?.vertical;
       el.classList.toggle('offline', !state?.connected);
       el.title = state?.connected ? `${text}${state.ip ? ' · ' + state.ip : ''}` : 'Offline';
     };

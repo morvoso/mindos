@@ -11,8 +11,12 @@ registerWidget({
   description: 'Charge level; hidden on machines without a battery.',
   icon: 'battery',
   containers: ['panel'],
-  defaults: { percent: true },
-  settings: { percent: { label: 'Show the percentage', type: 'boolean' } },
+  defaults: { percent: true, warnAt: 15, alwaysShow: false },
+  settings: {
+    percent: { label: 'Show the percentage', type: 'boolean' },
+    warnAt: { label: 'Warn below', type: 'number', min: 5, max: 50, step: 5, unit: '%' },
+    alwaysShow: { label: 'Show without a battery', type: 'boolean', help: 'Desktops normally hide this widget' },
+  },
   create(ctx) {
     const el = panelItem(ctx, 'w-battery', 'Battery');
     const ic = h('span', { class: 'w-ic' });
@@ -22,15 +26,22 @@ registerWidget({
     let state: BatteryState | undefined;
     const render = () => {
       const present = !!state?.present;
-      el.classList.toggle('hidden', !present);
-      if (!present) return;
+      el.classList.toggle('hidden', !present && !cfg.alwaysShow);
+      if (!present) {
+        ic.replaceChildren(batteryIcon(0, false, 18));
+        label.textContent = '--';
+        label.hidden = !cfg.percent || !!ctx.panel?.vertical;
+        el.classList.remove('low', 'charging');
+        el.title = 'No battery';
+        return;
+      }
       const b = state!;
       const p = b.percent ?? 0;
       const charging = !!b.charging;
       ic.replaceChildren(batteryIcon(p, charging, 18));
       label.textContent = pct(p);
       label.hidden = !cfg.percent || !!ctx.panel?.vertical;
-      el.classList.toggle('low', p <= 15 && !charging);
+      el.classList.toggle('low', p <= (Number(cfg.warnAt) || 15) && !charging);
       el.classList.toggle('charging', charging);
       const left = b.timeToEmpty ? ` · ${Math.floor(b.timeToEmpty / 3600)}h ${Math.round((b.timeToEmpty % 3600) / 60)}m left` : '';
       el.title = `${pct(p)}${charging ? ' · charging' : ''}${left}`;

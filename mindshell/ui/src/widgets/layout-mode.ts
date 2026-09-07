@@ -55,7 +55,7 @@ registerWidget({
   icon: 'layout',
   containers: ['panel'],
   defaults: { label: false },
-  settings: { label: { label: 'Show the mode name', type: 'boolean' } },
+  settings: { label: { label: 'Show the mode name', type: 'boolean', help: 'Floating, Tiles or Columns next to the icon' } },
   create(ctx) {
     const el = panelItem(ctx, 'w-layout-mode');
     const ic = h('span', { class: 'w-ic' });

@@ -3,6 +3,7 @@
 
 import { clamp, h } from '../dom';
 import { rootScale } from '../geometry';
+import { glassLayer } from '../glass';
 import { store } from '../state';
 import type { Anchor } from '../types';
 import { audioPopup } from './audio';
@@ -94,6 +95,8 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
     content = { el: h('div', { class: 'pop-body' }, `${name} failed to load`), w: 260 };
   }
   pop.appendChild(content.el);
+  let at = { x: 0, y: 0 };
+  const glass = glassLayer(pop, { output, origin: () => at });
   if (content.w) pop.style.width = `${content.w}px`;
   if (content.h) pop.style.height = `${content.h}px`;
   pop.style.maxWidth = `${out.width - MARGIN * 2}px`;
@@ -109,6 +112,8 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
     pop.style.left = `${p.x}px`;
     pop.style.top = `${p.y}px`;
     pop.style.transformOrigin = p.origin;
+    at = { x: p.x, y: p.y };
+    glass.update();
   };
   placeFn = place;
   place();
@@ -127,6 +132,7 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
   return () => {
     window.removeEventListener('keydown', onKey);
     root.removeEventListener('keydown', onKey);
+    glass.dispose();
     backdrop.remove();
     pop.remove();
   };

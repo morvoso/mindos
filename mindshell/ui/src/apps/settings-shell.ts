@@ -65,7 +65,7 @@ export function shellPage(el: HTMLElement): () => void {
     ),
     card(
       'Panels and the dock',
-      h('p', { class: 'card-help' }, 'The top bar and the dock are panels. Right-click the desktop and choose Edit desktop to move them, add widgets or make a new panel; the dock is a panel whose length is set to FIT.'),
+      h('p', { class: 'card-help' }, 'The bar is a panel. Right-click any widget on it for its settings (the clock\u2019s 12/24-hour format, what the task bar shows, and so on); right-click the desktop and choose Edit desktop to move panels, add widgets or make a new one.'),
       h('div', { class: 'card-actions' }, h('span', { class: 'strip-gap' }), resetBtn),
     ),
     card('Keyboard shortcuts', table),

@@ -35,7 +35,7 @@ registerWidget({
     cpu: { label: 'CPU', type: 'boolean' },
     memory: { label: 'Memory', type: 'boolean' },
     gpu: { label: 'GPU', type: 'boolean' },
-    interval: { label: 'Refresh interval (s)', type: 'number', min: 1, max: 30, step: 1 },
+    interval: { label: 'Refresh every', type: 'number', min: 1, max: 30, step: 1, unit: 's' },
   },
   create(ctx) {
     const cpu = meter('CPU');

@@ -2,6 +2,7 @@
 
 import * as actions from './actions';
 import * as bridge from './bridge';
+import { desktopIconMenu, renderDesktopIcons } from './desktop-icons';
 import { clamp, h, reconcile } from './dom';
 import { EDIT_EXTRA, rectIn } from './geometry';
 import { icon } from './icons';
@@ -24,9 +25,11 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
   root.classList.add('desktop-window');
   const wall = h('div', { class: 'wallpaper' });
   const mark = h('div', { class: 'wordmark' }, h('span', { class: 'wordmark-text' }, 'MINDOS'), h('span', { class: 'wordmark-sub' }, 'GAMING · DEV'));
+  const icons = h('div', { class: 'desktop-icons' });
   const layer = h('div', { class: 'desktop-widgets' });
   const toolbar = h('div', { class: 'edit-toolbar', hidden: true });
-  root.append(wall, mark, layer, toolbar);
+  root.append(wall, mark, icons, layer, toolbar);
+  const disposeIcons = renderDesktopIcons(root, icons, output);
 
   const mounted = new Map<string, Mounted>();
   const editing = () => store.state.editMode;
@@ -94,6 +97,22 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
     );
     const resize = h('div', { class: 'dw-resize', title: 'Resize' }, icon('resize', 12));
     box.replaceChildren(content, cover, chrome, resize);
+    box.addEventListener('contextmenu', (e) => {
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      const target = { kind: 'desktop' as const, widget: entry.id };
+      const items: MenuAction[] = [];
+      if (def?.settings && Object.keys(def.settings).length) items.push({ label: `${def.name} settings`, icon: 'gear', action: { popup: 'widget-settings', arg: { target, anchor: anchorOf(box) } } });
+      items.push(
+        { label: editing() ? 'Leave edit mode' : 'Edit desktop', icon: editing() ? 'check' : 'edit', action: { editMode: !editing() } },
+        { label: 'Add widget', icon: 'plus', action: { popup: 'widget-catalog', arg: { target: { kind: 'desktop', output }, anchor: anchorOf(box) } } },
+        { label: '', separator: true },
+        { label: `Remove ${def?.name ?? entry.type}`, icon: 'x', danger: true, action: { removeWidget: target } },
+      );
+      const b = root.getBoundingClientRect();
+      const scale = b.width / root.offsetWidth || 1;
+      actions.openPopup('context-menu', { title: def?.name ?? entry.type, items, anchor: { x: (e.clientX - b.left) / scale, y: (e.clientY - b.top) / scale, w: 0, h: 0 } });
+    });
     cover.addEventListener('pointerdown', (e) => drag(e, box, entry.id, 'move'));
     chrome.firstElementChild!.addEventListener('pointerdown', (e) => drag(e as PointerEvent, box, entry.id, 'move'));
     resize.addEventListener('pointerdown', (e) => drag(e, box, entry.id, 'resize'));
@@ -261,7 +280,7 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
   // ----- context menu ------------------------------------------------------
 
   root.addEventListener('contextmenu', (e) => {
-    if ((e.target as HTMLElement).closest('.dw, .edit-toolbar')) return;
+    if ((e.target as HTMLElement).closest('.dw, .edit-toolbar, .di')) return;
     e.preventDefault();
     const scale = root.getBoundingClientRect().width / root.offsetWidth || 1;
     const b = root.getBoundingClientRect();
@@ -280,6 +299,8 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
           { label: 'Terminal', icon: 'terminal', action: { exec: terminal } },
           { label: 'Ask Mind', icon: 'mind', action: { call: 'mind.toggle' } },
           { label: 'Files', icon: 'folder', action: { call: 'shell.openApp', params: { name: 'files' } } },
+          { label: '', separator: true },
+          ...desktopIconMenu(),
           { label: '', separator: true },
           { label: 'Change wallpaper', icon: 'image', action: { call: 'shell.openApp', params: { name: 'settings', page: 'wallpaper' } } },
           { label: 'Display settings', icon: 'display', action: { call: 'shell.openApp', params: { name: 'settings', page: 'displays' } } },
@@ -303,6 +324,7 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
   const offs = [store.on('layout', render), store.on('editMode', render), store.on('outputs', render)];
   return () => {
     offs.forEach((off) => off());
+    disposeIcons();
     for (const id of Array.from(mounted.keys())) unmount(id);
     root.replaceChildren();
   };

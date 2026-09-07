@@ -10,7 +10,7 @@ registerWidget({
   defaults: { expand: true, size: 16 },
   settings: {
     expand: { label: 'Expand to fill free space', type: 'boolean' },
-    size: { label: 'Fixed size (px)', type: 'number', min: 4, max: 400, step: 4 },
+    size: { label: 'Fixed size', type: 'number', min: 4, max: 400, step: 4, unit: 'px', when: (c) => !c.expand },
   },
   create(ctx) {
     const el = h('div', { class: 'w w-spacer' });

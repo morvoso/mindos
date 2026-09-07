@@ -106,6 +106,8 @@ pub struct App {
     stats: RefCell<system::Stats>,
     sync_pending: Cell<bool>,
     layout_monitor: RefCell<Option<gio::FileMonitor>>,
+    desktop_monitor: RefCell<Option<gio::FileMonitor>>,
+    desktop_notify_pending: Cell<bool>,
     layout_reload_pending: Cell<bool>,
 }
 
@@ -181,11 +183,14 @@ impl App {
             stats: RefCell::new(system::Stats::default()),
             sync_pending: Cell::new(false),
             layout_monitor: RefCell::new(None),
+            desktop_monitor: RefCell::new(None),
+            desktop_notify_pending: Cell::new(false),
             layout_reload_pending: Cell::new(false),
         });
         crate::scheme::register(&app.web_context, Rc::downgrade(&app));
         windows::install_css();
         app.watch_layout();
+        app.watch_desktop();
         if let Some(display) = gdk::Display::default() {
             let weak = Rc::downgrade(&app);
             display.monitors().connect_items_changed(move |_, _, _, _| {
@@ -241,6 +246,38 @@ impl App {
             }
             Err(e) => tracing::warn!(path = %path.display(), %e, "cannot watch the layout file"),
         }
+    }
+
+    /// Tell the desktop views when the Desktop folder changes so the icons
+    /// follow (a download landing there, a file renamed in Files).
+    fn watch_desktop(self: &Rc<Self>) {
+        let path = fs::desktop_dir();
+        let dir = gio::File::for_path(&path);
+        match dir.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+            Ok(monitor) => {
+                let events = self.events.clone();
+                monitor.connect_changed(move |_, _, _, event| {
+                    use gio::FileMonitorEvent as E;
+                    if matches!(event, E::ChangesDoneHint | E::Created | E::Deleted | E::Renamed | E::MovedIn | E::MovedOut | E::AttributeChanged) {
+                        let _ = events.send_blocking(HostEvent::DesktopDir);
+                    }
+                });
+                *self.desktop_monitor.borrow_mut() = Some(monitor);
+            }
+            Err(e) => tracing::warn!(path = %path.display(), %e, "cannot watch the Desktop folder"),
+        }
+    }
+
+    fn desktop_dir_changed(self: &Rc<Self>) {
+        if self.desktop_notify_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(250), move || {
+            let Some(app) = weak.upgrade() else { return };
+            app.desktop_notify_pending.set(false);
+            app.broadcast("desktop.changed", &json!({ "path": fs::desktop_dir().to_string_lossy() }));
+        });
     }
 
     fn layout_file_changed(self: &Rc<Self>) {
@@ -791,6 +828,7 @@ impl App {
             // ---- wallpapers and files
             "wallpaper.list" => Ok(blocking(fs::wallpapers).await),
             "fs.home" => Ok(json!({ "path": fs::home().to_string_lossy() })),
+            "fs.desktop" => Ok(json!({ "path": fs::desktop_dir().to_string_lossy() })),
             "fs.places" => Ok(fs::places()),
             "fs.list" => {
                 let path = fs::expand(&str_param("path").unwrap_or_default());
@@ -1205,6 +1243,7 @@ impl App {
             HostEvent::Audio(audio) => self.set_audio(audio),
             HostEvent::Gpu(gpu) => self.state.borrow_mut().gpu = gpu,
             HostEvent::LayoutFile => self.layout_file_changed(),
+            HostEvent::DesktopDir => self.desktop_dir_changed(),
             HostEvent::Quit => {
                 tracing::info!("shutting down");
                 let mut all: Vec<Rc<ShellWindow>> = self.windows.borrow_mut().drain(..).collect();

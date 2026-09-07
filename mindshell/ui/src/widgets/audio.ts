@@ -16,10 +16,12 @@ registerWidget({
   description: 'Output volume. Scroll to adjust, middle-click to mute.',
   icon: 'volume-high',
   containers: ['panel'],
-  defaults: { percent: true, step: 5 },
+  defaults: { percent: true, step: 5, scroll: true, hideWhenMuted: false },
   settings: {
     percent: { label: 'Show the percentage', type: 'boolean' },
-    step: { label: 'Scroll step (%)', type: 'number', min: 1, max: 25, step: 1 },
+    scroll: { label: 'Scroll to change the volume', type: 'boolean' },
+    step: { label: 'Scroll step', type: 'number', min: 1, max: 25, step: 1, unit: '%', when: (c) => !!c.scroll },
+    hideWhenMuted: { label: 'Hide the percentage while muted', type: 'boolean', when: (c) => !!c.percent },
   },
   create(ctx) {
     const el = panelItem(ctx, 'w-audio', 'Volume');
@@ -36,7 +38,7 @@ registerWidget({
         ic.replaceChildren(icon(name, 18));
       }
       label.textContent = a ? (a.muted ? 'MUTE' : pct(a.volume * 100)) : '--';
-      label.hidden = !cfg.percent || !!ctx.panel?.vertical;
+      label.hidden = !cfg.percent || !!ctx.panel?.vertical || (!!cfg.hideWhenMuted && !!a?.muted);
       el.classList.toggle('muted', !!a?.muted);
       el.title = a ? `${a.sink || 'Output'} · ${a.muted ? 'muted' : pct(a.volume * 100)}` : 'Volume';
     };
@@ -58,6 +60,7 @@ registerWidget({
     el.addEventListener(
       'wheel',
       (e) => {
+        if (!cfg.scroll) return;
         e.preventDefault();
         const a = ctx.store.state.audio;
         if (!a) return;

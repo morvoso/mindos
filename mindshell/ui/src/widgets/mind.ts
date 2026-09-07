@@ -11,8 +11,11 @@ registerWidget({
   description: 'Status of the Mind assistant. Click to open the Mind bar (Super+Space).',
   icon: 'mind',
   containers: ['panel'],
-  defaults: { model: false },
-  settings: { model: { label: 'Show the model name', type: 'boolean' } },
+  defaults: { label: true, model: false },
+  settings: {
+    label: { label: 'Show the MIND label', type: 'boolean', help: 'Off: just the icon and the status dot' },
+    model: { label: 'Show the model name', type: 'boolean' },
+  },
   create(ctx) {
     const el = panelItem(ctx, 'w-mind', 'Mind · Super+Space');
     const dot = h('span', { class: 'mind-dot' });
@@ -26,7 +29,7 @@ registerWidget({
       el.dataset.state = st;
       model.textContent = m?.model ?? '';
       model.hidden = !cfg.model || !m?.model || !!ctx.panel?.vertical;
-      label.hidden = !!ctx.panel?.vertical;
+      label.hidden = !cfg.label || !!ctx.panel?.vertical;
       el.title = st === 'ready' ? `Mind ready${m?.model ? ' · ' + m.model : ''}` : st === 'loading' ? 'Mind is loading a model' : 'Mind is offline';
     };
     render();

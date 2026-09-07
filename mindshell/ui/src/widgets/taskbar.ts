@@ -48,7 +48,7 @@ function matchApp(idx: Map<string, AppInfo>, appId: string): AppInfo | undefined
   return idx.get(k) ?? idx.get(last(k)) ?? idx.get(k.replace(/-bin$|-wayland$|\.exe$/, ''));
 }
 
-function buildGroups(state: ShellState, pins: string[]): Group[] {
+function buildGroups(state: ShellState, pins: string[], windows: WindowInfo[]): Group[] {
   const idx = appIndex(state.apps);
   const groups: Group[] = [];
   const byApp = new Map<AppInfo, Group>();
@@ -60,7 +60,7 @@ function buildGroups(state: ShellState, pins: string[]): Group[] {
     if (app) byApp.set(app, g);
     else byKey.set(norm(pin), g);
   }
-  for (const w of state.windows) {
+  for (const w of windows) {
     const app = matchApp(idx, w.app_id);
     let g = app ? byApp.get(app) : byKey.get(norm(w.app_id));
     if (!g) {
@@ -81,11 +81,14 @@ registerWidget({
   description: 'Pinned applications and open windows. Click to focus (a second click minimises in floating mode), middle-click for a new window, right-click for more.',
   icon: 'window',
   containers: ['panel'],
-  defaults: { pins: [], labels: false, maxLabel: 160 },
+  defaults: { pins: [], labels: false, maxLabel: 160, showRunning: true, onlyThisOutput: false, indicator: true },
   settings: {
-    labels: { label: 'Show window titles', type: 'boolean' },
-    maxLabel: { label: 'Title width (px)', type: 'number', min: 80, max: 320, step: 10 },
-    pins: { label: 'Pinned applications (desktop ids)', type: 'list' },
+    pins: { label: 'Pinned applications', type: 'list', help: 'Desktop entry ids, one per line (right-click a running app to pin it)', placeholder: 'firefox.desktop' },
+    showRunning: { label: 'Show open windows', type: 'boolean', help: 'Off: only the pinned applications, as a launcher' },
+    onlyThisOutput: { label: 'Only windows on this display', type: 'boolean', when: (c) => !!c.showRunning },
+    labels: { label: 'Show window titles', type: 'boolean', when: (c) => !!c.showRunning },
+    maxLabel: { label: 'Title width', type: 'number', min: 80, max: 320, step: 10, unit: 'px', when: (c) => !!c.showRunning && !!c.labels },
+    indicator: { label: 'Running indicator', type: 'boolean', help: 'The dots under an open application' },
   },
   create(ctx) {
     const el = h('div', { class: 'w w-taskbar' });
@@ -144,8 +147,11 @@ registerWidget({
     const render = () => {
       const state = ctx.store.state;
       const pins = Array.isArray(cfg.pins) ? (cfg.pins as string[]) : [];
-      const groups = buildGroups(state, pins);
-      el.classList.toggle('labels', !!cfg.labels);
+      const windows = state.windows.filter((w) => !cfg.onlyThisOutput || !w.output || w.output === ctx.output);
+      let groups = buildGroups(state, pins, windows);
+      if (cfg.showRunning === false) groups = groups.filter((g) => g.pinned);
+      el.classList.toggle('labels', !!cfg.labels && cfg.showRunning !== false);
+      el.classList.toggle('no-indicator', cfg.indicator === false);
       reconcile(
         el,
         groups,

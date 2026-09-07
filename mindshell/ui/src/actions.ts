@@ -30,6 +30,18 @@ export async function runAction(action: Action | undefined): Promise<void> {
     await store.setEditMode(action.editMode);
   } else if ('exec' in action) {
     await bridge.call('shell.exec', { cmd: action.exec });
+  } else if ('desktopIcons' in action) {
+    await store.updateLayout((layout) => {
+      layout.desktop.icons = action.desktopIcons;
+    });
+  } else if ('removeWidget' in action) {
+    const { kind, panel, widget } = action.removeWidget;
+    await store.updateLayout((layout) => {
+      if (kind === 'panel') {
+        const p = layout.panels.find((x) => x.id === panel);
+        if (p) p.widgets = p.widgets.filter((w) => w.id !== widget);
+      } else layout.desktop.widgets = layout.desktop.widgets.filter((w) => w.id !== widget);
+    });
   } else if ('pin' in action) {
     const { panel, widget, app, pinned } = action.pin;
     await store.updateLayout((layout) => {
