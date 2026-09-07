@@ -1,0 +1,651 @@
+#!/usr/bin/python3
+"""mindos-dlss: a DLSS Swapper for Linux.
+
+Finds installed games (Steam, Heroic, Lutris, extra dirs), reports the upscaler
+DLLs they ship (DLSS, FSR 3.1, XeSS), keeps a local library of DLL versions
+fetched from the DLSS Swapper manifest, and swaps them in and out with backups.
+Standard library only.  Every command accepts --json for the desktop shell.
+"""
+import argparse
+import hashlib
+import json
+import mmap
+import os
+import re
+import shutil
+import sqlite3
+import struct
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+MANIFEST_URL = "https://raw.githubusercontent.com/beeradmoore/dlss-swapper-manifest-builder/main/manifest.json"
+DRIVER_DIR = Path("/usr/lib/nvidia/wine")
+BACKUP_SUFFIX = ".mindos-orig"
+MAX_DEPTH = 6
+STEAM_TOOL_PREFIXES = ("Proton", "Steam Linux Runtime", "Steamworks Common Redistributables")
+
+# kind -> (dll file name, human label)
+KINDS = {
+    "dlss": ("nvngx_dlss.dll", "DLSS Super Resolution"),
+    "dlss_d": ("nvngx_dlssd.dll", "DLSS Ray Reconstruction"),
+    "dlss_g": ("nvngx_dlssg.dll", "DLSS Frame Generation"),
+    "fsr_31_dx12": ("amd_fidelityfx_dx12.dll", "FSR 3.1 (DX12)"),
+    "fsr_31_vk": ("amd_fidelityfx_vk.dll", "FSR 3.1 (Vulkan)"),
+    "xess": ("libxess.dll", "XeSS"),
+    "xess_fg": ("libxess_fg.dll", "XeSS Frame Generation"),
+    "xess_dx11": ("libxess_dx11.dll", "XeSS (DX11)"),
+    "xell": ("libxell.dll", "XeLL"),
+}
+DLL_TO_KIND = {dll: kind for kind, (dll, _) in KINDS.items()}
+
+
+def xdg(var, default):
+    """Resolve an XDG base directory, honouring the environment override."""
+    return Path(os.environ.get(var) or Path.home() / default)
+
+
+DATA_DIR = xdg("XDG_DATA_HOME", ".local/share") / "mindos/dlss"
+CACHE_DIR = xdg("XDG_CACHE_HOME", ".cache") / "mindos/dlss"
+CONFIG_FILE = xdg("XDG_CONFIG_HOME", ".config") / "mindos/dlss.json"
+SWAPS_FILE = DATA_DIR / "swaps.json"
+
+
+class Fail(Exception):
+    """A user-facing error: printed as text or as {"error": ...} with exit 1."""
+
+
+def fetch(url):
+    """Open a URL with a 20 s timeout and our own User-Agent (the download host rejects urllib's)."""
+    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "mindos-dlss/1.0"}), timeout=20)
+
+
+# ---------------------------------------------------------------- DLL inspection
+
+VS_SIGNATURE = b"\xbd\x04\xef\xfe"  # VS_FIXEDFILEINFO.dwSignature (0xFEEF04BD)
+VS_KEY = "VS_VERSION_INFO".encode("utf-16-le")
+
+
+def dll_version(path):
+    """Read the PE VS_FIXEDFILEINFO file version, or "unknown".
+
+    The signature also shows up by chance inside x86 code (NVIDIA DLLs have such
+    a hit before the real one), so only accept a hit whose dwStrucVersion is 1.0,
+    preferring one preceded by the VS_VERSION_INFO key.
+    """
+    found = None
+    try:
+        with open(path, "rb") as f:
+            if os.fstat(f.fileno()).st_size < 16:
+                return "unknown"
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                i = mm.find(VS_SIGNATURE)
+                while i >= 0 and i + 16 <= len(mm):
+                    struc, ms, ls = struct.unpack_from("<III", mm, i + 4)
+                    if struc == 0x00010000:
+                        found = found or (ms, ls)
+                        if VS_KEY in mm[max(0, i - 48):i]:
+                            found = (ms, ls)
+                            break
+                    i = mm.find(VS_SIGNATURE, i + 1)
+    except OSError:
+        return "unknown"
+    if not found:
+        return "unknown"
+    ms, ls = found
+    return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+
+
+def version_key(version):
+    """Sort key for dotted version strings ("unknown" sorts lowest)."""
+    return tuple(int(p) if p.isdigit() else -1 for p in version.split("."))
+
+
+def md5sum(path):
+    """Upper-case hex MD5 of a file, read in chunks."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest().upper()
+
+
+def kind_of(name):
+    """Kind for a DLL file name (case-insensitive), or None."""
+    return DLL_TO_KIND.get(name.lower())
+
+
+# ---------------------------------------------------------------- manifest
+
+def load_manifest(refresh=False):
+    """Return the manifest dict, fetching it when stale (>24 h) or on --refresh."""
+    path = CACHE_DIR / "manifest.json"
+    fresh = path.exists() and time.time() - path.stat().st_mtime < 86400
+    if refresh or not fresh:
+        try:
+            with fetch(MANIFEST_URL) as r:
+                data = r.read()
+            json.loads(data)  # refuse to cache garbage
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        except (OSError, urllib.error.URLError, ValueError) as e:
+            if not path.exists():
+                raise Fail(f"cannot fetch manifest: {e}")
+            print(f"warning: using cached manifest ({e})", file=sys.stderr)
+    with open(path) as f:
+        return json.load(f)
+
+
+def manifest_entries(manifest, kind):
+    """Manifest entries for a kind, newest first."""
+    check_kind(kind)
+    entries = manifest.get(kind) or []
+    return sorted(entries, key=lambda e: e.get("version_number", 0), reverse=True)
+
+
+def pick_entry(manifest, kind, version):
+    """Choose one manifest entry: "latest" or an exact version (release builds preferred)."""
+    entries = manifest_entries(manifest, kind)
+    if version == "latest":
+        entries = [e for e in entries if not e.get("is_dev_file")] or entries
+    else:
+        entries = [e for e in entries if e.get("version") == version]
+    if not entries:
+        raise Fail(f"no {kind} version {version} in the manifest (see: mindos-dlss versions {kind})")
+    entries.sort(key=lambda e: (bool(e.get("is_dev_file")), bool(e.get("additional_label"))))
+    return entries[0]
+
+
+# ---------------------------------------------------------------- library
+
+def check_kind(kind):
+    """Validate a kind name."""
+    if kind not in KINDS:
+        raise Fail(f"unknown kind {kind!r}; one of: {', '.join(KINDS)}")
+
+
+def lib_dir(kind, version):
+    """Library directory for a kind/version pair."""
+    return DATA_DIR / kind / version
+
+
+def lib_entry_from(path, kind, version, source):
+    """Build a library entry dict for a DLL file."""
+    meta = {}
+    meta_file = path.parent / "meta.json"
+    if source != "driver" and meta_file.is_file():
+        try:
+            meta = json.loads(meta_file.read_text())
+        except ValueError:
+            meta = {}
+    entry = {"kind": kind, "label": KINDS[kind][1], "version": version, "path": str(path),
+             "source": meta.get("source", source), "size": path.stat().st_size}
+    if meta.get("md5"):
+        entry["md5"] = meta["md5"]
+    return entry
+
+
+def library():
+    """All library entries: downloaded, imported, and the NVIDIA driver bundle."""
+    entries = []
+    for kind, (dll, _) in KINDS.items():
+        base = DATA_DIR / kind
+        if base.is_dir():
+            for vdir in sorted(base.iterdir(), key=lambda p: version_key(p.name), reverse=True):
+                f = vdir / dll
+                if f.is_file():
+                    entries.append(lib_entry_from(f, kind, vdir.name, "import"))
+    if DRIVER_DIR.is_dir():
+        for f in sorted(DRIVER_DIR.iterdir()):
+            kind = kind_of(f.name)
+            if kind and f.is_file():
+                entries.append(lib_entry_from(f, kind, dll_version(f), "driver"))
+    return entries
+
+
+def find_lib(kind, version):
+    """Library entry for kind/version (library files preferred over the driver's), or None."""
+    hits = [e for e in library() if e["kind"] == kind and e["version"] == version]
+    hits.sort(key=lambda e: e["source"] == "driver")
+    return hits[0] if hits else None
+
+
+def store_dll(src, kind, version, source, md5=None):
+    """Copy a DLL into the library and return its entry."""
+    dst_dir = lib_dir(kind, version)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst = dst_dir / KINDS[kind][0]
+    shutil.copyfile(src, dst)
+    (dst_dir / "meta.json").write_text(json.dumps({"source": source, "md5": md5 or md5sum(dst)}))
+    return lib_entry_from(dst, kind, version, source)
+
+
+def download(manifest, kind, version):
+    """Download a manifest entry into the library, verifying the zip and DLL MD5s."""
+    entry = pick_entry(manifest, kind, version)
+    version = entry["version"]
+    existing = find_lib(kind, version)
+    if existing and existing["source"] != "driver":
+        return existing
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=DATA_DIR) as tmp:
+        zip_path = Path(tmp) / "dll.zip"
+        try:
+            with fetch(entry["download_url"]) as r, open(zip_path, "wb") as out:
+                shutil.copyfileobj(r, out)
+        except (OSError, urllib.error.URLError) as e:
+            raise Fail(f"download failed: {e}")
+        want = (entry.get("zip_md5_hash") or "").upper()
+        if want and md5sum(zip_path) != want:
+            raise Fail("zip MD5 mismatch, refusing to install")
+        with zipfile.ZipFile(zip_path) as z:
+            names = [n for n in z.namelist() if n.lower().endswith(".dll")]
+            if len(names) != 1:
+                raise Fail(f"unexpected zip contents: {names}")
+            with z.open(names[0]) as src, open(Path(tmp) / "dll", "wb") as out:
+                shutil.copyfileobj(src, out)
+        dll = Path(tmp) / "dll"
+        got = md5sum(dll)
+        want = (entry.get("md5_hash") or "").upper()
+        if want and got != want:
+            raise Fail("DLL MD5 mismatch, refusing to install")
+        return store_dll(dll, kind, version, "download", got)
+
+
+def import_dll(path):
+    """Import a DLL file from disk into the library (version read from the file)."""
+    path = Path(path)
+    if not path.is_file():
+        raise Fail(f"not a file: {path}")
+    kind = kind_of(path.name)
+    if not kind:
+        raise Fail(f"{path.name} is not a known upscaler DLL (see: mindos-dlss kinds)")
+    version = dll_version(path)
+    if version == "unknown":
+        raise Fail(f"{path}: no version information found")
+    return store_dll(path, kind, version, "import")
+
+
+def delete(kind, version):
+    """Remove a downloaded or imported library entry."""
+    entry = find_lib(kind, version)
+    if not entry:
+        raise Fail(f"{kind} {version} is not in the library")
+    if entry["source"] == "driver":
+        raise Fail("the NVIDIA driver's DLLs cannot be deleted")
+    shutil.rmtree(lib_dir(kind, version))
+    return entry
+
+
+# ---------------------------------------------------------------- game discovery
+
+def load_json(path, default):
+    """Read a JSON file, returning default when missing or broken."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def steam_games():
+    """Games from every Steam library listed in libraryfolders.vdf."""
+    seeds = [Path.home() / ".steam/root/steamapps", Path.home() / ".local/share/Steam/steamapps",
+             Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps"]
+    libs = {}
+    for seed in seeds:
+        vdf = seed / "libraryfolders.vdf"
+        if not vdf.is_file():
+            continue
+        libs.setdefault(os.path.realpath(seed.parent), seed.parent)
+        for m in re.finditer(r'"path"\s+"((?:[^"\\]|\\.)*)"', vdf.read_text(errors="replace")):
+            p = Path(m.group(1).replace("\\\\", "\\"))
+            libs.setdefault(os.path.realpath(p), p)
+    games = []
+    for lib in libs.values():
+        for acf in sorted((lib / "steamapps").glob("appmanifest_*.acf")):
+            text = acf.read_text(errors="replace")
+            fields = dict(re.findall(r'^\s*"(appid|name|installdir)"\s+"((?:[^"\\]|\\.)*)"', text, re.M))
+            if len(fields) < 3 or fields["name"].startswith(STEAM_TOOL_PREFIXES):
+                continue
+            games.append(("steam:" + fields["appid"], fields["name"], "steam",
+                          lib / "steamapps/common" / fields["installdir"]))
+    return games
+
+
+def heroic_games():
+    """Games from Heroic/Legendary (Epic) and Heroic's GOG store."""
+    cfg = xdg("XDG_CONFIG_HOME", ".config")
+    games = []
+    for slug, g in load_json(cfg / "legendary/installed.json", {}).items():
+        if isinstance(g, dict) and g.get("install_path"):
+            games.append(("heroic:" + slug, g.get("title") or slug, "heroic", Path(g["install_path"])))
+    titles = {g.get("app_name"): g.get("title")
+              for g in load_json(cfg / "heroic/store_cache/gog_library.json", {}).get("games", [])
+              if isinstance(g, dict)}
+    for g in load_json(cfg / "heroic/gog_store/installed.json", {}).get("installed", []):
+        if isinstance(g, dict) and g.get("install_path"):
+            app = str(g.get("appName") or g.get("app_name") or Path(g["install_path"]).name)
+            name = titles.get(app) or Path(g["install_path"]).name
+            games.append(("gog:" + app, name, "gog", Path(g["install_path"])))
+    return games
+
+
+def lutris_games():
+    """Games from the Lutris database."""
+    db = xdg("XDG_DATA_HOME", ".local/share") / "lutris/pga.db"
+    if not db.is_file():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        rows = con.execute("SELECT name, directory FROM games WHERE directory != ''").fetchall()
+        con.close()
+    except sqlite3.Error:
+        return []
+    return [("lutris:" + name, name, "lutris", Path(d)) for name, d in rows if name and d]
+
+
+def extra_games():
+    """Games from the extra directories in ~/.config/mindos/dlss.json."""
+    games = []
+    for d in load_json(CONFIG_FILE, {}).get("dirs", []):
+        base = Path(os.path.expanduser(d))
+        if base.is_dir():
+            for sub in sorted(base.iterdir()):
+                if sub.is_dir():
+                    games.append(("dir:" + str(sub), sub.name, "dir", sub))
+    return games
+
+
+def scan_dir(path, swaps):
+    """Find upscaler DLLs under a game directory (depth-limited, no symlinked dirs)."""
+    found = []
+    root_depth = str(path).rstrip("/").count("/")
+    for cur, dirs, files in os.walk(path):
+        if cur.count("/") - root_depth >= MAX_DEPTH:
+            dirs[:] = []
+        dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(cur, d)))
+        for name in sorted(files):
+            kind = kind_of(name)
+            if not kind:
+                continue
+            file = os.path.join(cur, name)
+            info = {"kind": kind, "label": KINDS[kind][1], "file": file,
+                    "version": dll_version(file), "swapped": file in swaps}
+            backup = file + BACKUP_SUFFIX
+            if os.path.isfile(backup):
+                info["backup_version"] = dll_version(backup)
+            found.append(info)
+    return found
+
+
+def all_games(include_empty=False):
+    """Every discovered game with its DLLs (empty ones only with include_empty)."""
+    swaps = load_json(SWAPS_FILE, {})
+    games, seen = [], set()
+    for gid, name, source, path in steam_games() + heroic_games() + lutris_games() + extra_games():
+        if gid in seen or not path.is_dir():
+            continue
+        seen.add(gid)
+        game = {"id": gid, "name": name, "source": source, "path": str(path), "dlls": scan_dir(path, swaps)}
+        if game["dlls"] or include_empty:
+            games.append(game)
+    return games
+
+
+def find_game(query):
+    """Resolve a game by id, exact name, name substring, or directory path."""
+    games = all_games(include_empty=True)
+    if os.path.isdir(query):
+        real = os.path.realpath(query)
+        for g in games:
+            if os.path.realpath(g["path"]) == real:
+                return g
+        path = Path(real)
+        return {"id": "dir:" + real, "name": path.name, "source": "dir", "path": real,
+                "dlls": scan_dir(path, load_json(SWAPS_FILE, {}))}
+    for key in (lambda g: g["id"] == query, lambda g: g["name"] == query,
+                lambda g: query.lower() in g["name"].lower()):
+        hits = [g for g in games if key(g)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise Fail("ambiguous game: " + ", ".join(f"{g['name']} ({g['id']})" for g in hits))
+    raise Fail(f"no game matches {query!r}")
+
+
+# ---------------------------------------------------------------- swapping
+
+def save_swaps(swaps):
+    """Write swaps.json atomically."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = SWAPS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(swaps, indent=1, sort_keys=True))
+    tmp.replace(SWAPS_FILE)
+
+
+def resolve_version(manifest_fn, kind, version):
+    """Turn "latest" into a concrete version (manifest first, then the library)."""
+    if version != "latest":
+        return version
+    try:
+        return pick_entry(manifest_fn(), kind, "latest")["version"]
+    except Fail:
+        have = [e["version"] for e in library() if e["kind"] == kind]
+        if not have:
+            raise
+        return max(have, key=version_key)
+
+
+def swap(game, kind, version):
+    """Replace every <kind> DLL in a game with the library version, keeping a pristine backup."""
+    check_kind(kind)
+    entry = find_lib(kind, version)
+    if not entry:
+        raise Fail(f"{kind} {version} is not in the library; run: mindos-dlss download {kind} {version}")
+    targets = [d for d in game["dlls"] if d["kind"] == kind]
+    if not targets:
+        raise Fail(f"{game['name']} has no {KINDS[kind][0]}")
+    swaps = load_json(SWAPS_FILE, {})
+    done = []
+    for d in targets:
+        file = d["file"]
+        backup = file + BACKUP_SUFFIX
+        try:
+            if not os.path.exists(backup):
+                os.rename(file, backup)
+            shutil.copyfile(entry["path"], file)
+        except OSError as e:
+            raise Fail(f"{file}: {e}")
+        from_version = swaps.get(file, {}).get("from_version") or dll_version(backup)
+        swaps[file] = {"kind": kind, "from_version": from_version, "to_version": version,
+                       "when": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        done.append({"file": file, "from_version": from_version, "to_version": version})
+    save_swaps(swaps)
+    return {"game": game["id"], "name": game["name"], "kind": kind, "version": version,
+            "source": entry["source"], "files": done}
+
+
+def restore(game, kind=None):
+    """Put the original DLL(s) back from their .mindos-orig backups."""
+    if kind:
+        check_kind(kind)
+    swaps = load_json(SWAPS_FILE, {})
+    done = []
+    for d in game["dlls"]:
+        backup = d["file"] + BACKUP_SUFFIX
+        if (kind and d["kind"] != kind) or not os.path.isfile(backup):
+            continue
+        try:
+            shutil.copyfile(backup, d["file"])
+        except OSError as e:
+            raise Fail(f"{d['file']}: {e}")
+        swaps.pop(d["file"], None)
+        done.append({"file": d["file"], "kind": d["kind"], "version": dll_version(backup)})
+    if not done:
+        raise Fail(f"nothing to restore in {game['name']}")
+    save_swaps(swaps)
+    return {"game": game["id"], "name": game["name"], "files": done}
+
+
+# ---------------------------------------------------------------- output
+
+def table(rows, headers=None):
+    """Print rows of strings as aligned columns."""
+    rows = [[str(c) for c in r] for r in rows]
+    if headers:
+        rows.insert(0, list(headers))
+    if not rows:
+        return
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+
+
+def print_games(games):
+    """Readable game listing with their DLLs."""
+    if not games:
+        print("no games with upscaler DLLs found")
+    for g in games:
+        print(f"{g['name']}  [{g['source']}]  {g['path']}  ({g['id']})")
+        rows = []
+        for d in g["dlls"]:
+            note = f"swapped, original {d.get('backup_version', '?')}" if d["swapped"] else ""
+            rows.append(["  " + d["label"], d["version"], os.path.relpath(d["file"], g["path"]), note])
+        table(rows) if rows else print("  (no upscaler DLLs)")
+
+
+def print_files(result):
+    """Readable output for swap/restore."""
+    print(f"{result['name']}:")
+    for f in result["files"]:
+        ver = f.get("to_version") or f.get("version")
+        was = f" (was {f['from_version']})" if "from_version" in f else ""
+        print(f"  {f['file']} -> {ver}{was}")
+
+
+def human_size(n):
+    """Bytes as a short MiB/KiB string."""
+    return f"{n / 1048576:.1f} MiB" if n >= 1048576 else f"{n / 1024:.0f} KiB"
+
+
+# ---------------------------------------------------------------- main
+
+EPILOG = """kinds: """ + ", ".join(KINDS) + """
+<game> is an id (steam:1234), an exact or partial name, or a directory path.
+Backups are kept next to the game DLL as <dll>.mindos-orig; restore puts them back.
+Hint: Proton 10+ can use the driver's newer DLSS without swapping via the launch option
+      PROTON_DLSS_UPGRADE=1 %command%"""
+
+
+def main():
+    """Parse arguments and run one command."""
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="machine-readable output")
+    common.add_argument("--refresh", action="store_true", default=argparse.SUPPRESS, help="re-fetch the manifest")
+    ap = argparse.ArgumentParser(prog="mindos-dlss", parents=[common], epilog=EPILOG,
+                                 description="Swap DLSS / FSR 3.1 / XeSS DLLs in installed games.",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", metavar="command")
+    p = sub.add_parser("scan", parents=[common], help="list games and the upscaler DLLs they ship")
+    p.add_argument("--all", action="store_true", help="include games without upscaler DLLs")
+    sub.add_parser("games", parents=[common], help="alias for scan --all")
+    sub.add_parser("library", parents=[common], help="list DLL versions in the local library")
+    sub.add_parser("kinds", parents=[common], help="list DLL kinds")
+    p = sub.add_parser("versions", parents=[common], help="list manifest versions of a kind")
+    p.add_argument("kind")
+    p = sub.add_parser("download", parents=[common], help="download a version into the library")
+    p.add_argument("kind")
+    p.add_argument("version", help="a version or 'latest'")
+    p = sub.add_parser("import", parents=[common], help="import a DLL file into the library")
+    p.add_argument("dll")
+    p = sub.add_parser("delete", parents=[common], help="remove a library entry")
+    p.add_argument("kind")
+    p.add_argument("version")
+    p = sub.add_parser("swap", parents=[common], help="swap a game's DLL for a library version")
+    p.add_argument("game")
+    p.add_argument("kind")
+    p.add_argument("version", help="a version or 'latest'")
+    p = sub.add_parser("restore", parents=[common], help="restore a game's original DLL(s)")
+    p.add_argument("game")
+    p.add_argument("kind", nargs="?")
+    args = ap.parse_args()
+    args.json, args.refresh = getattr(args, "json", False), getattr(args, "refresh", False)
+    if not args.cmd:
+        ap.print_help()
+        return 0
+    manifest = lambda: load_manifest(args.refresh)
+    try:
+        out = run(args, manifest)
+    except Fail as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"error: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(out, indent=1))
+    return 0
+
+
+def run(args, manifest):
+    """Execute the chosen command; returns the JSON payload and prints text otherwise."""
+    j = args.json
+    if args.cmd in ("scan", "games"):
+        games = all_games(args.cmd == "games" or args.all)
+        j or print_games(games)
+        return games
+    if args.cmd == "kinds":
+        out = [{"kind": k, "dll": dll, "label": label} for k, (dll, label) in KINDS.items()]
+        j or table([[o["kind"], o["dll"], o["label"]] for o in out], ["KIND", "DLL", "LABEL"])
+        return out
+    if args.cmd == "library":
+        out = library()
+        j or table([[e["kind"], e["version"], e["source"], human_size(e["size"]), e["path"]] for e in out],
+                   ["KIND", "VERSION", "SOURCE", "SIZE", "PATH"]) if out else print("library is empty")
+        return out
+    if args.cmd == "versions":
+        have = {e["version"] for e in library() if e["kind"] == args.kind}
+        out = []
+        for e in manifest_entries(manifest(), args.kind):
+            out.append({"version": e["version"], "installed": e["version"] in have,
+                        "label": e.get("additional_label") or "", "dev": bool(e.get("is_dev_file")),
+                        "signed": (e.get("signed_datetime") or "")[:10], "size": e.get("file_size", 0),
+                        "description": e.get("file_description") or ""})
+        j or table([["*" if o["installed"] else "", o["version"], " ".join(x for x in (o["label"], "dev" if o["dev"] else "") if x),
+                     o["signed"], human_size(o["size"])] for o in out], ["", "VERSION", "NOTE", "SIGNED", "SIZE"])
+        return out
+    if args.cmd == "download":
+        out = download(manifest(), args.kind, args.version)
+        j or print(f"{out['kind']} {out['version']} -> {out['path']}")
+        return out
+    if args.cmd == "import":
+        out = import_dll(args.dll)
+        j or print(f"{out['kind']} {out['version']} -> {out['path']}")
+        return out
+    if args.cmd == "delete":
+        out = delete(args.kind, args.version)
+        j or print(f"deleted {out['kind']} {out['version']}")
+        return out
+    if args.cmd == "swap":
+        check_kind(args.kind)
+        version = resolve_version(manifest, args.kind, args.version)
+        out = swap(find_game(args.game), args.kind, version)
+        j or print_files(out)
+        return out
+    if args.cmd == "restore":
+        out = restore(find_game(args.game), args.kind)
+        j or print_files(out)
+        return out
+    raise Fail(f"unknown command {args.cmd}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
