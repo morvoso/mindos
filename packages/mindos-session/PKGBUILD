@@ -1,7 +1,7 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-session
 pkgver=0.1.0
-pkgrel=13
+pkgrel=15
 pkgdesc="MindOS session: greetd configuration and the MindOS login screen, session launcher, compositor defaults and the dark-mode defaults for GTK, the portal and Firefox"
 arch=(any)
 url="https://mindos.local"

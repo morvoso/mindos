@@ -4,7 +4,9 @@
 [org.gnome.desktop.interface]
 color-scheme='prefer-dark'
 accent-color='teal'
-gtk-theme='Adwaita-dark'
+# Adwaita, not Adwaita-dark: GTK 3 on Wayland takes the theme name from here
+# and has no built-in theme of that name (see gtk-settings.ini).
+gtk-theme='Adwaita'
 icon-theme='breeze-dark'
 cursor-theme='Adwaita'
 font-name='Inter 11'
