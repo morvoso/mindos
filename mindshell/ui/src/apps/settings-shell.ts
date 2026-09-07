@@ -4,6 +4,7 @@ import * as bridge from '../bridge';
 import { h } from '../dom';
 import { icon } from '../icons';
 import { store } from '../state';
+import type { PointerState } from '../types';
 import { MODES } from '../widgets/layout-mode';
 import { card, notice, pageHeader, row, selectBox } from './shared';
 
@@ -24,6 +25,49 @@ const SHORTCUTS: [string, string][] = [
   ['Super + 1 … 9', 'Focus display 1 … 9'],
   ['Super + Shift + E', 'Log out of the desktop'],
 ];
+
+const CURSOR_SIZES: [number, string][] = [
+  [24, 'Small (24)'],
+  [32, 'Medium (32)'],
+  [48, 'Large (48)'],
+  [64, 'Huge (64)'],
+];
+
+/** Settings › Desktop › Pointer: the cursor theme and its size. */
+function pointerCard(note: ReturnType<typeof notice>): HTMLElement {
+  const themeSel = selectBox([], '', () => {});
+  const sizeSel = selectBox(CURSOR_SIZES.map(([v, label]) => ({ value: v, label })), 24, () => {});
+  const body = h('div', {}, 
+    row('Theme', 'The pointer shapes. MindOS is the animated one that matches the desktop.', themeSel),
+    row('Size', 'Applications that read the size once at start (games, Qt) use it the next time they run.', sizeSel),
+  );
+
+  const apply = (change: { theme?: string; size?: number }) => {
+    bridge
+      .call<PointerState>('pointer.set', change)
+      .then((p) => { fill(p); note.show('The pointer changed.', 'ok'); })
+      .catch((e) => note.show(String(e instanceof Error ? e.message : e), 'error'));
+  };
+  themeSel.addEventListener('change', () => apply({ theme: themeSel.value }));
+  sizeSel.addEventListener('change', () => apply({ size: Number(sizeSel.value) }));
+
+  const fill = (p: PointerState) => {
+    themeSel.replaceChildren(...p.themes.map((t) => h('option', { value: t }, t)));
+    themeSel.value = p.theme;
+    if (!themeSel.value) themeSel.append(h('option', { value: p.theme, selected: '' }, p.theme));
+    sizeSel.value = String(p.size);
+    if (sizeSel.value !== String(p.size)) {
+      sizeSel.append(h('option', { value: String(p.size) }, String(p.size)));
+      sizeSel.value = String(p.size);
+    }
+    themeSel.disabled = sizeSel.disabled = !p.writable;
+  };
+  bridge
+    .call<PointerState>('pointer.get')
+    .then(fill)
+    .catch(() => body.prepend(h('p', { class: 'card-help' }, 'The pointer settings are unavailable.')));
+  return card('Pointer', body);
+}
 
 export function shellPage(el: HTMLElement): () => void {
   const note = notice();
@@ -70,6 +114,7 @@ export function shellPage(el: HTMLElement): () => void {
     ),
     card('Keyboard shortcuts', table),
     card(
+    pointerCard(note),
       'Shell',
       row('Icon theme', 'From /etc/mindos/shell.toml or ~/.config/mindos/shell.toml.', h('span', { class: 'mono' }, cfg.icon_theme ?? 'default')),
       row('Terminal', null, h('span', { class: 'mono' }, cfg.terminal ?? 'foot')),

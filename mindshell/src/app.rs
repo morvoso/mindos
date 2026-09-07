@@ -26,6 +26,7 @@ use crate::mind;
 use crate::notify::NotifyHandle;
 use crate::polkit::PolkitHandle;
 use crate::system::{self, Audio};
+use crate::pointer;
 use crate::tray::TrayHandle;
 use crate::windows::{self, Kind, PanelSpec, ShellWindow};
 use crate::HostEvent;
@@ -1389,6 +1390,48 @@ impl App {
                 .map_err(|e| format!("{}: {e}", argv2[0]))
         })
         .await?;
+            // ---- the pointer: GSettings for applications, IPC for the compositor
+            "pointer.get" => Ok(pointer::state()),
+            "pointer.set" => {
+                let theme = params.get("theme").and_then(Value::as_str).map(str::to_string);
+                let size = params.get("size").and_then(Value::as_u64).map(|s| s as u32);
+                if theme.is_none() && size.is_none() {
+                    return Err("pointer.set: nothing to change".into());
+                }
+                pointer::set(theme.as_deref(), size)?;
+                // The compositor draws its own cursor and does not read
+                // GSettings; it also passes the size on to what it starts.
+                let mut prefs = serde_json::Map::new();
+                if let Some(theme) = &theme {
+                    prefs.insert("cursor_theme".into(), json!(theme));
+                }
+                if let Some(size) = size {
+                    prefs.insert("cursor_size".into(), json!(size));
+                }
+                if let Err(err) = self.ipc.request(json!({ "type": "set_prefs", "prefs": prefs })).await {
+                    tracing::warn!(%err, "the compositor kept its old pointer");
+                }
+                Ok(pointer::state())
+            }
+            // ---- the screensaver and the lock screen
+            "lock.info" => {
+                let mut info = crate::auth::user_info();
+                info["host"] = json!(system::host_name());
+                info["idle"] = self.state.borrow().idle.clone();
+                Ok(info)
+            }
+            "lock.state" => Ok(self.state.borrow().idle.clone()),
+            "lock.unlock" => {
+                let password = params
+                    .get("password")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string())
+                    .ok_or("lock.unlock: missing 'password'")?;
+                self.unlock(password).await
+            }
+            "lock.now" => self.ipc.request(json!({ "type": "lock" })).await,
+            "lock.wake" => self.ipc.request(json!({ "type": "wake" })).await,
+            "lock.blank" => self.ipc.request(json!({ "type": "blank" })).await,
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let json = serde_json::from_str::<Value>(stdout.trim()).unwrap_or(Value::Null);

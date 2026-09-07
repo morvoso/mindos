@@ -20,6 +20,7 @@ mod mind;
 mod mindwatch;
 mod notify;
 mod polkit;
+mod pointer;
 mod portal;
 mod scheme;
 mod system;

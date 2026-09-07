@@ -535,6 +535,16 @@ export interface FsEntry {
   hidden: boolean;
   symlink: boolean;
   mime: string;
+/** `pointer.get` / `pointer.set`: the cursor theme and size. */
+export interface PointerState {
+  theme: string;
+  size: number;
+  themes: string[];
+  sizes: number[];
+  /** False when gsettings-desktop-schemas is missing: nothing can be saved. */
+  writable: boolean;
+}
+
   icon: string;
   image: boolean;
   /** A ready-made thumbnail URL (the mock); the host serves mindos://shell/thumb/ instead. */

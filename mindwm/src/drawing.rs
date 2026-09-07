@@ -107,7 +107,8 @@ where
     {
         match &self.status {
             CursorImageStatus::Hidden => vec![],
-            // Always render `Default` for a named shape.
+            // The buffer already holds the frame for the named shape
+            // (`Cursor::get_image`, driven by wp_cursor_shape_v1).
             CursorImageStatus::Named(_) => {
                 if let Some(buffer) = self.buffer.as_ref() {
                     vec![PointerRenderElement::<R>::from(

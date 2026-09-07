@@ -113,8 +113,14 @@ pub struct Theme {
     pub foreground: String,
     /// The accent colour (Mind bar lines, selection, wordmark glow).
     pub accent: String,
-    /// Draw the "MINDOS" wordmark and key hints when no window is open.
+    /// Draw the "MINDOS" startup screen (wordmark and key hints) until the
+    /// shell puts its desktop up.
     pub show_wordmark: bool,
+    /// The XCursor theme, and its nominal size in pixels. The defaults are the
+    /// MindOS pointer (mindos-cursors): dark glass with a cyan pulse, drawn at
+    /// 24, 32, 48 and 64. The user's choice lives in the preferences file.
+    pub cursor_theme: String,
+    pub cursor_size: u32,
 }
 
 impl Default for Theme {
@@ -124,6 +130,8 @@ impl Default for Theme {
             foreground: "#e6edf3".into(),
             accent: "#19e3ff".into(),
             show_wordmark: true,
+            cursor_theme: "MindOS".into(),
+            cursor_size: 24,
         }
     }
 }

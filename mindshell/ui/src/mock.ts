@@ -345,6 +345,7 @@ export function installMock(): MindosGlobal {
     if (typeof p.vrr === 'boolean') o.vrr = p.vrr && o.vrr_supported;
     if (p.primary === true) for (const x of outputs) x.primary = x === o;
     emit('outputs', { outputs: outputs.map((x) => ({ name: x.name, make: x.make, model: x.model, x: x.x, y: x.y, width: x.width, height: x.height, scale: x.scale, refresh: x.refresh })) });
+  const pointer = { theme: 'MindOS', size: 24, themes: ['MindOS', 'Adwaita', 'breeze_cursors'], sizes: [24, 32, 48, 64], writable: true };
     return { outputs: JSON.parse(JSON.stringify(outputs)) };
   };
 
@@ -729,6 +730,8 @@ export function installMock(): MindosGlobal {
           mockHooks.closePopup?.('auth');
           const pending = pkexecPending;
           pkexecPending = undefined;
+    'pointer.get': () => pointer,
+    'pointer.set': (p) => Object.assign(pointer, p.theme ? { theme: String(p.theme) } : {}, p.size ? { size: Number(p.size) } : {}),
           pending?.done(runHelper(pending.argv));
           return;
         }

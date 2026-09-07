@@ -8,7 +8,8 @@ accent-color='teal'
 # and has no built-in theme of that name (see gtk-settings.ini).
 gtk-theme='Adwaita'
 icon-theme='breeze-dark'
-cursor-theme='Adwaita'
+cursor-theme='MindOS'
+cursor-size=24
 font-name='Inter 11'
 document-font-name='Inter 11'
 monospace-font-name='JetBrains Mono 11'

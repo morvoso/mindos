@@ -12,8 +12,6 @@ export XDG_CURRENT_DESKTOP=MindOS
 export XDG_SESSION_DESKTOP=mindos-greeter
 export XDG_CONFIG_DIRS="/etc/mindos/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
 export GDK_BACKEND=wayland
-export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
-export XCURSOR_THEME="${XCURSOR_THEME:-Adwaita}"
 
 # The greeter user has no home; give GTK, WebKit and the compositor a
 # writable, private one for the duration of the session.
@@ -21,6 +19,24 @@ run="${XDG_RUNTIME_DIR:-/tmp/mindos-greeter-$(id -u)}"
 mkdir -p "$run/home" 2>/dev/null
 export HOME="$run/home"
 export XDG_CACHE_HOME="$HOME/.cache" XDG_DATA_HOME="$HOME/.local/share" XDG_CONFIG_HOME="$HOME/.config"
+
+# The pointer: the MindOS cursor theme (animated, dark glass with a cyan
+# pulse) at the size chosen in Settings. GSettings is the source of truth --
+# GTK applications follow it live through the settings portal, mindwm keeps a
+# copy in its own preferences, and these variables are what everything else
+# (SDL, Qt, XWayland) reads once, here.
+mindos_gsetting() {
+  local v
+  v=$(gsettings get org.gnome.desktop.interface "$1" 2>/dev/null) || return 0
+  # strings come back quoted, integers bare
+  v=${v#\'}; v=${v%\'}
+  [[ $v == uint32* ]] && v=${v#uint32 }
+  printf '%s' "$v"
+}
+export XCURSOR_THEME="${XCURSOR_THEME:-$(mindos_gsetting cursor-theme)}"
+export XCURSOR_SIZE="${XCURSOR_SIZE:-$(mindos_gsetting cursor-size)}"
+export XCURSOR_THEME="${XCURSOR_THEME:-MindOS}"
+export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
 
 export MINDWM_CONFIG=/etc/mindos/greeter/mindwm.toml
 

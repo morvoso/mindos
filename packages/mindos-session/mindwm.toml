@@ -18,5 +18,10 @@ socket = "/run/mindos/mind.sock"
 background = "#05070a"
 foreground = "#e6edf3"
 accent = "#19e3ff"
-# Draw the MINDOS wordmark + shortcut hints on the empty desktop.
+# Draw the MINDOS wordmark + shortcut hints until the shell's desktop is up.
 show_wordmark = true
+# The pointer: the MindOS cursor theme (animated dark glass, mindos-cursors)
+# at a nominal 24 px. Settings > Desktop > Pointer changes it for the whole
+# desktop (GSettings) and remembers it; these are only the defaults.
+cursor_theme = "MindOS"
+cursor_size = 24

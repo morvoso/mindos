@@ -77,6 +77,27 @@ covering the whole output (panels are not drawn over a fullscreen window).
 preferences the shell edits: whether the Mind bar shows its tool lines, the
 primary output, per-output settings) and announced to the shell as a
 `layout_mode` event.
+## The pointer
+
+mindwm draws the pointer itself. A client either attaches its own cursor
+surface, or — through `wp_cursor_shape_v1`, which GTK 4 and most toolkits now
+prefer — names a shape and lets the compositor draw it. Named shapes come from
+an XCursor theme (`src/cursor.rs`), animated frames included, loaded on first
+use and cached per `(shape, frame)`. That is what keeps one pointer across the
+whole desktop: GTK 4 no longer reads XCursor themes of its own, so without the
+protocol its windows would show GTK's built-in cursors.
+
+The theme and its nominal size are one desktop-wide setting kept in GSettings; `main`
+resolves them once at startup — `XCURSOR_THEME` / `XCURSOR_SIZE` from the
+session if set, else the preferences file, else `[theme].cursor_theme` /
+`cursor_size` from `mindwm.toml` (`MindOS`, 24) — and puts them back in the
+environment, so every program the compositor starts agrees with it.
+
+Settings › Desktop › Pointer changes it live: the shell writes GSettings for
+the applications and sends `set_prefs { cursor_theme, cursor_size }`, which
+reloads the compositor's own cursor and updates the environment for whatever
+it starts next.
+
 
 * **Floating** (`floating`, like KDE). Every window keeps the size it asks
   for and opens centred on the output it appears on; a second window that
@@ -232,7 +253,9 @@ autopilot = false      # true: apply "change" actions without asking
 background = "#05070a"   # the MindOS void
 foreground = "#e6edf3"
 accent = "#19e3ff"       # Mind bar lines, selection, wordmark glow
-show_wordmark = true
+show_wordmark = true     # the startup screen, until the shell's desktop is up
+cursor_theme = "MindOS"  # the pointer; Settings > Desktop > Pointer overrides both
+cursor_size = 24
 
 [session]
 kiosk = false            # true for the login screen (mindos-greeter): no Mind bar,
@@ -257,12 +280,14 @@ names one more file loaded last (the greeter uses
 | `src/mind.rs` | Threaded client for `mindd`; events arrive through a calloop channel |
 | `src/edid.rs` | Minimal EDID parser for output make/model (replaces libdisplay-info) |
 | `src/layout.rs` | The three window layouts: tile order per output, dwindle and column geometry, focus/move by direction, floating toggles |
-| `src/prefs.rs` | Preferences the shell edits (`$XDG_STATE_HOME/mindos/mindwm.json`): layout mode, Mind tool lines, primary output, per-output settings |
+| `src/prefs.rs` | Preferences the shell edits (`$XDG_STATE_HOME/mindos/mindwm.json`): layout mode, Mind tool lines, primary output, pointer theme and size, per-output settings, the idle timings |
+| `src/idle.rs` | Idling: the stage machine (active → screensaver → blank), the lock state, the calloop deadline timer, `ext-idle-notify` and `zwp_idle_inhibit` |
 | `src/shell/mod.rs` | New-window placement (`initial_state`, `centered`, `cascade`, `pointer_output_area`), usable-area relayout when layer-shell exclusive zones change |
 | `src/shell/ssd.rs` | Server-side decorations: the title bar renderer and its pointer handling |
 | `src/shell/xdg.rs`, `src/shell/x11.rs` | xdg-shell and XWayland window management |
 | `src/input_handler.rs` | Keybindings (`process_keyboard_shortcut`), the Super tap, layer focus rules and Mind bar key routing |
-| `src/render.rs` | Output element assembly: cursor, Mind bar overlay, windows, wordmark backdrop |
+| `src/cursor.rs` | The pointer the compositor draws for a named shape: XCursor lookup, animation frames, and `configure` (the session-wide `XCURSOR_THEME` / `XCURSOR_SIZE`) |
+| `src/render.rs` | Output element assembly: cursor, Mind bar overlay, windows, startup screen |
 | `src/udev.rs`, `src/winit.rs` | DRM/KMS and nested backends (from anvil) |
 
 ## Development

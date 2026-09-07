@@ -64,7 +64,7 @@ use smithay::{
     },
     input::{
         keyboard::LedState,
-        pointer::{CursorImageAttributes, CursorImageStatus},
+        pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
     },
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
@@ -136,7 +136,9 @@ pub struct UdevData {
     primary_gpu: DrmNode,
     gpus: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>,
     backends: HashMap<DrmNode, BackendData>,
-    pointer_images: Vec<(xcursor::parser::Image, MemoryRenderBuffer)>,
+    /// One texture per animation frame of every shape drawn so far,
+    /// keyed by `(shape, frame)`.
+    pointer_images: HashMap<(CursorIcon, usize), MemoryRenderBuffer>,
     pointer_element: PointerElement,
     #[cfg(feature = "debug")]
     fps_texture: Option<MultiTexture>,
@@ -188,6 +190,12 @@ delegate_dmabuf!(AnvilState<UdevData>);
 impl Backend for UdevData {
     const HAS_RELATIVE_MOTION: bool = true;
     const HAS_GESTURES: bool = true;
+
+    fn set_cursor(&mut self, theme: &str, size: u32) {
+        self.pointer_image = crate::cursor::Cursor::load_theme(theme, size);
+        // The frame cache is keyed on the image; drop it or the old size stays.
+        self.pointer_images.clear();
+    }
 
     fn seat_name(&self) -> String {
         self.session.seat()
@@ -442,7 +450,7 @@ pub fn run_udev() {
         gpus,
         backends: HashMap::new(),
         pointer_image: crate::cursor::Cursor::load(),
-        pointer_images: Vec::new(),
+        pointer_images: HashMap::new(),
         pointer_element: PointerElement::default(),
         #[cfg(feature = "debug")]
         fps_texture: None,
@@ -1733,10 +1741,10 @@ impl AnvilState<UdevData> {
         let start = Instant::now();
 
         // TODO get scale from the rendersurface when supporting HiDPI
-        let frame = self
+        let (index, frame) = self
             .backend_data
             .pointer_image
-            .get_image(1 /*scale*/, self.clock.now().into());
+            .get_image(icon, 1 /*scale*/, self.clock.now().into());
 
         let primary_gpu = self.backend_data.primary_gpu;
         let render_node = surface.render_node.unwrap_or(primary_gpu);
@@ -1750,28 +1758,26 @@ impl AnvilState<UdevData> {
         }
         .unwrap();
 
-        let pointer_images = &mut self.backend_data.pointer_images;
-        let pointer_image = pointer_images
-            .iter()
-            .find_map(|(image, texture)| {
-                if image == &frame {
-                    Some(texture.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                let buffer = MemoryRenderBuffer::from_slice(
+        let pointer_image = self
+            .backend_data
+            .pointer_images
+            .entry((icon, index))
+            .or_insert_with(|| {
+                MemoryRenderBuffer::from_slice(
                     &frame.pixels_rgba,
                     Fourcc::Argb8888,
                     (frame.width as i32, frame.height as i32),
+        // The shape the client asked for (wp_cursor_shape_v1), or the arrow.
+        let icon = match &self.cursor_status {
+            CursorImageStatus::Named(icon) => *icon,
+            _ => CursorIcon::Default,
+        };
                     1,
                     Transform::Normal,
                     None,
-                );
-                pointer_images.push((frame, buffer.clone()));
-                buffer
-            });
+                )
+            })
+            .clone();
 
         let result = render_surface(
             surface,

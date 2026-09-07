@@ -39,6 +39,26 @@ fn main() {
         None => "udev",
     };
 
+    // The pointer, resolved before any backend loads a cursor or the
+    // compositor starts a child: what the session exported (mindos-session
+    // takes it from GSettings, the desktop-wide source of truth) wins, then
+    // what the Pointer settings last asked for, then the system default.
+    {
+        let config = mindwm::config::Config::load();
+        let prefs = mindwm::prefs::Prefs::load();
+        let theme = std::env::var("XCURSOR_THEME")
+            .ok()
+            .filter(|t| !t.trim().is_empty())
+            .or(prefs.cursor_theme)
+            .unwrap_or(config.theme.cursor_theme);
+        let size = std::env::var("XCURSOR_SIZE")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .or(prefs.cursor_size)
+            .unwrap_or(config.theme.cursor_size);
+        mindwm::cursor::configure(&theme, size);
+    }
+
     match backend {
         #[cfg(feature = "winit")]
         "winit" => {

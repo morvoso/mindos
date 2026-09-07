@@ -1,7 +1,9 @@
 //! Preferences the compositor changes at runtime and keeps between sessions
 //! (`$XDG_STATE_HOME/mindos/mindwm.json`): the layout mode, whether the Mind
-//! bar shows tool activity, and the per-output configuration from the
-//! Displays settings. `mindwm.toml` stays the read-only defaults file.
+//! bar shows tool activity, the pointer theme and size, the idle behaviour
+//! (screensaver, automatic lock, switching the displays off) and the
+//! per-output configuration from the Displays settings. `mindwm.toml` stays
+//! the read-only defaults file.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -17,6 +19,14 @@ pub struct Prefs {
     pub mind_show_tools: Option<bool>,
     /// The output the shell puts its main panels on.
     pub primary_output: Option<String>,
+    /// The pointer: an XCursor theme name and its nominal size in pixels.
+    /// Mirrors `org.gnome.desktop.interface cursor-theme` / `cursor-size`,
+    /// which is what GTK applications follow; the compositor keeps a copy so
+    /// its own cursor is right before the shell has started.
+    pub cursor_theme: Option<String>,
+    pub cursor_size: Option<u32>,
+    /// What happens when nobody touches the machine (Settings > Screen).
+    pub idle: IdleSettings,
     pub outputs: BTreeMap<String, OutputPrefs>,
 }
 

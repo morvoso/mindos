@@ -1,0 +1,28 @@
+# Maintainer: MindOS <build@mindos.local>
+pkgname=mindos-cursors
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="MindOS pointer: an animated dark-glass cursor theme in the MindOS colours, at four sizes"
+arch=(any)
+url="https://mindos.local"
+license=(MIT)
+depends=(adwaita-cursors)
+# The XCursor files are drawn by gen-cursors.py (python-pillow) at build time:
+# ~10 MB of frames is not something to keep in the repository.
+makedepends=(python python-pillow)
+source=(gen-cursors.py)
+sha256sums=(SKIP)
+
+build() {
+  python3 gen-cursors.py "$srcdir/MindOS"
+}
+
+package() {
+  local t="$pkgdir/usr/share/icons/MindOS"
+  install -Dm644 "$srcdir/MindOS/index.theme" "$t/index.theme"
+  install -dm755 "$t/cursors"
+  # -a keeps the alias symlinks (a toolkit asking for `left_ptr` or one of the
+  # hashed drag-and-drop names has to land on the same file).
+  cp -a "$srcdir"/MindOS/cursors/. "$t/cursors/"
+  install -Dm755 gen-cursors.py "$pkgdir/usr/share/mindos/cursors/gen-cursors.py"
+}

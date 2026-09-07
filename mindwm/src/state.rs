@@ -31,7 +31,7 @@ use smithay::{
     },
     input::{
         keyboard::{Keysym, LedState, XkbConfig},
-        pointer::{CursorImageStatus, CursorImageSurfaceData, PointerHandle},
+        pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData, PointerHandle},
         Seat, SeatHandler, SeatState,
     },
     output::Output,
@@ -98,6 +98,10 @@ use smithay::{
 
 #[cfg(feature = "xwayland")]
 use crate::cursor::Cursor;
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
+use smithay::wayland::idle_notify::IdleNotifierState;
+use crate::idle::IdleState;
 use crate::ipc::{prefs_event, ModeInfo, OutputChange};
 use crate::layout::{LayoutMode, LayoutState};
 use crate::prefs::{mode_key, Prefs};
@@ -361,6 +365,7 @@ delegate_tablet_manager!(@<BackendData: Backend + 'static> AnvilState<BackendDat
 delegate_text_input_manager!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 impl<BackendData: Backend> InputMethodHandler for AnvilState<BackendData> {
+smithay::delegate_cursor_shape!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
     fn new_popup(&mut self, surface: PopupSurface) {
         if let Err(err) = self.popups.track_popup(PopupKind::from(surface)) {
             warn!("Failed to track popup: {}", err);
@@ -740,6 +745,11 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let pointer = seat.add_pointer();
         seat.add_keyboard(XkbConfig::default(), 200, 25)
             .expect("Failed to initialize the keyboard");
+        // wp_cursor_shape_v1: a client names a shape and the compositor draws
+        // it from the MindOS theme. GTK 4 and most toolkits prefer this to
+        // attaching their own cursor surface, which is what keeps the pointer
+        // the same everywhere.
+        CursorShapeManagerState::new::<Self>(&dh);
 
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&dh);
 
@@ -890,8 +900,8 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     let mut wm = X11Wm::start_wm(data.handle.clone(), x11_socket, client.clone())
                         .expect("Failed to attach X11 Window Manager");
 
-                    let cursor = Cursor::load();
-                    let image = cursor.get_image(1, Duration::ZERO);
+                    let mut cursor = Cursor::load();
+                    let (_, image) = cursor.get_image(CursorIcon::Default, 1, Duration::ZERO);
                     wm.set_cursor(
                         &image.pixels_rgba,
                         Size::from((image.width as u16, image.height as u16)),
@@ -1701,6 +1711,46 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     "{name} has no {}x{} @ {:.3} Hz mode",
                     mode.width,
                     mode.height,
+        if object.contains_key("cursor_theme") || object.contains_key("cursor_size") {
+            let (mut theme, mut size) = crate::cursor::configured();
+            if let Some(value) = object.get("cursor_theme") {
+                theme = value.as_str().ok_or("cursor_theme must be a string")?.to_string();
+            }
+            if let Some(value) = object.get("cursor_size") {
+                size = value
+                    .as_u64()
+                    .filter(|s| (8..=256).contains(s))
+                    .ok_or("cursor_size must be a number between 8 and 256")? as u32;
+            }
+            self.prefs.cursor_theme = Some(theme.clone());
+            self.prefs.cursor_size = Some(size);
+            // The environment so programs started from now on agree, then the
+            // compositor's own pointer.
+            crate::cursor::configure(&theme, size);
+            self.backend_data.set_cursor(&theme, size);
+            tracing::info!(%theme, size, "the pointer changed");
+        }
+        if let Some(idle) = object.get("idle") {
+            let patch = idle.as_object().ok_or("idle must be an object")?;
+            let mut merged = serde_json::to_value(&self.prefs.idle)
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+            for (key, value) in patch {
+                if !merged.contains_key(key) {
+                    return Err(format!("unknown idle setting: {key}"));
+                }
+                merged.insert(key.clone(), value.clone());
+            }
+            let settings: crate::prefs::IdleSettings = serde_json::from_value(Value::Object(merged))
+                .map_err(|err| format!("invalid idle settings: {err}"))?;
+            self.prefs.idle = settings;
+            // A new timeout counts from now, so shortening one does not lock
+            // the screen the instant it is saved.
+            self.idle.since = Some(std::time::Instant::now());
+            self.arm_idle_timer();
+            self.idle_changed();
+        }
                     mode.refresh as f64 / 1000.0
                 ));
             }
@@ -1936,6 +1986,10 @@ pub fn transform_name(transform: smithay::utils::Transform) -> &'static str {
     use smithay::utils::Transform;
     match transform {
         Transform::Normal => "normal",
+    /// Reload the compositor's own pointer (the cursor it draws for a client
+    /// that only names a shape). Backends that never draw one do nothing.
+    fn set_cursor(&mut self, _theme: &str, _size: u32) {}
+
         Transform::_90 => "90",
         Transform::_180 => "180",
         Transform::_270 => "270",

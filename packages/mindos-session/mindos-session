@@ -15,8 +15,23 @@ export GDK_BACKEND="wayland,x11"
 export _JAVA_AWT_WM_NONREPARENTING=1
 export CLUTTER_BACKEND=wayland
 export ELECTRON_OZONE_PLATFORM_HINT=auto
+# The pointer: the MindOS cursor theme (animated, dark glass with a cyan
+# pulse) at the size chosen in Settings. GSettings is the source of truth --
+# GTK applications follow it live through the settings portal, mindwm keeps a
+# copy in its own preferences, and these variables are what everything else
+# (SDL, Qt, XWayland) reads once, here.
+mindos_gsetting() {
+  local v
+  v=$(gsettings get org.gnome.desktop.interface "$1" 2>/dev/null) || return 0
+  # strings come back quoted, integers bare
+  v=${v#\'}; v=${v%\'}
+  [[ $v == uint32* ]] && v=${v#uint32 }
+  printf '%s' "$v"
+}
+export XCURSOR_THEME="${XCURSOR_THEME:-$(mindos_gsetting cursor-theme)}"
+export XCURSOR_SIZE="${XCURSOR_SIZE:-$(mindos_gsetting cursor-size)}"
+export XCURSOR_THEME="${XCURSOR_THEME:-MindOS}"
 export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
-export XCURSOR_THEME="${XCURSOR_THEME:-Adwaita}"
 
 # Site and user overrides (plain "export KEY=value" lines).
 for f in /etc/mindos/session-env "${XDG_CONFIG_HOME:-$HOME/.config}/mindos/session-env"; do
