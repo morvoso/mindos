@@ -166,6 +166,13 @@ protocol get everything.
   answer, then closes the bar. `Ctrl+L` clears the conversation.
 * Mind can act inside the session through *client tools* the compositor
   registers on connect: `launch_app`, `open_terminal`, `run_in_terminal`.
+* Mind answers in Markdown, so its lines are drawn as styled runs
+  (`src/markdown.rs`): `**bold**` and headings in the heavy face, `` `code` ``
+  and fenced blocks in the accent-coloured mono face, bullets as `•`, links as
+  *text (url)*, and the markers themselves gone. Anything it does not
+  recognise — an unclosed `*`, an underscore inside a word — stays as it was
+  written. Only Mind's own lines are read as Markdown; what you typed is drawn
+  as you typed it.
 
 The bar talks to `mindd` over `/run/mindos/mind.sock` (newline-delimited JSON,
 see `mindd/src/proto.rs`). If the daemon is not running the bar still works as a
@@ -245,6 +252,7 @@ names one more file loaded last (the greeter uses
 | `src/mindbar.rs` | Mind bar state machine and CPU rendering (panel, results, conversation, desktop backdrop) |
 | `src/text.rs` | fontdue text rasteriser into premultiplied BGRA memory buffers; embedded Inter (body and labels), JetBrains Mono, Orbitron (display) and DejaVu Sans (glyph fallback); macOS-style compositing (gamma-corrected coverage, subpixel glyph placement); anti-aliased rounded rectangles, chamfered rectangles and glow lines |
 | `src/ipc.rs` | The shell IPC socket: framing, request/event types, calloop wiring, request handlers |
+| `src/markdown.rs` | Just enough Markdown for the Mind bar: inline emphasis, code, headings, bullets, fences and links → styled spans |
 | `src/launcher.rs` | Desktop-entry index and ranking |
 | `src/mind.rs` | Threaded client for `mindd`; events arrive through a calloop channel |
 | `src/edid.rs` | Minimal EDID parser for output make/model (replaces libdisplay-info) |

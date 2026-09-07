@@ -429,8 +429,21 @@ impl TextRenderer {
     ///   light hinting is still good for.
     /// * **Gamma-corrected coverage**, via [`TEXT_GAMMA`].
     fn rasterize(&mut self, canvas: &mut Canvas, color: Rgba) {
-        let curve = &self.coverage[Self::curve_for(color)];
+        self.rasterize_runs(canvas, color, None)
+    }
+
+    /// [`Self::rasterize`], with `code` (when given) used for every glyph that
+    /// came from the mono face — the one thing a rich run needs a second
+    /// colour for.
+    fn rasterize_runs(&mut self, canvas: &mut Canvas, color: Rgba, code: Option<Rgba>) {
+        let curves = [
+            &self.coverage[Self::curve_for(color)],
+            &self.coverage[Self::curve_for(code.unwrap_or(color))],
+        ];
         for glyph in self.layout.glyphs() {
+            let mono = code.is_some() && glyph.font_index == F_MONO;
+            let color = if mono { code.unwrap_or(color) } else { color };
+            let curve = curves[usize::from(mono)];
             if glyph.width == 0 || glyph.height == 0 {
                 continue;
             }
@@ -482,6 +495,51 @@ impl TextRenderer {
         self.layout
             .reset(&Self::settings(0.0, 0.0, max_width.map(|w| w as f32)));
         self.append_runs(text, px, face);
+        let width = self
+            .layout
+            .glyphs()
+            .iter()
+            .map(|g| g.x + g.width as f32)
+            .fold(0.0_f32, f32::max);
+        (width.ceil() as i32, self.layout.height().ceil() as i32)
+    }
+
+    /// Lay out `runs` — pieces of one paragraph, each with its own face — into
+    /// the current layout. Mono runs are set a little smaller so JetBrains
+    /// Mono sits on the same line as Inter without looking oversized.
+    fn append_rich(&mut self, runs: &[(&str, Face)], px: f32) {
+        for (text, face) in runs {
+            let px = if *face == Face::Mono { px * 0.94 } else { px };
+            self.append_runs(text, px, *face);
+        }
+    }
+
+    /// [`Self::draw`] for text whose face changes part-way through (the Mind
+    /// bar's Markdown). `code` colours the mono runs when given.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_rich(
+        &mut self,
+        canvas: &mut Canvas,
+        x: i32,
+        y: i32,
+        max_width: Option<i32>,
+        runs: &[(&str, Face)],
+        px: f32,
+        color: Rgba,
+        code: Option<Rgba>,
+    ) -> i32 {
+        self.layout
+            .reset(&Self::settings(x as f32, y as f32, max_width.map(|w| w as f32)));
+        self.append_rich(runs, px);
+        self.rasterize_runs(canvas, color, code);
+        self.layout.height().ceil() as i32
+    }
+
+    /// Width and height [`Self::draw_rich`] would occupy.
+    pub fn measure_rich(&mut self, runs: &[(&str, Face)], px: f32, max_width: Option<i32>) -> (i32, i32) {
+        self.layout
+            .reset(&Self::settings(0.0, 0.0, max_width.map(|w| w as f32)));
+        self.append_rich(runs, px);
         let width = self
             .layout
             .glyphs()

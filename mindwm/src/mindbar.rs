@@ -18,6 +18,7 @@ use smithay::input::keyboard::{Keysym, ModifiersState};
 use smithay::utils::{Logical, Point, Size, Transform};
 
 use crate::launcher::{self, AppEntry};
+use crate::markdown::{self, Style};
 use crate::mind::{Event, MindEvent};
 use crate::text::{alpha, hex, Canvas, Face, Rgba, TextRenderer, ALL_CORNERS};
 
@@ -50,6 +51,34 @@ const RESULT_ROWS: usize = 8;
 /// Height of the whole panel for a body of `body` pixels.
 fn panel_height(body: i32) -> i32 {
     PAD + HEADER_H + INPUT_H + GAP + body + PAD
+}
+
+/// The Mind answers in Markdown, so its lines are drawn as styled runs
+/// (`**bold**` heavier, `` `code` `` in the mono face, markers gone). Every
+/// other kind of line is drawn exactly as it was written.
+fn rich_runs(kind: LineKind, text: &str) -> Option<Vec<(String, Face)>> {
+    if kind != LineKind::Mind {
+        return None;
+    }
+    Some(
+        markdown::spans(text)
+            .into_iter()
+            .map(|span| {
+                let face = match span.style {
+                    Style::Normal => Face::Body,
+                    Style::Strong => Face::BodyBold,
+                    Style::Emphasis => Face::Label,
+                    Style::Code => Face::Mono,
+                };
+                (span.text, face)
+            })
+            .collect(),
+    )
+}
+
+/// `rich_runs` output as the borrowed pairs the text renderer takes.
+fn runs(owned: &[(String, Face)]) -> Vec<(&str, Face)> {
+    owned.iter().map(|(t, f)| (t.as_str(), *f)).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -466,7 +495,8 @@ impl MindBar {
         let text_w = Some(width - 2 * PAD - 16);
         let mut needed = 4;
         if !self.streaming.trim().is_empty() {
-            needed += self.text.measure(&self.streaming, 17.0, text_w, Face::Body).1 + 8;
+            let owned = rich_runs(LineKind::Mind, &self.streaming).unwrap_or_default();
+            needed += self.text.measure_rich(&runs(&owned), 17.0, text_w).1 + 8;
         } else if !self.thinking.trim().is_empty() || self.busy {
             needed += self.text.measure("…", 15.0, text_w, Face::Body).1 + 8;
         }
@@ -481,7 +511,10 @@ impl MindBar {
             .rev()
             .take(40)
         {
-            needed += self.text.measure(&line.text, 17.0, text_w, Face::Body).1 + 8;
+            needed += match rich_runs(line.kind, &line.text) {
+                Some(owned) => self.text.measure_rich(&runs(&owned), 17.0, text_w).1,
+                None => self.text.measure(&line.text, 17.0, text_w, Face::Body).1,
+            } + 8;
             if needed >= max {
                 break;
             }
@@ -678,7 +711,10 @@ impl MindBar {
         let mut placed: Vec<(LineKind, String, i32, i32)> = Vec::new();
         let mut y = body_bottom;
         for (kind, text) in entries.into_iter().rev() {
-            let (_, th) = self.text.measure(&text, px_of(kind), Some(max_w), face_of(kind));
+            let (_, th) = match rich_runs(kind, &text) {
+                Some(owned) => self.text.measure_rich(&runs(&owned), px_of(kind), Some(max_w)),
+                None => self.text.measure(&text, px_of(kind), Some(max_w), face_of(kind)),
+            };
             let confirm = kind == LineKind::Info && self.pending.is_some() && text.starts_with("Mind wants to");
             let block = th + if confirm { 22 * s } else { 8 * s };
             if y - block < body_y {
@@ -718,8 +754,24 @@ impl MindBar {
                 LineKind::Error => canvas.fill_rect(pad, y, 3 * s, th, DANGER),
                 _ => {}
             }
-            self.text
-                .draw(&mut canvas, text_x, y, Some(max_w), &text, px_of(kind), color, face_of(kind));
+            match rich_runs(kind, &text) {
+                Some(owned) => {
+                    self.text.draw_rich(
+                        &mut canvas,
+                        text_x,
+                        y,
+                        Some(max_w),
+                        &runs(&owned),
+                        px_of(kind),
+                        color,
+                        Some(alpha(accent, 0.92)),
+                    );
+                }
+                None => {
+                    self.text
+                        .draw(&mut canvas, text_x, y, Some(max_w), &text, px_of(kind), color, face_of(kind));
+                }
+            }
         }
         canvas
     }

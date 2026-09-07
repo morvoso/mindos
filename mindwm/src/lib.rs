@@ -11,6 +11,7 @@ pub mod cursor;
 pub mod config;
 pub mod drawing;
 pub mod launcher;
+pub mod markdown;
 pub mod mind;
 pub mod mindbar;
 pub mod text;
