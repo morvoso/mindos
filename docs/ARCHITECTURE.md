@@ -184,6 +184,57 @@ The mind of the OS: a system daemon that owns the model and the tools.
   `models`, `download`, `error`.
 * Configuration: `/etc/mindos/mind.toml` (model, daemon, policy sections).
 
+### The Mind managing the system
+
+mindd is not only a chat backend. Three background loops make it the
+system's minder (`docs/UPDATES.md`):
+
+* `updates::watch` — checks for updates on a timer, tags and risk-rates
+  them (rules first, then the model's short JSON assessment), reads the
+  Arch news, and posts an `updates:available` notice with actions. With
+  auto-apply on it installs low-risk updates itself, never while a game
+  runs, and verifies the system after.
+* `health` — the checks (`failed-units`, `kernel-stale`, `nvidia-*`,
+  `disk-*`, `pacnew`, `kernel-errors`, `mindd-socket`, `no-snapshots`)
+  run on a timer and a minute after every pacman transaction; the pacman
+  hook `96-mindos-update-mark.hook` writes the transaction record they
+  verify against, including the pre-update snapper snapshot.
+* `notices` — the store and broadcaster. Any client that sends `subscribe`
+  gets every notice, update status and sleep change as it happens; the shell
+  keeps one such connection (`mindshell/src/mindwatch.rs`) and shows the
+  events as toasts, in the notification centre and on the Settings pages.
+
+The status the model sees is refreshed before every turn (a second system
+message: performance mode, game running, pending updates, last update,
+notices), so "what should I know?" is answered from the same facts the
+notices came from. The tools grew accordingly: `update_status`,
+`health_check`, `notices`, `list_snapshots`, `rollback`,
+`performance_mode`, `dlss`, `mind_sleep`.
+
+The Mind can **sleep**: `set_sleep` (and GameMode through `mindos-perf`)
+stops `llama-server` so a game has the whole GPU; a chat request wakes it
+and waits for the model to load. The supervisor in `mindd.rs` idles while
+sleeping instead of restarting the server.
+
+### Performance modes, GameMode and the shell as the notification server
+
+`mindos-perf` (mindos-base) is a bash tool over the kernel's knobs:
+governor / EPP / boost / platform profile, sched_ext through
+`systemd-run --unit=mindos-scx.service scx_lavd`, THP and compaction,
+swappiness, NVIDIA persistence and power limit (`docs/PERFORMANCE.md`).
+`gamemode.ini` calls its `game-start` / `game-end` hooks; a run counter in
+`/run/mindos/perf/` makes several games at once safe. The shell drives it
+through `shell.run` (an allow-list of read-mostly helpers) and the
+`sudoers` rule for the `mindos` group.
+
+mindshell owns `org.freedesktop.Notifications` on the session bus
+(`mindshell/src/notify.rs`, zbus on its own tokio thread). Notifications
+reach the UI as `notify` events with resolved icon URLs; a `toast` layer
+window on the primary output shows the new ones, the bell widget's popup
+is the centre, and `ActionInvoked` / `NotificationClosed` go back to the
+application. Mind notices travel the same way, so an update warning and a
+Steam download both land in the same place.
+
 ### mindos-session (packages/mindos-session)
 
 greetd on VT 1 shows the MindOS login screen, `mindos-greeter`: the compositor

@@ -24,15 +24,20 @@
 - [x] A login screen: greetd with a MindOS greeter (the compositor in kiosk mode rendering `mindshell --app greeter`), themed like the desktop; autologin is an installer option
 - [x] Qwen3.5 4B (Apache-2.0) as the default model, switchable at runtime from Settings or `mind model`, with catalog downloads and user-supplied GGUFs
 - [ ] `mindos-install` under BIOS firmware
-- [ ] `linux-mindos-nvidia-open` prebuilt modules (no DKMS build on first boot), `mind doctor` GPU checks
+- [ ] `linux-mindos-nvidia-open` prebuilt modules (no DKMS build on first boot)
+- [x] Health checks (`mind health`, every 30 min and after every update): failed units, kernel/driver mismatch, disk, pacnew, kernel errors, snapshots — as notices on the desktop
+- [x] Performance modes (`mindos-perf`: balanced / performance / quiet, sched_ext `scx_lavd`, NVIDIA power limit) with GameMode hooks; the Mind sleeps while a game runs (`docs/PERFORMANCE.md`)
+- [x] DLSS / FSR / XeSS swapper (`mindos-dlss`, Settings › Games) (`docs/GAMES.md`)
+- [x] Notifications: the shell is the freedesktop notification server (toasts, the centre, do-not-disturb)
 - [ ] In-tree modules load with `module verification failed` (signature missing) on the current kernel build: keep module signatures intact or turn `MODULE_SIG` off
 - [ ] Steam, gamescope, Proton, MangoHud, GameMode verified with a real game on the 4090
-- [ ] `mindos-update.timer`: LLM-driven nightly update with report
+- [x] The Mind watches for updates: rules + model risk assessment, Arch news, notices with actions, optional auto-apply of low-risk updates (never during a game), post-update verification against the pre-update snapshot, one-click rollback (`docs/UPDATES.md`)
+- [ ] Per-package release-note reading for the assessment (changelogs, upstream tags) rather than names and the news feed alone
 - [ ] Pick a bigger catalog model (Qwen3.5 9B / 27B) automatically when a GPU with enough memory is present; CUDA backend by default on NVIDIA
 - [ ] Pointer constraints and relative pointer verified with a first-person game under XWayland
 
 ## Milestone 3 — the mind grows up
 - [ ] Screen understanding (screencopy → vision model) for "what is this error"
-- [ ] Voice input, notifications, per-game profiles managed by the model
+- [ ] Voice input, per-game profiles managed by the model (DLSS version, performance mode, MangoHud per game)
 - [ ] Signed MindOS repo, hosted mirror, release channel
 - [ ] Rust kernel (`research/kernel-rs`) revisited only as a research project
