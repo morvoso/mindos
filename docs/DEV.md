@@ -38,6 +38,9 @@ It is idempotent and skips whatever is already done:
 * Docker: enables and starts `docker.service` and `docker.socket` and adds
   you to the `docker` group, through `sudo` and saying so first. Log out and
   back in once for the group to apply. Podman is rootless and needs nothing.
+  The same two steps have buttons in Settings › Developer, which runs them
+  with `pkexec` — the shell's authentication dialog asks for your password,
+  no terminal involved.
 * VS Code: writes `~/.config/Code - OSS/User/settings.json` if you have none
   (Default Dark Modern theme, JetBrains Mono with ligatures, custom title bar,
   format-on-save off, telemetry off).

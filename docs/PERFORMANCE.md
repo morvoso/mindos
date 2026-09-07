@@ -57,6 +57,18 @@ first game:
 `mindos-perf set` during a game only records the wish: the new mode takes
 over when the game ends. `mindos-perf status` says so.
 
+GameMode raises the CPU governor and a few `/proc/sys` values through its own
+helpers, which ask polkit first; its packaged rules only allow the `gamemode`
+group, so `mindos-gaming` ships
+`/usr/share/polkit-1/rules.d/50-mindos-gamemode.rules` allowing every
+`com.feralinteractive.GameMode.*` action for local, active members of the
+`mindos` group. Without it the helpers fail with "Not authorized" and a game
+would stop to ask for a password. `mindos-perf` itself is not on polkit at
+all: the hooks and the boot-time `apply` have to run with nobody watching, so
+it stays on the sudoers file (`20-mindos-perf`, group `mindos`, `NOPASSWD`).
+The password dialog the desktop shows for everything else is in
+[SHELL.md](SHELL.md#the-authentication-dialog-polkit).
+
 ## Config: `/etc/mindos/perf.conf`
 
 ```

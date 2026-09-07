@@ -177,7 +177,7 @@ and one `mindos://shell/` origin.
 |---|---|---|
 | `desktop` (one per output) | `background`, anchored to all edges, exclusive −1, keyboard `none` (`on-demand` while in edit mode) | wallpaper, desktop icons, desktop widgets, edit-mode toolbar, right-click menu |
 | `panel` (one per panel × output) | `top`/`bottom` per layout, anchored to the panel edge (+ both sides when `length` = 100), exclusive zone = `size` + `margin`, keyboard `none` | the panel and its widgets; in edit mode the window is enlarged by 140 px toward the screen centre (exclusive zone unchanged) to show the panel settings strip |
-| `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus. Clicking the transparent area or pressing Escape closes it |
+| `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus, the authentication dialog. Clicking the transparent area or pressing Escape closes it |
 | `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings app; one process per window, `app.close` ends it |
 | `toast` (one, on the primary output) | `overlay`, anchored top + right with a 12 px margin, exclusive zone 0, keyboard `none`; sized by the UI (`toast.fit`) and hidden while empty | the notification toasts: new application notifications and Mind notices slide in here and expire (never for critical ones) |
 | `greeter` (`mindshell --app greeter`, one per output) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output and `none` on the others | the login screen: wallpaper and clock everywhere, the login card, the other accounts, the session and the power buttons on the first output. Started by greetd through `mindos-greeter` (see *The login screen* below) |
@@ -209,7 +209,7 @@ data so the UI can be developed in Chromium/Firefox.
 
 | method | params → result |
 |---|---|
-| `shell.state` | → `{ user, host, uptime, outputs, windows, focused, apps, tray, layout, editMode, config }` |
+| `shell.state` | → `{ user, host, uptime, outputs, windows, focused, apps, tray, layout, editMode, config, polkit }` |
 | `shell.ready` | the view has rendered its first frame |
 | `shell.setEditMode` | `{ enabled }` → broadcasts `edit_mode` |
 | `shell.exec` | `{ cmd }` runs a command line in the session (`sh -c`) |
@@ -243,7 +243,9 @@ data so the UI can be developed in Chromium/Firefox.
 | `notify.clear` | closes every notification |
 | `notify.setDnd` | `{ enabled }`: do not disturb — notifications still collect, only critical ones toast |
 | `toast.fit` | `{ w, h }` from the toast window: the host resizes it (and hides it when `h` ≤ 1) |
-| `shell.run` | `{ argv }` runs one of the system helpers and → `{ status, ok, stdout, stderr, json }` (`json` is the parsed stdout when it is JSON). Allowed: `mindos-perf status\|get\|modes\|set\|config\|apply` (also behind `sudo -n`), `mindos-dlss …`, `mindos-dev-setup …`, `mindos-boot list`, `pacman -Q…`, `checkupdates`, `nvidia-smi …` |
+| `polkit.respond` | `{ id, password }` from the `auth` popup: the password for the authorisation the host is waiting on |
+| `polkit.cancel` | `{ id }`: the user dismissed the authentication dialog |
+| `shell.run` | `{ argv }` runs one of the system helpers and → `{ status, ok, stdout, stderr, json }` (`json` is the parsed stdout when it is JSON). Allowed: `mindos-perf status\|get\|modes\|set\|config\|apply` (also behind `sudo -n`), `mindos-dlss …`, `mindos-dev-setup …`, `mindos-boot list`, `pacman -Q…`, `checkupdates`, `nvidia-smi …`, `pkexec systemctl enable --now docker.service`, `pkexec usermod -aG docker <the session user>` (the last two go through the authentication dialog below) |
 | `panel.fit` | `{ length }` (content length in logical pixels) from a `length: 0` panel: the host resizes the panel window and answers `{ length }` |
 | `wm.layoutMode` | → `{ mode, label, modes: [{ mode, label, description }] }` |
 | `wm.setLayoutMode` / `wm.cycleLayoutMode` | `{ mode }` / none → the new `{ mode, label }`; also broadcast as `layout_mode` |
@@ -287,6 +289,7 @@ data so the UI can be developed in Chromium/Firefox.
 | `mind_health` | `{ checked_at, findings: [{ id, level, title, body, actions }] }` after a health check |
 | `notify` | `{ items, dnd, added?, closed? }` on every notification change (`added`: the new notification, `closed`: the id that went) |
 | `perf_changed` | `{ argv }` after a `shell.run` of `mindos-perf set\|config\|apply` succeeded in any window; read the status again |
+| `polkit` | the authorisation the polkit agent is waiting for — `{ id, action, message, icon, user, users, command, error, attempt, tries, busy }` — or `null` when it is done (also in `shell.state.polkit`) |
 | `audio` | `{ volume, muted }` |
 | `shortcut` | `{ name }` forwarded from the compositor (`overview`) |
 | `layout_mode` | `{ mode, label, modes? }` whenever the compositor's window layout changes |
@@ -505,6 +508,40 @@ compositor's title bar and `app.close` ends the process. Settings pages:
 per output; advanced: position, rotation, VRR, primary, enable, through
 `wm.outputs` / `wm.setOutput`), `shell` (layout mode, panels, edit mode),
 `about`.
+
+## The authentication dialog (polkit)
+
+![Settings › Developer asking for the password before enabling Docker](img/polkit.png)
+
+The shell is the session's polkit authentication agent (`src/polkit.rs`).
+Without one, everything that asks polkit for authorisation — `pkexec`, the
+system pages of GNOME's apps, systemd unit management, GameMode's helpers —
+fails with "no authentication agent found", so the desktop registers one for
+its logind session at start-up (`org.freedesktop.PolicyKit1.Authority.RegisterAuthenticationAgent`
+with the object path as a plain string; polkitd is D-Bus activated, so the
+call is retried for a minute). `--app` windows and the greeter never do.
+
+`BeginAuthentication` picks the account to authenticate as — the session user
+when polkit accepts them, otherwise the first identity it offered (a
+`unix-group` identity is expanded through `/etc/group`) — sends the request to
+the UI as the `polkit` event and opens the `auth` popup, a keyboard-exclusive
+dialog. `polkit.respond` carries the password to the helper
+(`/run/polkit/agent-helper.socket` on polkit 127 and later — write the user
+name and the cookie, then answer its PAM prompts; the setuid
+`polkit-agent-helper-1` for older versions), which tells polkitd itself
+whether the identity authenticated. A wrong password comes back as the PAM
+message with the attempt count (three tries, as elsewhere); `polkit.cancel`,
+Escape or a click beside the dialog dismisses the request, and pkexec exits
+126. One dialog at a time: further requests wait their turn.
+
+The Mind and the Settings app use it through the `shell.run` allow-list
+(`pkexec systemctl enable --now docker.service`, `pkexec usermod -aG docker …`)
+instead of hopping through a terminal with `sudo`. Everything that has to work
+without a person present — `mindos-perf` from GameMode's hooks and at boot —
+stays on the sudoers file in `mindos-base`, and GameMode's own helpers are
+allowed for local, active members of the `mindos` group by
+`/usr/share/polkit-1/rules.d/50-mindos-gamemode.rules` (`mindos-gaming`), so a
+game never stops to ask for a password.
 
 ## The login screen
 

@@ -235,6 +235,14 @@ is the centre, and `ActionInvoked` / `NotificationClosed` go back to the
 application. Mind notices travel the same way, so an update warning and a
 Steam download both land in the same place.
 
+It is also the session's polkit authentication agent
+(`mindshell/src/polkit.rs`): it registers for the logind session, shows the
+password dialog for anything that asks polkit — `pkexec`, systemd unit
+management, the system pages of the standard apps — and hands the answer to
+polkit's helper. GameMode's helpers skip the prompt through a rules file in
+`mindos-gaming`, and `mindos-perf` stays on sudoers because its hooks run
+with nobody watching (docs/SHELL.md, *The authentication dialog*).
+
 ### mindos-session (packages/mindos-session)
 
 greetd on VT 1 shows the MindOS login screen, `mindos-greeter`: the compositor
@@ -267,8 +275,8 @@ stays available on tty2 on the live ISO.
   the NVIDIA and Mesa stacks.
 * **theme**: the boot menu colours (Limine) and the console theme service (red boot stage), the
   dark animated Plymouth `mindos` theme, the MindOS fonts, wallpaper, icon.
-* **gaming**: Steam, gamescope, GameMode (with `gamemode.ini`), MangoHud,
-  Lutris, Wine and the lib32 runtime.
+* **gaming**: Steam, gamescope, GameMode (with `gamemode.ini` and the polkit
+  rules its helpers need), MangoHud, Lutris, Wine and the lib32 runtime.
 * **dev**: base-devel, git, Rust, Clang/LLVM, CMake, Node, Python, Docker,
   editors and shell tools.
 

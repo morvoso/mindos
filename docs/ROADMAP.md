@@ -29,6 +29,7 @@
 - [x] Performance modes (`mindos-perf`: balanced / performance / quiet, sched_ext `scx_lavd`, NVIDIA power limit) with GameMode hooks; the Mind sleeps while a game runs (`docs/PERFORMANCE.md`)
 - [x] DLSS / FSR / XeSS swapper (`mindos-dlss`, Settings › Games) (`docs/GAMES.md`)
 - [x] Notifications: the shell is the freedesktop notification server (toasts, the centre, do-not-disturb)
+- [x] The shell is the session's polkit authentication agent: one themed password dialog for `pkexec`, systemd and the standard apps; GameMode's helpers allowed without a prompt (`docs/SHELL.md`)
 - [ ] In-tree modules load with `module verification failed` (signature missing) on the current kernel build: keep module signatures intact or turn `MODULE_SIG` off
 - [ ] Steam, gamescope, Proton, MangoHud, GameMode verified with a real game on the 4090
 - [x] The Mind watches for updates: rules + model risk assessment, Arch news, notices with actions, optional auto-apply of low-risk updates (never during a game), post-update verification against the pre-update snapshot, one-click rollback (`docs/UPDATES.md`)
