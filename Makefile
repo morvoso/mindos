@@ -44,13 +44,17 @@ repo:
 	rm -rf $(REPO)
 	mkdir -p $(REPO)
 	cp build/packages/*.pkg.tar.zst $(REPO)/
-	$(BUILDBOX) bash -c 'cd $(REPO) && repo-add -q mindos.db.tar.zst *.pkg.tar.zst'
+	# Version order, not glob order: `*` puts pkgrel 10 before 9, and repo-add
+	# keeps whichever it sees last, so a plain glob silently pins the older build.
+	$(BUILDBOX) bash -c 'cd $(REPO) && repo-add -q mindos.db.tar.zst $$(ls *.pkg.tar.zst | sort -V)'
 
 # The model bundled on the ISO: Qwen3.5 2B, Q4_K_M (~1.2 GB, Apache-2.0), plus its licence.
 # Matches the "recommended" entry of packages/mindos-mind/model-catalog.json.
-MODEL_FILE := Qwen3.5-4B-Q4_K_M.gguf
-MODEL_URL  := https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/$(MODEL_FILE)
-MODEL_LIC  := https://huggingface.co/Qwen/Qwen3.5-4B/resolve/main/LICENSE
+# It loads in about a second and leaves the GPU to the game; Settings > Mind
+# downloads a larger one for machines with memory to spare.
+MODEL_FILE := Qwen3.5-2B-Q4_K_M.gguf
+MODEL_URL  := https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/$(MODEL_FILE)
+MODEL_LIC  := https://huggingface.co/Qwen/Qwen3.5-2B/resolve/main/LICENSE
 model: models/$(MODEL_FILE)
 models/$(MODEL_FILE):
 	mkdir -p models
