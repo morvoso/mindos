@@ -31,7 +31,7 @@ THEME=/usr/share/mindos/limine-theme.conf
 CMDLINE_FILE=/usr/share/mindos/kernel-cmdline
 KERNEL=linux-mindos
 # /etc/mindos/boot.conf overrides these.
-TIMEOUT=3            # seconds the menu waits
+TIMEOUT=1            # seconds the menu waits
 CMDLINE=""           # replaces the packaged kernel command line when set
 CMDLINE_EXTRA=""     # appended to the kernel command line
 SNAPSHOT_ENTRIES=12  # newest snapshots shown in the menu

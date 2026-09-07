@@ -85,9 +85,11 @@ def click(x, y, btn='left', times=1):
         pointer([button(btn, True)]); time.sleep(0.05); pointer([button(btn, False)]); time.sleep(0.05)
 
 def drag(x1, y1, x2, y2, steps=12):
+    # The coordinates arrive from argv as strings.
+    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
     pointer(abs_xy(x1, y1)); time.sleep(0.08); pointer([button('left', True)]); time.sleep(0.12)
     for i in range(1, steps + 1):
-        pointer(abs_xy(x1 + (int(x2) - int(x1)) * i / steps, y1 + (int(y2) - int(y1)) * i / steps)); time.sleep(0.03)
+        pointer(abs_xy(x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps)); time.sleep(0.03)
     time.sleep(0.12); pointer([button('left', False)])
 
 def guest_exec(cmd, timeout=120):

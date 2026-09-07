@@ -84,7 +84,7 @@ snapper -c root create -d "before I try X"      a manual snapshot (lands in the 
 snapper -c root delete N    remove one (its kernel copy goes with it)
 ```
 
-`/etc/mindos/boot.conf`: `TIMEOUT` (3 s), `CMDLINE` (replaces the packaged
+`/etc/mindos/boot.conf`: `TIMEOUT` (1 s), `CMDLINE` (replaces the packaged
 kernel command line in `/usr/share/mindos/kernel-cmdline`), `CMDLINE_EXTRA`
 (appended), `SNAPSHOT_ENTRIES`. The `nvidia_drm.*` switches are dropped by
 themselves on machines without an NVIDIA card. The colours come from
