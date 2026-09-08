@@ -1,3 +1,5 @@
+import { gamingMock } from './gaming-mock';
+import { INPUT_DEFAULTS } from './apps/settings-input';
 // A fake mindshell host for developing the UI in a browser. Installed by
 // main.ts when window.webkit.messageHandlers.mindos is missing. It answers
 // every bridge method with plausible data, keeps state (layout, windows,
@@ -76,14 +78,17 @@ function app(id: string, name: string, categories: string[], opts: Partial<AppIn
 }
 
 const APPS: AppInfo[] = [
+  app('mindos-win-open', 'Windows App Setup', ['Game', 'Utility']),
+  app('octopi', 'Software (Octopi)', ['System']),
   app('steam', 'Steam', ['Game'], { comment: 'Games and game library' }),
+  app('mindos-library', 'Game Library', ['Game'], { exec: 'mindshell --app library' }),
   app('lutris', 'Lutris', ['Game'], { comment: 'Open gaming platform' }),
   app('heroic', 'Heroic Games Launcher', ['Game'], { comment: 'Epic, GOG and Amazon games' }),
   app('org.prismlauncher.PrismLauncher', 'Prism Launcher', ['Game'], { comment: 'Minecraft launcher' }),
   app('firefox', 'Firefox', ['Network', 'WebBrowser'], { comment: 'Browse the web' }),
   app('discord', 'Discord', ['Network', 'Chat'], { comment: 'Voice, video and text chat' }),
   app('thunderbird', 'Thunderbird', ['Network', 'Email'], { comment: 'Mail and calendar' }),
-  app('foot', 'foot', ['System', 'TerminalEmulator'], { comment: 'Wayland terminal' }),
+  app('kitty', 'Kitty', ['System', 'TerminalEmulator'], { comment: 'GPU-accelerated terminal' }),
   app('code', 'Visual Studio Code', ['Development', 'IDE'], { comment: 'Code editing, redefined' }),
   app('nvim', 'Neovim', ['Development', 'TextEditor'], { comment: 'Hyperextensible Vim', terminal: true }),
   app('org.kde.kate', 'Kate', ['Development', 'TextEditor'], { comment: 'Advanced text editor' }),
@@ -160,7 +165,7 @@ export function installMock(): MindosGlobal {
   const windows: WindowInfo[] = [
     win(1, 'Steam', 'steam', { x11: true }),
     win(2, 'MindOS — Mozilla Firefox', 'firefox', { focused: true }),
-    win(3, '~ — foot', 'foot'),
+    win(3, '~ — kitty', 'kitty'),
     win(4, 'C:\\Program Files\\7-Zip\\', '7zfm.exe', { x11: true, wine: true, maximized: false }),
     win(4, 'Discord', 'discord', { x11: true }),
     win(5, 'mindshell — Visual Studio Code', 'code'),
@@ -187,7 +192,7 @@ export function installMock(): MindosGlobal {
     summary: 'A routine driver and kernel bump. The NVIDIA release notes list fixes for frame pacing under Wayland and nothing that removes a feature; the kernel is a stable patch. Update when you are not about to play, and reboot after.',
     warnings: ['The NVIDIA driver and the kernel change together: reboot right after.', 'openssl updates; long-running programs keep the old library until restarted.'],
     manual_intervention: false, reboot: true, assessed_by_model: true, assessing: false, checking: false, applying: false, auto_apply: autoApply,
-    last_update: { time: now() - 86400 * 3, packages: ['firefox', 'foot', 'mesa', 'lib32-mesa', 'vulkan-radeon', 'libx11', 'harfbuzz'], pre_snapshot: 42, ok: true, verified: 'ok', report: 'All services up, the kernel matches the running one, the GPU driver loaded, 412 GB free.' },
+    last_update: { time: now() - 86400 * 3, packages: ['firefox', 'kitty', 'mesa', 'lib32-mesa', 'vulkan-radeon', 'libx11', 'harfbuzz'], pre_snapshot: 42, ok: true, verified: 'ok', report: 'All services up, the kernel matches the running one, the GPU driver loaded, 412 GB free.' },
     error: '',
   };
   const health: HealthReport = { checked_at: now() - 600, findings: [
@@ -209,7 +214,7 @@ export function installMock(): MindosGlobal {
   const pushNotices = (added?: MindNotice) => emit('mind_notices', { notices: notices.map((n) => ({ ...n })), added: added ?? null });
   // ----- the authentication dialog (polkit) -----
   const polkit: PolkitRequest = { id: 1, action: 'org.freedesktop.systemd1.manage-units', message: 'Authentication is required to start "docker.service".', icon: '', user: 'morvoso', users: ['morvoso', 'root'], command: '/usr/bin/systemctl enable --now docker.service', error: '', attempt: 1, tries: 3, busy: false };
-  const perf: PerfStatus = { mode: 'balanced', effective: 'balanced', game: 0, gameMode: 'performance', mindSleeps: true, cpu: 'AMD Ryzen 7 9800X3D 8-Core Processor', driver: 'amd-pstate-epp', governor: 'schedutil', epp: 'balance_performance', boost: true, platformProfile: 'balanced', thp: 'always', scheduler: 'EEVDF+BORE', scx: '', nvidia: false, gpu: 'NVIDIA GeForce RTX 4090', powerLimit: 'default' };
+  const perf: PerfStatus = { mode: 'balanced', effective: 'balanced', game: 0, gameMode: 'performance', mindSleeps: true, cpu: 'AMD Ryzen 7 9800X3D 8-Core Processor', driver: 'amd-pstate-epp', governor: 'powersave', epp: 'balance_performance', boost: true, platformProfile: 'balanced', thp: 'always', scheduler: 'eevdf+bore', scx: 'scx_lavd', nvidia: true, gpu: 'NVIDIA GeForce RTX 4090', powerLimit: '450.00', powerLimitPolicy: 'default', persistence: true };
   const dlssGames: DlssGame[] = [
     { id: 'steam:1091500', name: 'Cyberpunk 2077', source: 'steam', path: `${mfs.HOME}/.local/share/Steam/steamapps/common/Cyberpunk 2077`, dlls: [{ kind: 'dlss', label: 'DLSS Super Resolution', file: 'bin/x64/nvngx_dlss.dll', version: '3.7.10.0', swapped: false }, { kind: 'dlss_g', label: 'DLSS Frame Generation', file: 'bin/x64/nvngx_dlssg.dll', version: '3.7.10.0', swapped: false }, { kind: 'dlss_d', label: 'DLSS Ray Reconstruction', file: 'bin/x64/nvngx_dlssd.dll', version: '3.7.10.0', swapped: false }] },
     { id: 'steam:2358720', name: 'Black Myth: Wukong', source: 'steam', path: `${mfs.HOME}/.local/share/Steam/steamapps/common/BlackMythWukong`, dlls: [{ kind: 'dlss', label: 'DLSS Super Resolution', file: 'b1/Binaries/Win64/nvngx_dlss.dll', version: '310.2.1.0', swapped: true, backup_version: '3.7.20.0' }, { kind: 'fsr_31_dx12', label: 'FSR 3.1 (DX12)', file: 'b1/Binaries/Win64/amd_fidelityfx_dx12.dll', version: '3.1.4.0', swapped: false }] },
@@ -221,7 +226,6 @@ export function installMock(): MindosGlobal {
     { kind: 'dlss', label: 'DLSS Super Resolution', version: '3.8.10.0', path: `${mfs.HOME}/.local/share/mindos/dlss/dlss/3.8.10.0/nvngx_dlss.dll`, source: 'download', size: 44 * 1048576 },
   ];
   const KINDS = [['dlss', 'nvngx_dlss.dll', 'DLSS Super Resolution'], ['dlss_d', 'nvngx_dlssd.dll', 'DLSS Ray Reconstruction'], ['dlss_g', 'nvngx_dlssg.dll', 'DLSS Frame Generation'], ['fsr_31_dx12', 'amd_fidelityfx_dx12.dll', 'FSR 3.1 (DX12)'], ['fsr_31_vk', 'amd_fidelityfx_vk.dll', 'FSR 3.1 (Vulkan)'], ['xess', 'libxess.dll', 'XeSS'], ['xess_fg', 'libxess_fg.dll', 'XeSS Frame Generation']].map(([kind, dll, label]) => ({ kind, dll, label }));
-  const docker = { active: true, enabled: true, member: false };
   // pkexec: the host would hand this to polkit, so the mock opens the same
   // dialog and only runs the command once the password went through.
   let pkexecPending: { argv: string[]; done: (r: unknown) => void } | undefined;
@@ -239,21 +243,40 @@ export function installMock(): MindosGlobal {
   const runHelper = (argv: string[]): unknown => {
     const ok = (json: unknown, stdout = '') => ({ status: 0, ok: true, stdout: stdout || JSON.stringify(json), stderr: '', json });
     const [a0, a1, a2, a3, a4] = argv[0] === 'sudo' ? argv.slice(2) : argv;
+    if (a0 === 'mindos-games') {
+      const games = [
+        ...dlssGames.map((g, i) => ({ id: g.id, name: g.name, source: g.source, path: g.path, lastPlayed: now() - i * 3600 })),
+        { id: 'steam:1245620', name: 'Elden Ring', source: 'steam', lastPlayed: now() - 14400 },
+        { id: 'steam:1145360', name: 'Hades', source: 'steam', lastPlayed: now() - 18000 },
+        { id: 'steam:1086940', name: "Baldur’s Gate 3", source: 'steam', lastPlayed: now() - 21600 },
+        { id: 'lutris:1', name: 'Control', source: 'lutris', lastPlayed: now() - 25200 },
+        { id: 'gog:1207658924', name: 'Hollow Knight', source: 'gog', lastPlayed: now() - 28800 },
+      ];
+      if (new URLSearchParams(location.search).get('library') === 'missing') throw new Error('Game library unavailable. Install gaming tools in Settings › Games.');
+      if (a1 === 'scan') return ok({ games: new URLSearchParams(location.search).get('library') === 'empty' ? [] : games, warnings: [] });
+      if (a1 === 'launch') {
+        const game = games.find((g) => g.id === a2);
+        if (!game) throw new Error('Game no longer installed');
+        windows.push(win(nextWin++, game.name, game.id.startsWith('steam:') ? `steam_app_${game.id.slice(6)}` : game.id, { focused: true }));
+        pushWindows();
+        return ok({ dispatched: true, id: a2 });
+      }
+    }
     if (a0 === 'mindos-perf') {
       if (a1 === 'status') return ok({ ...perf });
       if (a1 === 'set') {
         perf.mode = a2 as PerfStatus['mode'];
         if (!perf.game) perf.effective = perf.mode;
-        perf.scx = perf.effective === 'performance' ? 'scx_lavd' : '';
-        perf.governor = perf.effective === 'performance' ? 'performance' : perf.effective === 'quiet' ? 'powersave' : 'schedutil';
-        perf.nvidia = perf.effective === 'performance';
+        perf.scheduler = perf.effective === 'performance' && perf.scx ? perf.scx : 'eevdf+bore';
+        perf.governor = perf.effective === 'performance' ? 'performance' : 'powersave';
+        perf.persistence = perf.effective !== 'quiet';
         return ok(null, perf.game ? `mode ${a2} saved; ${perf.gameMode} stays in effect until the game ends` : `mode ${a2}`);
       }
       if (a1 === 'config') {
         if (a2 === 'GAME_MODE') perf.gameMode = a3 as PerfStatus['gameMode'];
         if (a2 === 'MIND_SLEEPS_WHILE_GAMING') perf.mindSleeps = a3 === '1';
-        if (a2 === 'SCX_SCHEDULER') perf.scheduler = a3 || 'EEVDF+BORE';
-        if (a2 === 'NVIDIA_POWER_LIMIT') perf.powerLimit = a3;
+        if (a2 === 'SCX_SCHEDULER') perf.scx = a3;
+        if (a2 === 'NVIDIA_POWER_LIMIT') perf.powerLimitPolicy = a3;
         return ok(null, `${a2}=${a3}`);
       }
     }
@@ -290,33 +313,23 @@ export function installMock(): MindosGlobal {
         return ok({});
       }
     }
-    if (a0 === 'mindos-dev-setup') return ok({ tools: [['gcc', '15.2.1'], ['clang', '20.1.8'], ['rustc', '1.90.0'], ['go', '1.25.1'], ['node', '24.8.0'], ['python', '3.13.7'], ['uv', '0.8.17'], ['docker', '28.4.0'], ['podman', '5.6.1'], ['distrobox', '1.8.1.2'], ['git', '2.51.0'], ['lazygit', '0.55.0'], ['just', '1.43.0'], ['mold', '2.40.4'], ['sccache', '0.10.0'], ['perf', '6.17'], ['gdb', '16.3'], ['hyperfine', '1.19.0'], ['starship', '1.23.0'], ['zoxide', '0.9.8'], ['shellcheck', null]].map(([name, version]) => ({ name, version })), docker: { ...docker } });
     if (a0 === 'mindos-boot') return ok(null, `    #  date              kind    kernel        description
    44* 2026-09-07 09:12  single  6.17.3-1      boot
    43  2026-09-04 18:40  post    6.17.3-1      pacman -Syu
    42  2026-09-04 18:39  pre     6.17.3-1      pacman -Syu  [important]
    41  2026-09-01 11:02  single  6.17.2-1      before mindos-dlss swap
-   40  2026-08-28 20:15  post    6.17.2-1      pacman -S mindos-dev
-   39  2026-08-28 20:14  pre     6.17.2-1      pacman -S mindos-dev
+   40  2026-08-28 20:15  post    6.17.2-1      pacman -S mindos-gaming
+   39  2026-08-28 20:14  pre     6.17.2-1      pacman -S mindos-gaming
 * booted right now (changes stay in RAM); 'mindos-boot restore' makes it the system`);
     if (a0 === 'pkexec') return askPolkit(argv.slice(1));
-    if (a0 === 'systemctl' && a1 === 'enable') {
-      docker.active = true;
-      docker.enabled = true;
-      return ok(null, '');
-    }
-    if (a0 === 'usermod') {
-      docker.member = true;
-      return ok(null, '');
-    }
     return { status: 127, ok: false, stdout: '', stderr: `mock: ${argv.join(' ')} not available`, json: null };
   };
   // A game "starts" after a while so the perf widget shows GameMode at work.
   setTimeout(() => {
     perf.game = 1;
     perf.effective = perf.gameMode || perf.mode;
-    perf.scx = perf.effective === 'performance' ? 'scx_lavd' : '';
-    perf.nvidia = perf.effective === 'performance';
+    perf.scheduler = perf.effective === 'performance' && perf.scx ? perf.scx : 'eevdf+bore';
+    perf.persistence = perf.effective !== 'quiet';
     emit('mind', { ...mind, sleeping: true });
   }, 40000);
   const mind = { connected: true, ready: false, model: 'Qwen3.5-2B-Q4_K_M.gguf', daemon: true, sleeping: false, notices, updates, health };
@@ -533,7 +546,7 @@ export function installMock(): MindosGlobal {
       tray: TRAY,
       layout,
       editMode,
-      config: { icon_theme: 'breeze-dark', hardware_acceleration: 'always', terminal: 'foot', icon_size: 48 },
+      config: { icon_theme: 'breeze-dark', hardware_acceleration: 'always', terminal: 'kitty', icon_size: 48 },
       mind: { ...mind },
       notify: notifyState(),
       polkit: { ...polkit },
@@ -626,6 +639,7 @@ export function installMock(): MindosGlobal {
     },
     'apps.list': () => APPS,
     'apps.launch': (p) => {
+      if (p.id === 'mindos-library.desktop' && mockHooks.openApp) { mockHooks.openApp('library'); return {}; }
       const a = APPS.find((x) => x.id === p.id);
       const name = a?.name ?? String(p.exec ?? 'app');
       setTimeout(() => {
@@ -651,6 +665,7 @@ export function installMock(): MindosGlobal {
       console.info('[mock] mind bar toggled');
       return {};
     },
+    'mind.open': (p) => { console.info('[mock] Mind prompt', p.text); return {}; },
     'mind.status': () => ({ ...mind }),
     'system.power': (p) => {
       console.info('[mock] power', p.action);
@@ -732,6 +747,7 @@ export function installMock(): MindosGlobal {
     'wm.setOutput': (p) => setOutput(p),
     'pointer.get': () => pointer,
     'pointer.set': (p) => Object.assign(pointer, p.theme ? { theme: String(p.theme) } : {}, p.size ? { size: Number(p.size) } : {}),
+    'input.get': () => ({ settings: { ...INPUT_DEFAULTS, ...prefs.input }, mice: [{ name: 'Preview mouse', acceleration: true, profiles: ['flat', 'adaptive'], profile: prefs.input?.mouse_profile === 'flat' ? 'flat' : 'adaptive', speed: prefs.input?.mouse_speed ?? 0, left_handed: prefs.input?.mouse_left_handed ?? false, natural_scroll: prefs.input?.mouse_natural_scroll ?? false }] }),
     'prefs.get': () => ({ prefs: { ...prefs } }),
     'prefs.set': (p) => {
       Object.assign(prefs, (p.prefs as Prefs) ?? {});
@@ -802,6 +818,10 @@ export function installMock(): MindosGlobal {
       pending?.done({ status: 126, ok: false, stdout: '', stderr: '', json: null });
       return {};
     },
+    'gaming.request': gamingMock(),
+    'windows.snap': () => ({}),
+    'windows.current': () => ({ id: 999 }),
+    'shell.open': (p) => { console.info('[mock] external link', p.uri); return {}; },
     'shell.run': (p) => runHelper((p.argv as string[]) ?? []),
     'wallpaper.list': () => mfs.wallpapers(),
     'fs.desktop': () => ({ path: `${mfs.HOME}/Desktop` }),

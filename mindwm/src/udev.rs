@@ -129,6 +129,7 @@ struct UdevOutputId {
 }
 
 pub struct UdevData {
+    software_rendering: bool,
     pub session: LibSeatSession,
     dh: DisplayHandle,
     dmabuf_state: Option<(DmabufState, DmabufGlobal)>,
@@ -145,6 +146,7 @@ pub struct UdevData {
     pointer_image: crate::cursor::Cursor,
     debug_flags: DebugFlags,
     keyboards: Vec<smithay::reexports::input::Device>,
+    mice: Vec<smithay::reexports::input::Device>,
 }
 
 impl UdevData {
@@ -188,6 +190,13 @@ impl DmabufHandler for AnvilState<UdevData> {
 delegate_dmabuf!(AnvilState<UdevData>);
 
 impl Backend for UdevData {
+    fn software_rendering(&self) -> bool { self.software_rendering }
+    fn set_mouse_settings(&mut self, settings: &crate::input_config::InputSettings) {
+        for device in &mut self.mice { crate::input_config::apply_mouse(device, settings); }
+    }
+    fn mouse_devices(&self) -> Vec<serde_json::Value> {
+        self.mice.iter().map(crate::input_config::mouse_info).collect()
+    }
     const HAS_RELATIVE_MOTION: bool = true;
     const HAS_GESTURES: bool = true;
 
@@ -307,6 +316,7 @@ impl Backend for UdevData {
             .map(|d| {
                 let (mm_w, mm_h) = d.connector.size().unwrap_or((0, 0));
                 OutputInfo {
+                    software_rendering: self.software_rendering,
                     name: d.name.clone(),
                     make: d.make.clone(),
                     model: d.model.clone(),
@@ -358,6 +368,7 @@ impl Backend for UdevData {
             return;
         }
         let nodes: Vec<DrmNode> = state.backend_data.backends.keys().copied().collect();
+        state.mindbar.invalidate_graphics();
         for node in nodes {
             if let Some(device) = state.backend_data.backends.get_mut(&node) {
                 for surface in device.surfaces.values_mut() {
@@ -469,6 +480,7 @@ pub fn run_udev() {
     let gpus = GpuManager::new(GbmGlesBackend::with_context_priority(ContextPriority::High)).unwrap();
 
     let data = UdevData {
+        software_rendering: false,
         dh: display_handle.clone(),
         dmabuf_state: None,
         syncobj_state: None,
@@ -483,6 +495,7 @@ pub fn run_udev() {
         fps_texture: None,
         debug_flags: DebugFlags::empty(),
         keyboards: Vec::new(),
+        mice: Vec::new(),
     };
     let mut state = AnvilState::init(display, event_loop.handle(), data, true);
 
@@ -514,6 +527,10 @@ pub fn run_udev() {
         .insert_source(libinput_backend, move |mut event, _, data| {
             let dh = data.backend_data.dh.clone();
             if let InputEvent::DeviceAdded { device } = &mut event {
+                if crate::input_config::is_mouse(device) {
+                    crate::input_config::apply_mouse(device, &data.prefs.input);
+                    data.backend_data.mice.push(device.clone());
+                }
                 if device.has_capability(DeviceCapability::Keyboard) {
                     if let Some(led_state) = data.seat.get_keyboard().map(|keyboard| keyboard.led_state()) {
                         device.led_update(led_state.into());
@@ -521,8 +538,10 @@ pub fn run_udev() {
                     data.backend_data.keyboards.push(device.clone());
                 }
             } else if let InputEvent::DeviceRemoved { ref device } = event {
+                data.backend_data.mice.retain(|item| item != device);
                 if device.has_capability(DeviceCapability::Keyboard) {
                     data.backend_data.keyboards.retain(|item| item != device);
+                    data.media_keys.stop();
                 }
             }
 
@@ -534,6 +553,8 @@ pub fn run_udev() {
         .handle()
         .insert_source(notifier, move |event, &mut (), data| match event {
             SessionEvent::PauseSession => {
+                data.media_keys.stop();
+                data.mindbar.clear_osd();
                 libinput_context.suspend();
                 info!("pausing session");
 
@@ -547,6 +568,7 @@ pub fn run_udev() {
             }
             SessionEvent::ActivateSession => {
                 info!("resuming session");
+                data.mindbar.invalidate_graphics();
 
                 if let Err(err) = libinput_context.resume() {
                     error!("Failed to resume libinput context: {:?}", err);
@@ -557,16 +579,15 @@ pub fn run_udev() {
                     .iter_mut()
                     .map(|(handle, backend)| (*handle, backend))
                 {
-                    // if we do not care about flicking (caused by modesetting) we could just
-                    // pass true for disable connectors here. this would make sure our drm
-                    // device is in a known state (all connectors and planes disabled).
-                    // but for demonstration we choose a more optimistic path by leaving the
-                    // state as is and assume it will just work. If this assumption fails
-                    // we will try to reset the state when trying to queue a frame.
-                    backend
-                        .drm_output_manager
-                        .activate(false)
-                        .expect("failed to activate drm backend");
+                    // Hardware state and buffer ages cannot be trusted after
+                    // suspend or a VT handoff. Start with a modeset and repaint.
+                    if let Err(err) = backend.drm_output_manager.activate(true) {
+                        error!(?err, "failed to reactivate DRM backend");
+                        continue;
+                    }
+                    for surface in backend.surfaces.values_mut() {
+                        surface.drm_output.reset_buffers();
+                    }
                     if let Some(lease_global) = backend.leasing_global.as_mut() {
                         lease_global.resume::<AnvilState<UdevData>>();
                     }
@@ -1061,6 +1082,7 @@ impl AnvilState<UdevData> {
         let mut try_initialize_gpu = || {
             let display = unsafe { EGLDisplay::new(gbm.clone()).map_err(DeviceAddError::AddNode)? };
             let egl_device = EGLDevice::device_for_display(&display).map_err(DeviceAddError::AddNode)?;
+            if is_primary_device { self.backend_data.software_rendering = egl_device.is_software(); }
 
             if egl_device.is_software() {
                 // Display-only devices (no Mesa driver) render on the primary
@@ -1432,6 +1454,10 @@ impl AnvilState<UdevData> {
 
             if let Some(output) = output {
                 self.space.unmap_output(&output);
+                if self.mindbar.output.as_deref() == Some(&output.name()) {
+                    self.mindbar.close();
+                    self.mindbar.output = None;
+                }
             }
         }
 
@@ -1826,6 +1852,8 @@ impl AnvilState<UdevData> {
             &mut self.mindbar,
             self.config.theme.show_wordmark,
             self.idle.locked,
+            &mut self.capture,
+            self.clock.now().into(),
         );
         let reschedule = match result {
             Ok((has_rendered, states)) => {
@@ -1881,9 +1909,12 @@ impl AnvilState<UdevData> {
             // If reschedule is true we either hit a temporary failure or more likely rendering
             // did not cause any damage on the output. In this case we just re-schedule a repaint
             // after approx. one frame to re-test for damage.
-            let next_frame_target = frame_target + Duration::from_millis(1_000_000 / output_refresh as u64);
+            let now = self.clock.now();
+            let next_frame_target = now + crate::timing::next_repaint(
+                now.into(), frame_target.into(), output_refresh,
+            ).saturating_sub(now.into());
             let reschedule_timeout =
-                Duration::from(next_frame_target).saturating_sub(self.clock.now().into());
+                Duration::from(next_frame_target).saturating_sub(now.into());
             trace!(
                 "reschedule repaint timer with delay {:?} on {:?}",
                 reschedule_timeout,
@@ -1921,6 +1952,8 @@ fn render_surface<'a>(
     mindbar: &mut crate::mindbar::MindBar,
     show_wordmark: bool,
     locked: bool,
+    capture: &mut crate::capture::CaptureState,
+    time: Duration,
 ) -> Result<(bool, RenderElementStates), SwapBuffersError> {
     let output_geometry = space.output_geometry(output).unwrap();
     let scale = Scale::from(output.current_scale().fractional_scale());
@@ -1997,7 +2030,12 @@ fn render_surface<'a>(
         custom_elements.push(CustomRenderElements::Fps(element.clone()));
     }
 
-    if let Some(bar) = mindbar.render_element(renderer, output_geometry.size, scale.x) {
+    if !locked {
+        if let Some(osd) = mindbar.render_osd(renderer, &output.name(), output_geometry.size, scale.x) {
+            custom_elements.push(CustomRenderElements::Overlay(osd));
+        }
+    }
+    if let Some(bar) = mindbar.render_element(renderer, &output.name(), output_geometry.size, scale.x) {
         custom_elements.push(CustomRenderElements::Overlay(bar));
     }
     // The startup screen goes away as soon as the shell maps its desktop (a
@@ -2015,6 +2053,11 @@ fn render_surface<'a>(
 
     let (elements, clear_color) =
         output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop, locked);
+
+    if !locked {
+        capture.render(output, renderer, &elements, clear_color, time,
+            |e| matches!(e, OutputRenderElements::Custom(CustomRenderElements::Pointer(_))));
+    }
 
     let frame_mode = if surface.disable_direct_scanout {
         FrameFlags::empty()

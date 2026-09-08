@@ -2,13 +2,13 @@
 # The MindOS compositor (Smithay based, Wayland + XWayland on DRM/KMS), built from ../../mindwm.
 pkgname=mindwm
 pkgver=0.1.0
-pkgrel=22
+pkgrel=36
 pkgdesc="MindOS compositor: game-mode Wayland/XWayland compositor with the Mind bar"
 arch=(x86_64)
 url="https://github.com/morvoso/mindos"
 license=('LicenseRef-MindOS' MIT OFL-1.1 Bitstream-Vera)
 depends=(glibc gcc-libs wayland libinput libxkbcommon mesa libglvnd libdrm pixman seatd
-         systemd-libs xorg-xwayland glib2 libevdev libgudev)
+         systemd-libs xorg-xwayland glib2 libevdev libgudev gdk-pixbuf2 librsvg)
 makedepends=(rust clang lld rsync wayland-protocols pkgconf)
 options=(!lto !debug)
 
@@ -24,8 +24,14 @@ prepare() {
 
 build() {
   cd "$srcdir/mindwm"
-  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=x86-64-v3"
-  cargo build --release --target-dir "$srcdir/target"
+  local cpu
+  case "${MINDOS_CPU:-generic}" in
+    generic) cpu=x86-64 ;;
+    native) cpu=native ;;
+    *) echo "MINDOS_CPU must be generic or native" >&2; return 1 ;;
+  esac
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=$cpu"
+  cargo build --jobs "${MINDOS_JOBS:-$(nproc)}" --release --target-dir "$srcdir/target"
 }
 
 package() {

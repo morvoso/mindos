@@ -255,12 +255,20 @@ pub fn render_output<'a, 'd, R>(
     show_window_preview: bool,
     backdrop: Vec<CustomRenderElements<R>>,
     locked: bool,
+    capture_blocked: bool,
+    capture: &mut crate::capture::CaptureState,
+    time: std::time::Duration,
 ) -> Result<RenderOutputResult<'d>, OutputDamageTrackerError<R::Error>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + smithay::backend::renderer::ExportMem
+        + smithay::backend::renderer::Offscreen<smithay::backend::renderer::gles::GlesRenderbuffer>,
     R::TextureId: Clone + Send + 'static,
 {
     let (elements, clear_color) =
         output_elements(output, space, custom_elements, renderer, show_window_preview, backdrop, locked);
+    if !capture_blocked {
+        capture.render(output, renderer, &elements, clear_color, time,
+            |e| matches!(e, OutputRenderElements::Custom(CustomRenderElements::Pointer(_))));
+    }
     damage_tracker.render_output(renderer, framebuffer, age, &elements, clear_color)
 }

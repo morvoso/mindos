@@ -83,6 +83,35 @@ where_one() {
   else echo none; fi
 }
 
+install_repo() {
+  local n out rc
+  local pending=()
+  for n in "$@"; do
+    valid "$n" || { echo "$n: that is not a package name"; return 1; }
+  done
+  for n in "$@"; do
+    if pacman -Q -- "$n" >/dev/null 2>&1; then
+      echo "$n: already installed ($(pkg_ver "$n"))"
+    else
+      pending+=("$n")
+    fi
+  done
+  [[ ${#pending[@]} -gt 0 ]] || return 0
+  # Release repositories replace old archives. Refreshing only after a name
+  # lookup fails still leaves known packages pointing at removed versions.
+  # Synchronize and upgrade in the same transaction; never make a partial
+  # upgrade by refreshing the database and then installing with plain -S.
+  echo "Installing ${pending[*]} from the repositories; pending system updates are applied with it."
+  out=$(pacman -Syu --needed --noconfirm -- "${pending[@]}" 2>&1); rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "Repository installation failed:"; tail -n 12 <<<"$out" | indent
+    return "$rc"
+  fi
+  for n in "${pending[@]}"; do
+    echo "$n: installed from the $(repo_name "$n") repository ($(pkg_ver "$n"))"
+  done
+}
+
 install_one() {
   local n=$1 out rc id
   valid "$n" || { echo "$n: that is not a package name"; return 1; }
@@ -91,18 +120,8 @@ install_one() {
 
   # 1. MindOS and Arch repositories
   if repo_has "$n" || { db_stale && refresh_db && repo_has "$n"; }; then
-    if [[ $refreshed == 1 ]]; then
-      # the database was refreshed: avoid a partial upgrade by upgrading along with the install
-      out=$(pacman -Su --needed --noconfirm -- "$n" 2>&1); rc=$?
-    else
-      out=$(pacman -S --needed --noconfirm -- "$n" 2>&1); rc=$?
-    fi
-    if [[ $rc -eq 0 ]]; then
-      echo "$n: installed from the $(repo_name "$n") repository ($(pkg_ver "$n"))"
-      [[ $refreshed == 1 ]] && echo "    (package database refreshed; pending updates were applied with it)"
-      return 0
-    fi
-    echo "$n: found in the $(repo_name "$n") repository but the install failed:"; tail -n 12 <<<"$out" | indent; return 1
+    install_repo "$n"
+    return $?
   fi
 
   if [[ $repo_only == 1 ]]; then
@@ -196,7 +215,11 @@ case $cmd in
              esac
            done
            [[ ${#args[@]} -gt 0 ]] || { echo "mindos-pkg install: no package named"; exit 2; }
-           for n in "${args[@]}"; do install_one "$n" || rc=1; done ;;
+           if [[ $repo_only == 1 ]]; then
+             install_repo "${args[@]}" || rc=1
+           else
+             for n in "${args[@]}"; do install_one "$n" || rc=1; done
+           fi ;;
   remove)  [[ $EUID -eq 0 ]] || { echo "mindos-pkg remove needs root (sudo)"; exit 1; }
            for n in "$@"; do remove_one "$n" || rc=1; done ;;
   search)  search_cmd "$*" ;;

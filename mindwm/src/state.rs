@@ -30,7 +30,7 @@ use smithay::{
         PopupKind, PopupManager, Space,
     },
     input::{
-        keyboard::{Keysym, LedState, XkbConfig},
+        keyboard::{LedState, XkbConfig},
         pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData, PointerHandle},
         Seat, SeatHandler, SeatState,
     },
@@ -58,7 +58,7 @@ use smithay::{
             KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
         },
         output::{OutputHandler, OutputManagerState},
-        pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState},
+        pointer_constraints::{PointerConstraintsHandler, PointerConstraintsState},
         pointer_gestures::PointerGesturesState,
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
@@ -165,6 +165,7 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub seat_state: SeatState<AnvilState<BackendData>>,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub shm_state: ShmState,
+    pub capture: crate::capture::CaptureState,
     pub viewporter_state: ViewporterState,
     pub xdg_activation_state: XdgActivationState,
     pub xdg_decoration_state: XdgDecorationState,
@@ -181,12 +182,15 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub dnd_icon: Option<DndIcon>,
 
     // input-related fields
-    pub suppressed_keys: Vec<Keysym>,
+    pub suppressed_keys: Vec<u32>,
+    pub window_cycle: crate::window_cycle::WindowCycle,
+    pub media_keys: crate::media::MediaKeys,
     pub cursor_status: CursorImageStatus,
     pub seat_name: String,
     pub seat: Seat<AnvilState<BackendData>>,
     pub clock: Clock<Monotonic>,
     pub pointer: PointerHandle<AnvilState<BackendData>>,
+    pub absolute_pointer_positions: HashMap<String, Point<f64, Logical>>,
 
     #[cfg(feature = "xwayland")]
     pub xwm: Option<X11Wm>,
@@ -211,10 +215,8 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub ipc: IpcServer,
     /// Windows hidden by the shell; they leave the space and come back where they were.
     pub minimized: Vec<Minimized>,
-    /// Super went down and nothing else has been pressed since (a release is a "tap").
-    pub super_tap_armed: bool,
-    /// Set inside the key filter when a tap completed; consumed by `keyboard_key_to_action`.
-    pub super_tap_fired: bool,
+    /// Super + mouse wheel: notches counted since the last window step.
+    pub super_scroll: f64,
     /// Window layout mode (floating / dwindle / columns) and its tiling state.
     pub layout: LayoutState,
     /// Preferences kept between sessions (layout mode, Mind bar, displays).
@@ -340,6 +342,24 @@ impl<BackendData: Backend> SeatHandler for AnvilState<BackendData> {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, target: Option<&KeyboardFocusTarget>) {
+        if let Some(KeyboardFocusTarget::Window(window)) = target {
+            let window = WindowElement(window.clone());
+            let available: Vec<_> = self.space.elements().map(|w| w.id()).collect();
+            self.window_cycle.retain(&available);
+            self.window_cycle.focus(window.id());
+            // Alt+Tab must reveal the selected app even when a game retains
+            // its fullscreen state. Re-enable the fullscreen render path when
+            // that game regains focus; don't resize or unfullscreen it.
+            if let Some(output) = self.window_home(&window) {
+                output.user_data().insert_if_missing(FullscreenSurface::default);
+                let fullscreen = output.user_data().get::<FullscreenSurface>().unwrap();
+                if window_is_fullscreen(&window) { fullscreen.set(window); }
+                else { fullscreen.clear(); }
+            }
+            self.layout.dirty = true;
+        } else {
+            self.window_cycle.finish();
+        }
         let dh = &self.display_handle;
 
         let wl_surface = target.and_then(WaylandFocus::wl_surface);
@@ -414,40 +434,21 @@ delegate_pointer_gestures!(@<BackendData: Backend + 'static> AnvilState<BackendD
 delegate_relative_pointer!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 impl<BackendData: Backend> PointerConstraintsHandler for AnvilState<BackendData> {
-    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
-        // XXX region
-        let Some(current_focus) = pointer.current_focus() else {
-            return;
-        };
-        if current_focus.wl_surface().as_deref() == Some(surface) {
-            with_pointer_constraint(surface, pointer, |constraint| {
-                constraint.unwrap().activate();
-            });
-        }
+    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
+        self.activate_pointer_constraint();
     }
 
     fn cursor_position_hint(
         &mut self,
-        surface: &WlSurface,
-        pointer: &PointerHandle<Self>,
-        location: Point<f64, Logical>,
+        _surface: &WlSurface,
+        _pointer: &PointerHandle<Self>,
+        _location: Point<f64, Logical>,
     ) {
-        if with_pointer_constraint(surface, pointer, |constraint| {
-            constraint.is_some_and(|c| c.is_active())
-        }) {
-            let origin = self
-                .space
-                .elements()
-                .find_map(|window| {
-                    (window.wl_surface().as_deref() == Some(surface)).then(|| window.geometry())
-                })
-                .unwrap_or_default()
-                .loc
-                .to_f64();
-
-            pointer.set_location(origin + location);
-        }
+        // Hints are advisory positions for *after* unlocking. Smithay calls this
+        // on commit, while the lock is still active; moving here breaks the lock.
+        // Keep the cursor at its existing position when the lock is released.
     }
+
 }
 delegate_pointer_constraints!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
@@ -485,7 +486,7 @@ impl<BackendData: Backend> XdgActivationHandler for AnvilState<BackendData> {
                 .find(|window| window.wl_surface().map(|s| *s == surface).unwrap_or(false))
                 .cloned();
             if let Some(window) = w {
-                self.space.raise_element(&window, true);
+                self.activate_window(&window);
             }
         }
     }
@@ -638,6 +639,17 @@ smithay::delegate_idle_notify!(@<BackendData: Backend + 'static> AnvilState<Back
 smithay::delegate_idle_inhibit!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 impl<BackendData: Backend + 'static> AnvilState<BackendData> {
+    /// Choose the display at invocation, then keep the prompt there as the
+    /// pointer moves. A disconnected display is replaced by the next active one.
+    pub fn target_mindbar(&mut self) {
+        if self.mindbar.open && self.mindbar.output.as_ref().is_some_and(|name| self.space.outputs().any(|o| o.name() == *name)) {
+            return;
+        }
+        self.mindbar.output = self.space.output_under(self.pointer.current_location()).next().cloned()
+            .or_else(|| self.focused_window().and_then(|w| self.window_home(&w)))
+            .or_else(|| self.space.outputs().next().cloned()).map(|o| o.name());
+    }
+
     pub fn init(
         display: Display<AnvilState<BackendData>>,
         handle: LoopHandle<'static, AnvilState<BackendData>>,
@@ -660,13 +672,29 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             })
             .expect("Failed to insert the Mind channel into the event loop");
         let mind = MindClient::start(std::path::PathBuf::from(&config.mind.socket), mind_tx);
+        let (media_tx, media_rx) = channel::channel::<crate::media::Feedback>();
+        handle.insert_source(media_rx, |event, _, state| {
+            if let channel::Event::Msg(message) = event {
+                if !state.idle.locked && !state.config.session.kiosk { state.mindbar.show_osd(message); }
+            }
+        }).expect("insert media feedback channel");
+        let media_keys = crate::media::MediaKeys::start(media_tx);
         let mut mindbar = MindBar::new(
             TextRenderer::new(),
-            launcher::load_apps(),
+            Vec::new(),
             config.foreground(),
             config.accent(),
         );
-        let prefs = Prefs::load();
+        let (apps_tx, apps_rx) = channel::channel::<Vec<launcher::AppEntry>>();
+        handle.insert_source(apps_rx, |event, _, state| {
+            if let channel::Event::Msg(apps) = event { state.mindbar.set_apps(apps); }
+        }).expect("insert application index channel");
+        launcher::watch_apps(apps_tx);
+        let mut prefs = Prefs::load();
+        if let Err(error) = prefs.input.validate() {
+            tracing::warn!(%error, "invalid input preferences; using defaults");
+            prefs.input = Default::default();
+        }
         mindbar.set_show_tools(prefs.mind_show_tools.unwrap_or(config.mind.show_tools));
         let layout_mode = prefs
             .layout_mode
@@ -718,6 +746,18 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             DataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
         let mut seat_state = SeatState::new();
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
+        if !config.session.kiosk {
+            crate::capture::register::<BackendData>(&dh);
+            handle.insert_source(
+                smithay::reexports::calloop::timer::Timer::from_duration(Duration::from_secs(1)),
+                |_, _, state| {
+                    let outputs: Vec<_> = state.space.outputs().cloned().collect();
+                    let blocked = state.idle.locked || state.idle.stage == crate::idle::Stage::Blank;
+                    state.capture.maintain(&outputs, blocked);
+                    smithay::reexports::calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1))
+                },
+            ).expect("failed to install capture maintenance timer");
+        }
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
@@ -761,8 +801,14 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let mut seat = seat_state.new_wl_seat(&dh, seat_name.clone());
 
         let pointer = seat.add_pointer();
-        seat.add_keyboard(XkbConfig::default(), 200, 25)
-            .expect("Failed to initialize the keyboard");
+        if seat.add_keyboard(prefs.input.xkb(), prefs.input.repeat_delay, prefs.input.repeat_rate).is_err() {
+            tracing::warn!("saved keyboard layout cannot be loaded; using the system layout");
+            prefs.input.keyboard_layout.clear();
+            prefs.input.keyboard_variant.clear();
+            prefs.input.keyboard_options.clear();
+            seat.add_keyboard(XkbConfig::default(), prefs.input.repeat_delay, prefs.input.repeat_rate)
+                .expect("Failed to initialize the keyboard");
+        }
 
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&dh);
 
@@ -789,6 +835,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             seat_state,
             keyboard_shortcuts_inhibit_state,
             shm_state,
+            capture: crate::capture::CaptureState::default(),
             viewporter_state,
             xdg_activation_state,
             xdg_decoration_state,
@@ -801,10 +848,13 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             commit_timing_manager_state,
             dnd_icon: None,
             suppressed_keys: Vec::new(),
+            window_cycle: Default::default(),
+            media_keys,
             cursor_status: CursorImageStatus::default_named(),
             seat_name,
             seat,
             pointer,
+            absolute_pointer_positions: HashMap::new(),
             clock,
 
             #[cfg(feature = "xwayland")]
@@ -825,8 +875,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             xwayland_ready: false,
             ipc: IpcServer::default(),
             minimized: Vec::new(),
-            super_tap_armed: false,
-            super_tap_fired: false,
+            super_scroll: 0.0,
             layout,
             prefs,
             idle: IdleState::default(),
@@ -1309,8 +1358,14 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             .envs(self.child_env())
             .stdin(std::process::Stdio::null())
             .spawn();
-        if let Err(err) = result {
-            tracing::error!(cmd, %err, "failed to spawn");
+        match result {
+            Ok(mut child) => {
+                // Reap launched apps without waiting on the input/render loop.
+                // A stale Octopi process also confuses its transaction helper's
+                // check for the running software manager.
+                std::thread::spawn(move || { let _ = child.wait(); });
+            }
+            Err(err) => tracing::error!(cmd, %err, "failed to spawn"),
         }
     }
 
@@ -1426,14 +1481,21 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         pointer.frame(self);
     }
 
-    /// Raise the bottom-most window to the top and focus it (Super+Tab).
-    pub fn cycle_windows(&mut self) {
-        let windows: Vec<WindowElement> = self.space.elements().cloned().collect();
-        let Some(next) = windows.first().cloned() else {
-            return;
-        };
-        self.space.raise_element(&next, true);
-        self.focus_window(&next);
+    /// Switch recent visible windows, preserving order until Alt/Super release.
+    pub fn cycle_windows(&mut self, reverse: bool, modifier: crate::window_cycle::CycleModifier) {
+        let available: Vec<_> = self.space.elements().rev().map(|w| w.id()).collect();
+        let focused = self.focused_window().map(|w| w.id());
+        if let Some(id) = self.window_cycle.step(&available, focused, reverse, modifier) {
+            if let Some(window) = self.window_by_id(id) { self.activate_window(&window); }
+        }
+    }
+
+    pub fn cancel_window_cycle(&mut self) {
+        if let Some(id) = self.window_cycle.cancel() {
+            if let Some(window) = self.window_by_id(id).filter(|w| !self.is_minimized(w)) {
+                self.activate_window(&window);
+            }
+        }
     }
 
     pub fn on_mind_event(&mut self, event: MindEvent) {
@@ -1451,9 +1513,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 match launcher::find_by_name(self.mindbar.apps(), wanted) {
                     Some(app) => {
                         let cmd = if app.terminal {
-                            format!("{} {}", self.config.apps.terminal, app.exec)
+                            self.config.apps.terminal_command(&app.exec)
                         } else {
-                            app.exec.clone()
+                            app.launch_command()
                         };
                         let name = app.name.clone();
                         self.spawn_shell(&cmd);
@@ -1472,8 +1534,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     return (false, json!({"error": "command is required"}));
                 }
                 let script = format!("{command}; echo; echo '[finished - press Enter to close]'; read _");
-                let quoted = format!("'{}'", script.replace('\'', "'\\''"));
-                let cmd = format!("{} sh -c {}", self.config.apps.terminal, quoted);
+                let cmd = self.config.apps.terminal_command(&script);
                 self.spawn_shell(&cmd);
                 (true, json!({"started": command}))
             }
@@ -1486,7 +1547,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             BarAction::None | BarAction::Close => {}
             BarAction::Launch { exec, terminal } => {
                 let cmd = if terminal {
-                    format!("{} {}", self.config.apps.terminal, exec)
+                    self.config.apps.terminal_command(&exec)
                 } else {
                     exec
                 };
@@ -1521,17 +1582,39 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
     /// Raise a window to the top of the stack and give it the keyboard.
     pub fn activate_window(&mut self, window: &WindowElement) {
-        if self.is_minimized(window) {
+        if self.idle.locked || self.is_minimized(window) {
             return;
         }
-        self.space.raise_element(window, true);
-        #[cfg(feature = "xwayland")]
-        if let Some(surface) = window.0.x11_surface() {
-            if let Some(xwm) = self.xwm.as_mut() {
-                let _ = xwm.raise_window(surface);
+        // A parent must never cover its dialogs when clicked or activated.
+        // Keep nested native and Wine dialogs above it, in their existing order.
+        let mut group = vec![window.clone()];
+        let mut index = 0;
+        while let Some(parent) = group.get(index).cloned() {
+            let children: Vec<_> = self.space.elements().filter(|child| {
+                if group.contains(child) { return false; }
+                if let Some(surface) = child.0.toplevel().and_then(|t| t.parent()) {
+                    return parent.wl_surface().as_deref() == Some(&surface);
+                }
+                #[cfg(feature = "xwayland")]
+                if let (Some(child), Some(parent)) = (child.0.x11_surface(), parent.0.x11_surface()) {
+                    return child.is_transient_for() == Some(parent.window_id());
+                }
+                false
+            }).cloned().collect();
+            group.extend(children);
+            index += 1;
+        }
+        let top = group.last().unwrap().clone();
+        for member in group {
+            self.space.raise_element(&member, member == top);
+            #[cfg(feature = "xwayland")]
+            if let Some(surface) = member.0.x11_surface() {
+                if let Some(xwm) = self.xwm.as_mut() {
+                    let _ = xwm.raise_window(surface);
+                }
             }
         }
-        self.focus_window(window);
+        self.focus_window(&top);
     }
 
     /// Hide a window: it leaves the space (no rendering, no input, no frame
@@ -1543,7 +1626,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let Some(location) = self.space.element_location(window) else {
             return;
         };
-        let output = self.space.outputs_for_element(window).first().map(|o| o.name());
+        let output = self.window_home(window).map(|o| o.name());
         // A fullscreen window owns its output's scanout slot; give it back while hidden.
         for o in self.space.outputs() {
             if let Some(fullscreen) = o.user_data().get::<FullscreenSurface>() {
@@ -1592,7 +1675,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             .space
             .elements()
             .filter_map(|w| {
-                let output = self.space.outputs_for_element(w).first().map(|o| o.name());
+                let output = self.window_home(w).map(|o| o.name());
                 window_info(w, focused.as_ref() == Some(w), false, output, &self.display_handle)
             })
             .collect();
@@ -1624,6 +1707,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 let (vrr_supported, vrr) = self.backend_data.output_vrr(o);
                 let name = o.name();
                 OutputInfo {
+                    software_rendering: self.backend_data.software_rendering(),
                     primary: primary.as_deref() == Some(name.as_str()),
                     name,
                     make: props.make,
@@ -1694,6 +1778,19 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     /// The shell's `set_prefs`: any subset of the preference keys.
     pub fn apply_prefs(&mut self, value: Value) -> Result<(), String> {
         let object = value.as_object().ok_or("prefs must be an object")?;
+        if let Some(patch) = object.get("input") {
+            let next = self.prefs.input.patched(patch.clone())?;
+            let keyboard = self.seat.get_keyboard().ok_or("No keyboard available")?;
+            if next.keyboard_layout != self.prefs.input.keyboard_layout
+                || next.keyboard_variant != self.prefs.input.keyboard_variant
+                || next.keyboard_options != self.prefs.input.keyboard_options {
+                keyboard.set_xkb_config(self, next.xkb())
+                    .map_err(|_| "That keyboard layout, variant or option could not be loaded")?;
+            }
+            keyboard.change_repeat_info(next.repeat_rate, next.repeat_delay);
+            self.backend_data.set_mouse_settings(&next);
+            self.prefs.input = next;
+        }
         if let Some(mode) = object.get("layout_mode") {
             let name = mode.as_str().ok_or("layout_mode must be a string")?;
             let mode = LayoutMode::parse(name).ok_or_else(|| format!("unknown layout mode: {name}"))?;
@@ -1864,13 +1961,6 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         }
     }
 
-    /// A tap on Super alone opens the Mind bar: Mind is the launcher.
-    pub fn launcher_shortcut(&mut self) {
-        if !self.mindbar.open {
-            self.mindbar.open();
-        }
-    }
-
     /// Super+W: the shell's overview, or the built-in window preview.
     pub fn overview_shortcut(&mut self) {
         if !self.ipc_shortcut("overview") {
@@ -1959,11 +2049,15 @@ fn window_info(
         minimized,
         x11,
         wine: crate::procinfo::is_wine(pid),
+        pid,
         output,
     })
 }
 
 pub trait Backend {
+    fn software_rendering(&self) -> bool { false }
+    fn set_mouse_settings(&mut self, _settings: &crate::input_config::InputSettings) {}
+    fn mouse_devices(&self) -> Vec<Value> { Vec::new() }
     const HAS_RELATIVE_MOTION: bool = false;
     const HAS_GESTURES: bool = false;
     fn seat_name(&self) -> String;

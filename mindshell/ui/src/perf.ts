@@ -45,7 +45,7 @@ export const perfCache: { status?: PerfStatus; at: number; listeners: Set<(s: Pe
 
 let watching = false;
 
-export function perfSubscribe(el: Element, cb: (s: PerfStatus | undefined) => void): void {
+export function perfSubscribe(el: Element, cb: (s: PerfStatus | undefined) => void): () => void {
   if (!watching) {
     // Another window switched the mode (or GameMode did): read it again.
     watching = true;
@@ -57,28 +57,37 @@ export function perfSubscribe(el: Element, cb: (s: PerfStatus | undefined) => vo
   };
   perfCache.listeners.add(wrapped);
   if (perfCache.status) cb(perfCache.status);
+  return () => { perfCache.listeners.delete(wrapped); };
 }
+
+let pending: Promise<PerfStatus | undefined> | undefined;
 
 export async function perfRefresh(force = false): Promise<PerfStatus | undefined> {
-  if (!force && perfCache.status && Date.now() - perfCache.at < 3000) return perfCache.status;
-  try {
-    perfCache.status = await perfStatus();
-  } catch (e) {
-    console.warn('mindos-perf status failed', e);
-    perfCache.status = undefined;
+  if (pending) {
+    if (!force) return pending;
+    await pending;
+    if (pending) return pending;
   }
-  perfCache.at = Date.now();
-  for (const cb of [...perfCache.listeners]) cb(perfCache.status);
-  return perfCache.status;
+  if (!force && perfCache.status && Date.now() - perfCache.at < 3000) return perfCache.status;
+  pending = (async () => {
+    try {
+      perfCache.status = await perfStatus();
+    } catch (e) {
+      console.warn('mindos-perf status failed', e);
+      perfCache.status = undefined;
+    }
+    perfCache.at = Date.now();
+    for (const cb of [...perfCache.listeners]) cb(perfCache.status);
+    return perfCache.status;
+  })().finally(() => { pending = undefined; });
+  return pending;
 }
 
-/** Switch modes: optimistic locally, confirmed by the next status read. */
+/** Show the confirmed state, including a saved preference while gaming. */
 export async function perfSwitch(mode: PerfMode): Promise<string> {
-  if (perfCache.status) {
-    perfCache.status = { ...perfCache.status, mode };
-    for (const cb of [...perfCache.listeners]) cb(perfCache.status);
+  try {
+    return await setPerfMode(mode);
+  } finally {
+    await perfRefresh(true);
   }
-  const msg = await setPerfMode(mode);
-  await perfRefresh(true);
-  return msg;
 }

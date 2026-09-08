@@ -3,7 +3,7 @@
 # editor defaults (docs/DEV.md).
 pkgname=mindos-dev
 pkgver=0.1.0
-pkgrel=4
+pkgrel=5
 pkgdesc="MindOS development stack: build tools, containers, editors and command-line tools, with shell prompt and git defaults"
 arch=(any)
 url="https://github.com/morvoso/mindos"
@@ -12,7 +12,7 @@ license=('LicenseRef-MindOS')
 # four common runtimes. Other toolchains are installed with
 # `mindos-pkg install NAME` or from Settings > Developer, which reports
 # every toolchain it detects.
-depends=(base-devel git git-lfs github-cli openssh clang llvm lld cmake ninja
+depends=(base-devel linux-mindos-headers git git-lfs github-cli openssh clang llvm lld cmake ninja
          rustup python python-pip nodejs npm go docker docker-compose
          neovim code kitty zsh fish tmux ripgrep fd bat eza fzf jq btop nvtop htop
          # git, debugging, profiling

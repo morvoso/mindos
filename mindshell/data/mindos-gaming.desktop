@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Gaming Center
+Comment=Game sessions, saves, storage, friends, recording and frame history
+Exec=mindshell --app gaming
+Icon=input-gaming
+Categories=Game;Settings;
+Keywords=hold;resume;save;cloud;download;friends;capture;record;replay;frames;
+Terminal=false

@@ -1,38 +1,104 @@
 {
-  "version": 2,
+  "version": 4,
   "panels": [
     {
       "id": "bar",
       "output": "*",
       "edge": "bottom",
-      "size": 48,
+      "size": 64,
       "length": 100,
       "align": "center",
-      "margin": 0,
+      "margin": 8,
       "layer": "top",
-      "opacity": 0.6,
-      "float": false,
+      "opacity": 0.9,
+      "float": true,
       "autohide": false,
       "widgets": [
-        { "id": "sp-l", "type": "spacer", "config": { "expand": true } },
-        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "org.gnome.Nautilus.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } },
-        { "id": "sp-r", "type": "spacer", "config": { "expand": true } },
-        { "id": "tray", "type": "tray", "config": {} },
-        { "id": "audio", "type": "audio", "config": {} },
-        { "id": "net", "type": "network", "config": {} },
-        { "id": "vpn", "type": "vpn", "config": {} },
-        { "id": "bat", "type": "battery", "config": {} },
-        { "id": "mode", "type": "layout-mode", "config": {} },
-        { "id": "perf", "type": "perf", "config": {} },
-        { "id": "mind", "type": "mind", "config": {} },
-        { "id": "updates", "type": "updates", "config": {} },
-        { "id": "notify", "type": "notifications", "config": {} },
-        { "id": "clock", "type": "clock", "config": { "seconds": false, "date": true, "hour24": false } }
+        {
+          "id": "sp-l",
+          "type": "spacer",
+          "config": {
+            "expand": true
+          }
+        },
+        {
+          "id": "tasks",
+          "type": "taskbar",
+          "config": {
+            "pins": [
+              "mindos-library.desktop",
+              "steam.desktop",
+              "firefox.desktop",
+              "org.gnome.Nautilus.desktop",
+              "kitty.desktop",
+              "octopi.desktop",
+              "mindos-settings.desktop"
+            ]
+          }
+        },
+        {
+          "id": "sp-r",
+          "type": "spacer",
+          "config": {
+            "expand": true
+          }
+        },
+        {
+          "id": "tray",
+          "type": "tray",
+          "config": {}
+        },
+        {
+          "id": "audio",
+          "type": "audio",
+          "config": {}
+        },
+        {
+          "id": "bat",
+          "type": "battery",
+          "config": {}
+        },
+        {
+          "id": "mode",
+          "type": "layout-mode",
+          "config": {}
+        },
+        {
+          "id": "perf",
+          "type": "perf",
+          "config": {}
+        },
+        {
+          "id": "mind",
+          "type": "mind",
+          "config": {}
+        },
+        {
+          "id": "updates",
+          "type": "updates",
+          "config": {}
+        },
+        {
+          "id": "notify",
+          "type": "notifications",
+          "config": {}
+        },
+        {
+          "id": "clock",
+          "type": "clock",
+          "config": {
+            "seconds": false,
+            "date": true,
+            "hour24": false
+          }
+        }
       ]
     }
   ],
   "desktop": {
-    "wallpaper": { "mode": "builtin" },
+    "wallpaper": {
+      "mode": "builtin"
+    },
     "icons": true,
     "widgets": []
   }

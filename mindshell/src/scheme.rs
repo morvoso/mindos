@@ -38,7 +38,8 @@ pub fn register(context: &webkit::WebContext, app: Weak<App>) {
         sm.register_uri_scheme_as_cors_enabled(SCHEME);
         // "Local" origins may display file: resources: the desktop sets
         // `background-image: url(file:///...)` for image wallpapers.
-        sm.register_uri_scheme_as_local(SCHEME);
+        let companion = app.upgrade().is_some_and(|a| a.app_mode.as_ref().is_some_and(|m| m.name == "companion"));
+        if !companion { sm.register_uri_scheme_as_local(SCHEME); }
     }
     context.register_uri_scheme(SCHEME, move |request| {
         let Some(app) = app.upgrade() else {
@@ -63,6 +64,19 @@ pub fn register(context: &webkit::WebContext, app: Weak<App>) {
             }
         }
     });
+}
+
+pub(crate) fn media_range(range: Option<&str>, size: u64) -> Option<(u64, u64)> {
+    if size == 0 || size > i64::MAX as u64 { return None; }
+    let Some(range) = range else { return Some((0, size - 1)) };
+    let (first, last) = range.strip_prefix("bytes=")?.split_once('-')?;
+    if first.is_empty() {
+        let suffix: u64 = last.parse().ok()?;
+        return (suffix > 0).then_some((size.saturating_sub(suffix), size - 1));
+    }
+    let start: u64 = first.parse().ok()?;
+    let end = if last.is_empty() { size - 1 } else { last.parse::<u64>().ok()?.min(size - 1) };
+    (start <= end && start < size).then_some((start, end))
 }
 
 fn finish(request: &webkit::URISchemeRequest, (bytes, mime): Body) {
@@ -260,6 +274,19 @@ fn mime_for_ext(path: &Path) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_ranges_cover_seek_suffix_and_invalid_requests() {
+        assert_eq!(super::media_range(None, 100), Some((0, 99)));
+        assert_eq!(super::media_range(Some("bytes=30-"), 100), Some((30, 99)));
+        assert_eq!(super::media_range(Some("bytes=-10"), 100), Some((90, 99)));
+        assert_eq!(super::media_range(Some("bytes=1-4"), 100), Some((1, 4)));
+        assert_eq!(super::media_range(Some("bytes=90-200"), 100), Some((90, 99)));
+        for bad in ["bytes=100-", "bytes=9-2", "bytes=1-2,4-6", "bytes=-0", "invalid"] {
+            assert_eq!(super::media_range(Some(bad), 100), None);
+        }
+        assert_eq!(super::media_range(None, 0), None);
+    }
+
     use super::*;
 
     #[test]

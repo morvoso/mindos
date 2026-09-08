@@ -14,6 +14,8 @@
 import * as bridge from './bridge';
 import { h } from './dom';
 import { icon } from './icons';
+import { showKeyboard } from './controller';
+import { play, type Session } from './gaming';
 import { BLANK, startSaver } from './savers';
 
 interface LockState {
@@ -120,6 +122,12 @@ function lockCard(): Card {
   const form = h('form', { class: 'g-form', onsubmit: (e: Event) => { e.preventDefault(); void submit(); } }, h('div', { class: 'g-field' }, input, go));
   const el = h('div', { class: 'lock-stage' }, h('div', { class: 'g-card lock-card' }, h('div', { class: 'lock-badge' }, icon('lock', 15), 'Locked'), avatar, who, whoSub, form, msg, caps));
   const cardEl = el.firstElementChild as HTMLElement;
+  cardEl.append(h('button', { class: 'btn', type: 'button', onclick: () => showKeyboard(input) }, 'On-screen keyboard'));
+  const resume = h('select', { 'aria-label': 'After unlocking' }, h('option', { value: '' }, 'Return to desktop'));
+  cardEl.append(resume);
+  void play<Session[]>('sessions').then(sessions => {
+    for (const s of sessions.filter(s => s.active && s.suspended)) resume.append(h('option', { value: s.game }, `Resume ${s.game}`));
+  }).catch(() => { resume.hidden = true; });
   let busy = false;
 
   const showMsg = (text: string, kind: 'error' | 'info' | '' = ''): void => {
@@ -146,7 +154,7 @@ function lockCard(): Card {
     go.disabled = true;
     showMsg('');
     try {
-      const r = await bridge.call<{ ok?: boolean; error?: string }>('lock.unlock', { password });
+      const r = await bridge.call<{ ok?: boolean; error?: string }>('lock.unlock', { password, resume: resume.value });
       if (r?.ok) {
         showMsg('Welcome back.', 'info');
         cardEl.classList.add('done');
@@ -216,17 +224,29 @@ function clock(): HTMLElement {
   const ampm = h('span', { class: 'gc-ampm' });
   const date = h('div', { class: 'gc-date' });
   const el = h('div', { class: 'lock-clock' }, h('div', { class: 'gc-row' }, time, ampm), date);
+  let driftMinute = -1;
   const tick = (): void => {
     const d = new Date();
     const hh = d.getHours();
-    time.textContent = `${hh % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}`;
-    ampm.textContent = hh >= 12 ? 'PM' : 'AM';
-    date.textContent = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    const values = [
+      `${hh % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}`,
+      hh >= 12 ? 'PM' : 'AM',
+      d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }),
+    ];
+    [time, ampm, date].forEach((node, i) => {
+      if (node.textContent !== values[i]) node.textContent = values[i];
+    });
     if (el.classList.contains('drifting')) {
-      const t = Date.now() / 1000;
-      el.style.transform = `translate(${(Math.cos(t / 47) * 11).toFixed(1)}vw, ${(Math.sin(t / 61) * 5).toFixed(1)}vh)`;
+      const minute = Math.floor(d.getTime() / 60000);
+      if (minute !== driftMinute) {
+        driftMinute = minute;
+        // Shift periodically to avoid burn-in, without a continuous CSS
+        // transition that would force full-refresh compositing while idle.
+        el.style.transform = `translate(${(Math.cos(minute / 3) * 11).toFixed(1)}vw, ${(Math.sin(minute / 4) * 5).toFixed(1)}vh)`;
+      }
     } else {
-      el.style.transform = '';
+      if (el.style.transform) el.style.transform = '';
+      driftMinute = -1;
     }
   };
   tick();

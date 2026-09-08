@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Game Companion
+Comment=Video, guides and notes pinned beside your game
+Exec=mindshell --app companion
+Icon=applications-multimedia
+Categories=Game;AudioVideo;
+Keywords=wiki;guide;video;snap;companion;
+Terminal=false

@@ -1,26 +1,30 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-session
 pkgver=0.1.0
-pkgrel=17
+pkgrel=26
 pkgdesc="MindOS session: greetd configuration and the MindOS login screen, session launcher, compositor defaults and the dark-mode defaults for GTK, the portal and Firefox"
 arch=(any)
 url="https://github.com/morvoso/mindos"
 license=('LicenseRef-MindOS')
-depends=(mindwm mindshell mindos-apps mindos-mind mindos-cursors greetd greetd-agreety seatd dbus xorg-xwayland foot polkit
-         xdg-user-dirs
+depends=(mindwm mindshell mindos-apps mindos-mind mindos-cursors greetd greetd-agreety seatd dbus xorg-xwayland kitty polkit
+         xdg-user-dirs libnotify zenity
          ttf-jetbrains-mono noto-fonts noto-fonts-emoji inter-font
-         wl-clipboard grim slurp pipewire wireplumber pipewire-pulse pipewire-alsa pipewire-jack
-         pamixer brightnessctl util-linux
-         xdg-desktop-portal xdg-desktop-portal-gtk dconf gsettings-desktop-schemas)
+         wl-clipboard pipewire wireplumber pipewire-pulse pipewire-alsa pipewire-jack rtkit
+         pamixer brightnessctl playerctl util-linux pavucontrol blueman network-manager-applet nm-connection-editor
+         xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk dconf gsettings-desktop-schemas)
 optdepends=('firefox: gets the MindOS dark defaults from /usr/lib/firefox/defaults/pref/mindos.js')
-backup=(etc/mindos/greetd.toml etc/mindos/greeter/mindwm.toml etc/mindos/mindwm.toml etc/mindos/xdg/foot/foot.ini
+backup=(etc/xdg/xdg-desktop-portal-wlr/MindOS etc/mindos/greetd.toml etc/mindos/greeter/mindwm.toml etc/mindos/mindwm.toml etc/xdg/kitty/kitty.conf
         etc/mindos/xdg/gtk-3.0/settings.ini etc/mindos/xdg/gtk-4.0/settings.ini)
-source=(mindos-session session-startup greetd.toml greetd-mindos.conf greetd-vt mindwm.toml mindos.desktop foot.ini
+source=(mindos-session session-startup greetd.toml greetd-mindos.conf greetd-vt mindwm.toml mindos.desktop kitty.conf
         gtk-settings.ini mindos-portals.conf 90_mindos.gschema.override firefox-mindos.js
-        mindos-greeter greeter-mindwm.toml mindos-greeter.tmpfiles)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+        mindos-greeter greeter-mindwm.toml mindos-greeter.tmpfiles nm-applet.desktop portal-wlr.conf mindos-share-chooser mindos-session.target 60-mindos-session.conf mindos-safe.desktop mindos-library.desktop mindos-session-safe mindos-session-library)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
+  install -Dm755 mindos-share-chooser "$pkgdir/usr/bin/mindos-share-chooser"
+  install -Dm644 portal-wlr.conf "$pkgdir/etc/xdg/xdg-desktop-portal-wlr/MindOS"
+  install -Dm755 mindos-session-safe "$pkgdir/usr/bin/mindos-session-safe"
+  install -Dm755 mindos-session-library "$pkgdir/usr/bin/mindos-session-library"
   install -Dm755 mindos-session   "$pkgdir/usr/bin/mindos-session"
   install -Dm755 session-startup  "$pkgdir/usr/lib/mindos/session-startup"
   install -Dm644 greetd.toml      "$pkgdir/etc/mindos/greetd.toml"
@@ -33,8 +37,10 @@ package() {
   install -Dm644 greeter-mindwm.toml    "$pkgdir/etc/mindos/greeter/mindwm.toml"
   install -Dm644 mindos-greeter.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/mindos-greeter.conf"
   install -Dm644 mindwm.toml      "$pkgdir/etc/mindos/mindwm.toml"
+  install -Dm644 mindos-safe.desktop "$pkgdir/usr/share/wayland-sessions/mindos-safe.desktop"
+  install -Dm644 mindos-library.desktop "$pkgdir/usr/share/wayland-sessions/mindos-library.desktop"
   install -Dm644 mindos.desktop   "$pkgdir/usr/share/wayland-sessions/mindos.desktop"
-  install -Dm644 foot.ini         "$pkgdir/etc/mindos/xdg/foot/foot.ini"
+  install -Dm644 kitty.conf       "$pkgdir/etc/xdg/kitty/kitty.conf"
   # Same file for GTK 3 and GTK 4: font name plus the rendering settings GTK
   # will not take from fontconfig.
   install -Dm644 gtk-settings.ini "$pkgdir/etc/mindos/xdg/gtk-3.0/settings.ini"
@@ -45,7 +51,11 @@ package() {
   install -Dm644 mindos-portals.conf         "$pkgdir/usr/share/xdg-desktop-portal/mindos-portals.conf"
   install -Dm644 90_mindos.gschema.override  "$pkgdir/usr/share/glib-2.0/schemas/90_mindos.gschema.override"
   install -Dm644 firefox-mindos.js           "$pkgdir/usr/lib/firefox/defaults/pref/mindos.js"
-  install -dm755 "$pkgdir/etc/xdg/mindos/autostart"
+  install -Dm644 mindos-session.target "$pkgdir/usr/lib/systemd/user/mindos-session.target"
+  install -Dm644 60-mindos-session.conf "$pkgdir/usr/lib/environment.d/60-mindos-session.conf"
+  # Same desktop-file ID and desktop exclusions as upstream, using the
+  # indicator backend. A user's ~/.config/autostart override still wins.
+  install -Dm644 nm-applet.desktop "$pkgdir/etc/mindos/xdg/autostart/nm-applet.desktop"
 
   # The MindOS licence: a custom licence, so pacman wants it under the package.
   install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

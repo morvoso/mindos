@@ -138,11 +138,24 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         tracing::info!(locked, "the session is now {}", if locked { "locked" } else { "unlocked" });
         self.idle.locked = locked;
         if locked {
+            self.window_cycle.finish();
+            self.media_keys.stop();
+            self.mindbar.clear_osd();
             // Nothing behind the lock screen may keep the keyboard.
             if let Some(keyboard) = self.seat.get_keyboard() {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
                 keyboard.set_focus(self, None, serial);
             }
+            // Drop mouse grabs and focus as well: relative events otherwise
+            // continue reaching a game until the next ordinary pointer motion.
+            let pointer = self.pointer.clone();
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            let time = self.clock.now().as_millis() as u32;
+            pointer.unset_grab(self, serial, time);
+            pointer.motion(self, None, &smithay::input::pointer::MotionEvent {
+                location: pointer.current_location(), serial, time,
+            });
+            pointer.frame(self);
             self.mindbar.close();
         }
         self.idle.since = Some(Instant::now());

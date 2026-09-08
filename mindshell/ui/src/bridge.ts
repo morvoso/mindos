@@ -107,6 +107,13 @@ function get(): MindosGlobal {
 
 /** Typed request to the host. */
 export function call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+  if (windowInfo().kind === 'desktop') {
+    if (method === 'shell.openApp' && ['settings', 'gaming', 'library'].includes(String(params?.name))) {
+      window.dispatchEvent(new CustomEvent('desktop.open', { detail: params }));
+      return Promise.resolve(null as T);
+    }
+    if (method === 'app.setTitle') window.dispatchEvent(new CustomEvent('desktop.title', { detail: params?.title }));
+  }
   return get().call(method, params) as Promise<T>;
 }
 

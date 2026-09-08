@@ -1,4 +1,18 @@
-# Package sources
+# Software on MindOS
+
+Octopi is preinstalled in the live image and installed desktop. Open **Software**
+from Mind, the taskbar, or Settings. Search for an app, select Install or Remove,
+and Apply to review the transaction and authenticate. Octopi also exposes package
+details, files, dependencies, upgrades, the cache cleaner and repository editor.
+Its separate update notifier is not autostarted; MindOS keeps one update indicator.
+
+The gaming image ships Steam, Lutris, Wine and the game tuning tools. Discord
+and OBS are optional through Software. Developer setup, language toolchains,
+containers, shell customizations and CUDA are not part of the default install.
+The retained `mindos-dev` source recipe is outside the default build and image.
+Community builds are optional (`paru` and `base-devel`); repository packages
+and Flatpak work without installing development tools.
+
 
 MindOS installs software from three sources, always in this order, through a
 single command: `mindos-pkg`. The Mind uses it for every install, remove,
@@ -52,9 +66,11 @@ Behaviour:
 * Names are plain package names (`discord`, not a description). Flathub
   matches on the app name or the last component of the app id, so `spotify`
   finds `com.spotify.Client`.
-* If the pacman database is older than twelve hours and a name is unknown,
-  the database is refreshed and the install is done with `pacman -Su` so the
-  system never ends up partially upgraded.
+* Repository installs refresh package metadata and apply pending system updates
+  together with `pacman -Syu --needed`. This avoids stale download URLs and
+  partial upgrades. `--repo-only` installs multiple requested packages in one
+  transaction. If every requested package is already installed, it reports that
+  and makes no changes; use the Updates page to update the system.
 * AUR builds run only when the AUR is permitted (above). They run
   `paru -S --needed --noconfirm --skipreview` as `mindos-build`
   (home `/var/lib/mindos/build`, created by systemd-sysusers/tmpfiles). That
@@ -90,8 +106,7 @@ octopi from the AUR in about 95 seconds on 8 vCPUs and reports it.
 ## Packaging
 
 * `packages/mindos-mind` ships `mindos-pkg`, the `mindos-build` user, its
-  home directory and the sudoers rule, and depends on `sudo git base-devel
-  flatpak paru`.
+  home directory and the sudoers rule, and depends on `sudo` and `flatpak`; `paru` and `base-devel` are optional.
 * `packages/paru` is the AUR recipe for paru, vendored so the `[mindos]`
   repo can ship it prebuilt against the current pacman (no AUR helper is
   needed to get the AUR helper).

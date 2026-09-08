@@ -8,13 +8,13 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use smithay::backend::renderer::Color32F;
 
-/// The MindOS void (#05070a): the desktop clear colour. Red is reserved for
+/// The MindOS void (#080a0e): the desktop clear colour. Red is reserved for
 /// the kernel and boot stages; the compositor is dark with a cyan accent.
-pub const VOID: [f32; 4] = [0.0196, 0.0275, 0.0392, 1.0];
-/// Default text colour (#e6edf3).
-pub const FOREGROUND: [f32; 4] = [0.902, 0.933, 0.953, 1.0];
-/// Electric cyan (#19e3ff), the single accent colour of the MindOS look.
-pub const ACCENT: [f32; 4] = [0.098, 0.890, 1.0, 1.0];
+pub const VOID: [f32; 4] = [8.0 / 255.0, 10.0 / 255.0, 14.0 / 255.0, 1.0];
+/// Default text colour (#edf2f8).
+pub const FOREGROUND: [f32; 4] = [237.0 / 255.0, 242.0 / 255.0, 248.0 / 255.0, 1.0];
+/// MindOS green (#3ddc97), shared by the desktop and native chrome.
+pub const ACCENT: [f32; 4] = [61.0 / 255.0, 220.0 / 255.0, 151.0 / 255.0, 1.0];
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -54,8 +54,15 @@ pub struct Apps {
 impl Default for Apps {
     fn default() -> Self {
         Apps {
-            terminal: "foot".into(),
+            terminal: "kitty".into(),
         }
+    }
+}
+
+impl Apps {
+    /// Keep shell syntax inside the terminal, including pipelines and quotes.
+    pub fn terminal_command(&self, command: &str) -> String {
+        format!("{} -e sh -c '{}'", self.terminal, command.replace('\'', "'\\''"))
     }
 }
 
@@ -126,9 +133,9 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Theme {
-            background: "#05070a".into(),
-            foreground: "#e6edf3".into(),
-            accent: "#19e3ff".into(),
+            background: "#080a0e".into(),
+            foreground: "#edf2f8".into(),
+            accent: "#3ddc97".into(),
             show_wordmark: true,
             cursor_theme: "MindOS".into(),
             cursor_size: 24,
@@ -219,4 +226,28 @@ pub fn parse_color(s: &str) -> Option<[f32; 4]> {
 
 pub fn to_color32f(c: [f32; 4]) -> Color32F {
     Color32F::new(c[0], c[1], c[2], c[3])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_keeps_shell_syntax_in_the_child() {
+        // `env` stands in for Kitty: execute its child and inspect the result.
+        let apps = Apps { terminal: "env".into() };
+        let command = apps.terminal_command("printf '%s' \"hello 'world'\" | tr a-z A-Z");
+        let output = std::process::Command::new("sh")
+            .args(["-c", &command.replacen("env -e", "env", 1)])
+            .output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"HELLO 'WORLD'");
+    }
+
+    #[test]
+    fn terminal_default_and_user_override() {
+        assert_eq!(Apps::default().terminal, "kitty");
+        let cfg: Config = toml::from_str("[apps]\nterminal = 'ghostty'").unwrap();
+        assert_eq!(cfg.apps.terminal_command("htop"), "ghostty -e sh -c 'htop'");
+    }
 }

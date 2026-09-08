@@ -33,7 +33,7 @@ impl Default for ShellSection {
         ShellSection {
             icon_theme: String::new(),
             hardware_acceleration: "always".into(),
-            terminal: "foot".into(),
+            terminal: "kitty".into(),
             icon_size: 48,
         }
     }
@@ -102,7 +102,7 @@ mod tests {
         let cfg: Config = toml::from_str("[shell]\nicon_theme = \"Papirus\"\n").unwrap();
         assert_eq!(cfg.shell.icon_theme, "Papirus");
         assert_eq!(Config::default().shell.icon_theme, "", "the icon theme follows the desktop by default");
-        assert_eq!(cfg.shell.terminal, "foot");
+        assert_eq!(cfg.shell.terminal, "kitty");
         assert!(cfg.hardware_acceleration());
         let cfg: Config = toml::from_str("[shell]\nhardware_acceleration = \"never\"\n").unwrap();
         assert!(!cfg.hardware_acceleration());

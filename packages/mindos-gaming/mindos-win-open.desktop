@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Windows App Setup
+Comment=Install or open a Windows program
+Exec=mindos-win-open %f
+Icon=wine
+Terminal=false
+Categories=Game;Utility;
+MimeType=application/x-ms-dos-executable;application/x-msdownload;application/x-msi;application/vnd.microsoft.portable-executable;
+Keywords=Windows;Wine;Install;EXE;MSI;

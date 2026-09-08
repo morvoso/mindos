@@ -34,10 +34,11 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
   root.classList.add('panel-window');
   const glow = h('div', { class: 'panel-glow' });
   const widgetsEl = h('div', { class: 'panel-widgets' });
+  const start = h('button', { class: 'panel-start', title: 'Launch, search or ask Mind · Super+Space', 'aria-label': 'Open launcher', onclick: () => bridge.send('mind.toggle') }, icon('grid', 17), h('span', {}, 'Start'));
   const dropInd = h('div', { class: 'drop-ind', hidden: true });
   // The island is the visible bar, inset inside the window (app.css); the
   // glass under it shows the wallpaper at the island's screen position.
-  const island = h('div', { class: 'panel-island' }, glow, widgetsEl, dropInd);
+  const island = h('div', { class: 'panel-island' }, glow, start, widgetsEl, dropInd);
   const bar = h('div', { class: 'panel-bar' }, island);
   const strip = h('div', { class: 'panel-strip', hidden: true });
   root.append(strip, bar);

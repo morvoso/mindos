@@ -4,8 +4,8 @@
 //! server-side decorations (xdg-decoration, which is what Qt, GTK, foot,
 //! Chromium and most toolkits ask for when the compositor prefers it) and
 //! for X11 windows that do not ask to be undecorated. It uses the same
-//! tokens and fonts as the shell: a translucent glass bar with a sheen along
-//! its top edge, the title in Inter, a cyan line under the bar of the focused
+//! tokens and fonts as the shell: a flat charcoal bar with square edges,
+//! the title in Inter, a green line under the bar of the focused
 //! window and minimise / maximise / close glyphs on the right. The bar is
 //! rasterised on the CPU into a memory buffer that is only redrawn when
 //! something about it changed (title, focus, hover, width, maximised state)
@@ -40,20 +40,20 @@ use crate::{
 use super::{frame::Frame, WindowElement};
 
 /// Height of the bar in logical pixels.
-pub const HEADER_BAR_HEIGHT: i32 = 32;
+pub const HEADER_BAR_HEIGHT: i32 = 36;
 /// Radius of the window's top corners (the frame follows it).
-pub const RADIUS: i32 = 12;
+pub const RADIUS: i32 = 0;
 const BUTTON_WIDTH: i32 = 38;
-const TITLE_PX: f32 = 13.5;
+const TITLE_PX: f32 = 14.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(350);
 const BTN_LEFT: u32 = 0x110;
 
-const BG: Rgba = hex(0x0d1219);
+const BG: Rgba = hex(0x242527);
 const WHITE: Rgba = hex(0xffffff);
-const FG: Rgba = hex(0xe6edf3);
-const FG_DIM: Rgba = hex(0x8b9bb0);
-const FG_FAINT: Rgba = hex(0x55657a);
-const ACCENT: Rgba = hex(0x19e3ff);
+const FG: Rgba = hex(0xeff0f1);
+const FG_DIM: Rgba = hex(0xc1c3c6);
+const FG_FAINT: Rgba = hex(0xa0a3a7);
+const ACCENT: Rgba = hex(0x3ddc97);
 const DANGER: Rgba = hex(0xff5d8f);
 
 thread_local! {
@@ -377,34 +377,9 @@ impl HeaderBar {
         let r = if self.maximized { 0 } else { RADIUS * s };
         let corners = if self.maximized { 0 } else { TOP_LEFT | TOP_RIGHT };
         let mut c = Canvas::new(w, h);
-        // Glass: a translucent dark tint (the compositor blends it over what
-        // is behind the window) that the light catches from above: a sheen
-        // fading down the bar and a bright hairline along the top edge.
-        c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, if self.focused { 0.82 } else { 0.72 }));
-        let sheen = if self.focused { 0.07 } else { 0.04 };
-        for row in 0..h / 2 {
-            let t = 1.0 - row as f32 / (h / 2) as f32;
-            let a = sheen * t * t;
-            for col in 0..w {
-                let cov = Canvas::rounded_coverage(col, row, w, h, r, corners);
-                if cov > 0.0 {
-                    c.blend(col, row, alpha(WHITE, a * cov));
-                }
-            }
-        }
-        let mut edge = Canvas::new(w, r + s);
-        edge.stroke_rounded_rect(0, 0, w, 2 * (r + s) + 4 * s, r, corners, alpha(WHITE, if self.focused { 0.14 } else { 0.09 }));
-        c.draw_canvas(0, 0, &edge);
-        // Bottom line between the bar and the window: the accent, with a
-        // soft glow into the bar, when focused; a hairline otherwise.
-        if self.focused {
-            for (row, a) in [(1, 0.16), (2, 0.08), (3, 0.03)] {
-                c.fill_rect(0, h - s - s * row, w, s, alpha(ACCENT, a));
-            }
-            c.fill_rect(0, h - s, w, s, alpha(ACCENT, 0.85));
-        } else {
-            c.fill_rect(0, h - s, w, s, alpha(WHITE, 0.07));
-        }
+        // Neutral charcoal chrome lets a little of the desktop show through.
+        c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, 0.92));
+        c.fill_rect(0, h - s, w, s, if self.focused { ACCENT } else { alpha(WHITE, 0.12) });
 
         // Title.
         let buttons = self.buttons();
@@ -437,7 +412,7 @@ impl HeaderBar {
                     (false, true) => alpha(FG, 0.14),
                     (false, false) => alpha(FG, 0.08),
                 };
-                c.fill_circle(bx + bw / 2, h / 2, 12 * s, bg);
+                c.fill_rect(bx + 5 * s, 5 * s, bw - 10 * s, h - 10 * s, bg);
             }
             let glyph = if hovered || pressed {
                 if danger {
@@ -632,9 +607,8 @@ mod tests {
         bar.redraw(640, 1);
         let c = bar.draw(1);
         assert_eq!((c.width, c.height), (640, HEADER_BAR_HEIGHT));
-        // top-left corner is rounded away (transparent); the glass itself is
-        // translucent but clearly there
-        assert_eq!(c.data[3], 0);
+        // Square charcoal glass is translucent, while keeping text readable.
+        assert!(c.data[3] > 220 && c.data[3] < 255);
         let mid = ((HEADER_BAR_HEIGHT / 2) * 640 + 320) as usize * 4;
         assert!(c.data[mid + 3] > 200);
         bar.set_focused(false);

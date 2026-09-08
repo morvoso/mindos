@@ -199,7 +199,9 @@ impl ShellWindow {
                     w.set_anchor(edge, true);
                 }
                 w.set_exclusive_zone(-1);
-                w.set_keyboard_mode(if edit_mode { KeyboardMode::OnDemand } else { KeyboardMode::None });
+                // The game library has a search field and keyboard navigation.
+                // OnDemand focuses it only after the user interacts with it.
+                w.set_keyboard_mode(KeyboardMode::OnDemand);
                 self.view.set_size_request(-1, -1);
             }
             Kind::Popup => {

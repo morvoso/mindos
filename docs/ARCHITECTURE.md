@@ -43,14 +43,22 @@ Vanilla kernel.org stable (7.2.y) plus a small, reviewable patch set:
   boot stage; the loading screen, compositor and shell are dark.
 * A DKMS/Clang compatibility patch so out-of-tree modules build with the same
   toolchain as the kernel.
-* Config: `-mindos` local version, Clang + LLD with ThinLTO, `X86_NATIVE_CPU`
-  (the build machine's CPU, Zen 5 here), 1000 Hz, full preemption, `NO_HZ`,
-  `amd-pstate`, ntsync, futex2, zstd modules, BBR + fq, THP madvise, KVM and
+* Config: `-mindos` local version, Clang + LLD with ThinLTO, portable x86-64
+  code by default (`MINDOS_CPU=native` opts into the build CPU), 1000 Hz, full preemption, `NO_HZ`,
+  `amd-pstate`, ntsync, futex2, zstd modules, BBR + fq, THP controlled by performance mode, KVM and
   virtio guest support (for the QEMU test harness), amdgpu/i915/xe/nouveau
-  and everything a desktop needs. Subsystems a gaming desktop never uses
-  (media capture beyond UVC, InfiniBand, staging, ISDN, exotic buses) are off.
-* `linux-mindos-headers` is shipped so DKMS modules (NVIDIA open modules,
-  VirtualBox, ZFS) build normally; `mindos-base` pulls `nvidia-open-dkms`.
+  plus SoC/SOF/SoundWire audio, touchscreens, IIO sensors, PCI capture and
+  accessibility. Device modules load on demand. InfiniBand, staging, ISDN
+  and unrelated legacy buses are omitted. In-tree modules are signed during
+  `modules_install`, after stripping, using the kernel build's embedded key.
+* `linux-mindos-nvidia-open` supplies prebuilt modules signed with the released
+  kernel's key. The live ISO needs no DKMS/header/Clang stack for NVIDIA.
+  `linux-mindos-headers` remains available for external modules and is included
+  in the developer bundle. The installer checks NVIDIA hardware support and
+  resolves all target dependencies before formatting. When Arch userspace has
+  advanced beyond the prebuilt module version, it selects DKMS plus headers
+  and compiler tools. Mesa systems skip NVIDIA packages. Unsupported NVIDIA
+  devices stop automatic installation; see [graphics drivers](GRAPHICS.md).
 
 Verified: the package builds in the build box, boots under KVM
 (`Linux version 7.2.3-1-mindos ... clang 22.1.8, LLD 22.1.8 ... SMP
@@ -70,7 +78,7 @@ and the config schema are in `COMPOSITOR.md`.
 * Protocols: wl_compositor/shm, linux-dmabuf, xdg-shell, xdg-decoration,
   wlr-layer-shell, presentation-time, viewporter, relative-pointer,
   pointer-constraints, keyboard-shortcuts-inhibit, tearing-control,
-  xdg-activation, foreign-toplevel, screencopy, data-device and primary
+  xdg-activation, foreign-toplevel, data-device and primary
   selection, XWayland (Steam and most games are X11).
 * Window model: three layouts, switched with `Super+T`, the icon next to
   the clock or the Settings app and remembered across sessions. *Floating*
@@ -79,8 +87,10 @@ and the config schema are in `COMPOSITOR.md`.
   focused tile) and *Columns* (Niri-like: full-height columns on a strip
   that slides to the focused column). Dialogs float and are centred over
   their parent; `Super+F` toggles fullscreen, `Super+M` maximize, `Super+Tab`
-  cycles, `Super+Q` closes, `Super+Enter` opens a terminal, a tap on Super
-  or `Super+Space` opens the Mind bar.
+  cycles, `Super+Q` closes, `Super+Enter` opens a terminal and
+  `Super+Space` opens the Mind bar. Super is never a shortcut on its own:
+  held with the mouse wheel it steps through the windows in the two tiling
+  modes.
 * Server-side decorations in the MindOS look: a 30 px title bar (title,
   minimise / maximise / close; close only on a tile) for windows that
   negotiate server decorations (Qt, foot, SDL, Chromium, ...) and for the
@@ -115,7 +125,7 @@ reorders and configures widgets, and places widgets on the desktop. The
 default layout is a centred, transparent dock (pinned and running apps,
 macOS-style) and a top bar (Mind status, system tray, audio, network,
 battery, the window-layout switcher, clock). There is no launcher button:
-a tap on Super opens the Mind bar, which is the launcher. The same binary
+`Super+Space` opens the Mind bar, which is the launcher. The same binary
 also opens an ordinary window (`mindshell --app settings`): the
 **Settings** app (Mind: tool lines on/off, thinking, model choice and the
 download catalog; Wallpaper; Displays with a basic and an advanced mode;
@@ -130,8 +140,9 @@ MindOS ships existing applications wherever one can be themed instead of
 writing its own; only what has to talk to the Mind or the compositor
 (Settings, the shell, the login screen) is custom. `mindos-apps` pulls in
 **Files** (Nautilus), **Image Viewer** (Loupe), **Archive Manager** (File
-Roller) and **Text Editor** (GNOME Text Editor), all GTK 4 + libadwaita, and
-the terminal is foot. It ships the default handlers (`mimeapps.list`), the
+Roller), **Text Editor** (GNOME Text Editor), **Document Viewer** (Papers),
+**Calculator**, **Celluloid** for audio/video, and **Firefox** for browsing;
+the terminal is Kitty. The GTK apps use the shared dark theme. It ships the default handlers (`mimeapps.list`), the
 MindOS colours for libadwaita and GTK 3 (`/usr/share/mindos/gtk/`, linked
 into each user's `gtk.css` by an autostart entry, see `THEME.md`), a
 nautilus-python extension that adds "Open in Terminal" to the Files context
@@ -267,14 +278,23 @@ in kiosk mode (`/etc/mindos/greeter/mindwm.toml`) running
 login to greetd over its socket (PAM stays in greetd; docs/SHELL.md, *The
 login screen*). The installer can add an `initial_session` for automatic
 login instead. Either way greetd logs the user into `mindos-session`, a
-script that exports the Wayland environment (Qt, GTK, SDL, Firefox, Java hints) and execs
+script that exports the Wayland environment (Qt, GTK, SDL, Firefox, Java hints) and supervises
 `mindwm --tty-udev` with its output in the journal (`journalctl -t mindwm`).
 Once the Wayland socket is up the compositor runs
 `/usr/lib/mindos/session-startup`, which publishes the display to
-`systemd --user` and D-Bus, starts the portal, and launches every executable
-in `/etc/xdg/mindos/autostart` and `~/.config/mindos/autostart`. A crash of
-the compositor drops back to greetd, which restarts the session; a root shell
-stays available on tty2 on the live ISO.
+`systemd --user` and D-Bus, launches executable hooks in
+`/etc/xdg/mindos/autostart` and `~/.config/mindos/autostart`, and starts
+`mindos-session.target`. This activates `graphical-session.target` and the
+standard XDG application autostart target. Systemd generates app services from
+`~/.config/autostart`, `/etc/mindos/xdg/autostart` and `/etc/xdg/autostart`,
+honouring desktop exclusions, missing executables and user overrides. The
+configuration search path is provided through `environment.d`; portals
+activate on demand with the imported display environment.
+
+The wrapper stops the session target on logout, compositor failure or a
+termination signal. This stops the managed autostart apps, shell and session
+portals even when the user manager stays running. A compositor failure returns
+to greetd's login screen; a root shell stays available on tty2 on the live ISO.
 
 ### mindos-base, mindos-theme, mindos-gaming, mindos-dev (packages/)
 
@@ -287,8 +307,9 @@ stays available on tty2 on the live ISO.
   and the way back from a bad update: Limine, snapper with snap-pac, and
   `mindos-boot`, which writes `/boot/limine.conf`, keeps a kernel copy on the
   ESP for every snapshot, lists the snapshots in the menu and restores one
-  (`docs/ROLLBACK.md`). Depends on `linux-mindos`, `linux-mindos-headers`,
-  the NVIDIA and Mesa stacks.
+  (`docs/ROLLBACK.md`). Depends on `linux-mindos`,
+  the Mesa stack. NVIDIA packages are optional dependencies selected by the
+  installer for NVIDIA hardware and included on the live ISO.
 * **theme**: the boot menu colours (Limine) and the console theme service (red boot stage), the
   dark animated Plymouth `mindos` theme, the MindOS fonts, wallpaper, icon.
 * **gaming**: Steam, gamescope, GameMode (with `gamemode.ini` and the polkit
@@ -304,6 +325,8 @@ partition, a 1 GiB EFI system partition on `/boot` and btrfs with `@`,
 bundled `[mindos]` repository plus the Arch mirrors; asks for disk, hostname,
 user, password, timezone and whether to add the gaming and development
 stacks. Fully non-interactive with `MINDOS_AUTO=1` and `MINDOS_*` variables.
+Both paths validate identity fields and reject mounted disks, active swap and
+an occupied `/mnt` before partitioning. Storage is rechecked after confirmation.
 Puts Limine on the EFI partition (UEFI entry "MindOS", plus the removable
 path) and into the BIOS boot partition, activates the snapper `root`
 configuration, takes a first snapshot ("MindOS installed") and writes the
@@ -315,8 +338,8 @@ An archiso profile with BIOS (syslinux) and UEFI (GRUB) boot modes, both
 white on red. The live system boots into the compositor with the `mind` user
 logged in, opens a terminal with the welcome text, and has mindd running on
 the bundled model. The `[mindos]` repository and the model live on the image
-(`/var/lib/mindos/repo`, `/var/lib/mindos/models`), so installation works
-offline.
+(`/var/lib/mindos/repo`, `/var/lib/mindos/models`). Installation still requires
+internet access for packages from the Arch repositories.
 
 ## Build system
 
@@ -337,5 +360,5 @@ firmware → Limine (white on red; installed system) · GRUB/syslinux on the ISO
   → systemd → mindd (llama-server loads the model) · greetd on VT 1
   → mindos-greeter (mindwm kiosk + mindshell --app greeter: the login screen)
   → mindos-session → mindwm (DRM/KMS) → session-startup → mindos-shell.service
-  → dock, top bar, tray · Mind bar (Super tap or Super+Space): "What should we do?"
+  → dock, top bar, tray · Mind bar (Super+Space): "What should we do?"
 ```

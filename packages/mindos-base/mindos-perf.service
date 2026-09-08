@@ -8,7 +8,6 @@ ConditionPathExists=/usr/bin/mindos-perf
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/bin/mindos-perf apply
-ExecStop=/usr/bin/mindos-perf apply
 
 [Install]
 WantedBy=multi-user.target

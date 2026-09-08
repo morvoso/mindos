@@ -13,6 +13,7 @@
 # Environment: VM_NAME (mindos-dev) VM_MEM_MB (16384) VM_VCPUS (8) VM_DISK_GB (80)
 #              VM_SHARE (repo root, exported to the guest as virtiofs tag "mindos")
 #              VM_IMAGES (/var/lib/libvirt/images) VM_RENDERNODE (/dev/dri/renderD129)
+#              VM_FIRMWARE (uefi|bios) VM_CPU (host-passthrough, or e.g. Nehalem)
 # The guest side of the install lives in guest-install.sh; typing into the VM goes
 # through vdrive.py (virsh send-key / screenshot), no guest agent needed.
 set -euo pipefail
@@ -24,6 +25,8 @@ VM_VCPUS=${VM_VCPUS:-8}
 VM_DISK_GB=${VM_DISK_GB:-80}
 VM_SHARE=${VM_SHARE:-$repo}
 VM_IMAGES=${VM_IMAGES:-/var/lib/libvirt/images}
+VM_FIRMWARE=${VM_FIRMWARE:-uefi}
+VM_CPU=${VM_CPU:-host-passthrough}
 # The host GPU virglrenderer draws on. The iGPU is the safe default: QEMU runs as
 # the "qemu" user, and libvirt's device ACL keeps it out of /dev/nvidia*, so EGL
 # will not initialise on the NVIDIA render node.
@@ -38,6 +41,11 @@ cmd=${1:-}; shift || true
 case $cmd in
 create)
   need virt-install virt-install; need virsh libvirt
+  case $VM_FIRMWARE in
+    uefi) firmware=(--boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no) ;;
+    bios) firmware=(--boot cdrom,hd) ;;
+    *) die "VM_FIRMWARE must be uefi or bios" ;;
+  esac
   iso=${1:-$(ls -t "$repo"/build/out/mindos-*.iso 2>/dev/null | head -1)}
   [[ -f $iso ]] || die "no ISO given and none in build/out (make iso)"
   v dominfo "$VM_NAME" >/dev/null 2>&1 && die "$VM_NAME already exists (destroy first)"
@@ -46,8 +54,8 @@ create)
   sudo mkdir -p "$VM_IMAGES"; sudo cp --reflink=auto "$iso" "$staged"
   sudo touch "$VM_IMAGES/$VM_NAME-serial.log"
   virt-install --connect $URI --name "$VM_NAME" --memory "$VM_MEM_MB" --vcpus "$VM_VCPUS" \
-    --cpu host-passthrough --osinfo archlinux \
-    --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no \
+    --cpu "$VM_CPU" --osinfo archlinux \
+    "${firmware[@]}" \
     --disk "path=$VM_IMAGES/$VM_NAME.qcow2,size=$VM_DISK_GB,format=qcow2,bus=virtio,discard=unmap" \
     --cdrom "$staged" --network network=default,model=virtio \
     --graphics spice,listen=none --video virtio \

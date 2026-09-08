@@ -42,6 +42,15 @@ pub enum LayoutMode {
     Columns,
 }
 
+fn snap_rect(area: Rectangle<i32, Logical>, zone: &str) -> Rectangle<i32, Logical> {
+    let split = if zone.contains("half") { area.size.w / 2 } else { area.size.w * 2 / 3 };
+    if zone.starts_with("right") {
+        Rectangle::new(area.loc + Point::from((split, 0)), (area.size.w - split, area.size.h).into())
+    } else {
+        Rectangle::new(area.loc, (split, area.size.h).into())
+    }
+}
+
 impl LayoutMode {
     pub const ALL: [LayoutMode; 3] = [LayoutMode::Floating, LayoutMode::Dwindle, LayoutMode::Columns];
 
@@ -99,6 +108,10 @@ const MIN_TILE: i32 = 120;
 /// Per-window layout data, kept in the window's user data.
 #[derive(Debug, Default)]
 pub struct TileData {
+    /// Stable output ownership: columns may extend beyond its physical bounds.
+    pub output: RefCell<Option<String>>,
+    /// Output clipping rectangle in window-local coordinates (rendering and input).
+    pub clip: Cell<Option<Rectangle<i32, Logical>>>,
     /// Taken out of the tiling by the user (Super+Shift+F).
     pub floating: Cell<bool>,
     /// Column width as a fraction of the usable width (0 = default).
@@ -110,6 +123,8 @@ pub struct TileData {
     pub untiled: RefCell<Option<Rectangle<i32, Logical>>>,
     /// The layout has this window in a tile slot right now.
     pub tiled_now: Cell<bool>,
+    pub snap: RefCell<Option<String>>,
+    pub snap_saved: RefCell<Option<(Rectangle<i32, Logical>, bool, bool, bool, Option<String>)>>,
 }
 
 impl WindowElement {
@@ -120,7 +135,7 @@ impl WindowElement {
 
     /// A window the tiling modes manage: not a dialog, not floating.
     pub fn tileable(&self) -> bool {
-        !self.is_dialog() && !self.tile().floating.get()
+        !self.is_dialog() && !self.tile().floating.get() && self.tile().snap.borrow().is_none()
     }
 }
 
@@ -242,6 +257,8 @@ impl LayoutState {
         let (nb, ib) = found[1].clone();
         let wa = self.outputs[&na].order[ia].clone();
         let wb = self.outputs[&nb].order[ib].clone();
+        *wa.tile().output.borrow_mut() = Some(nb.clone());
+        *wb.tile().output.borrow_mut() = Some(na.clone());
         self.outputs.get_mut(&na).unwrap().order[ia] = wb;
         self.outputs.get_mut(&nb).unwrap().order[ib] = wa;
         self.dirty = true;
@@ -396,6 +413,16 @@ pub fn neighbour_in<'a, T>(
     best.map(|(_, w)| w)
 }
 
+/// Prefer a connected owner over geometry: an off-screen column may overlap
+/// another display. Only an explicit move or disconnection changes its home.
+fn output_owner<'a>(saved: Option<&str>, sticky: bool, geometry: Option<Rectangle<i32, Logical>>, outputs: &'a [(String, Rectangle<i32, Logical>)]) -> Option<&'a str> {
+    if sticky {
+        if let Some((name, _)) = outputs.iter().find(|(name, _)| Some(name.as_str()) == saved) { return Some(name); }
+    }
+    outputs.iter().max_by_key(|(_, r)| geometry.and_then(|g| r.intersection(g))
+        .map(|r| i64::from(r.size.w) * i64::from(r.size.h)).unwrap_or(0)).map(|(name, _)| name.as_str())
+}
+
 impl<BackendData: Backend> AnvilState<BackendData> {
     /// Once per event-loop turn: drop dead tiles, arrange when needed.
     pub fn layout_refresh(&mut self) {
@@ -428,18 +455,26 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 
     pub fn arrange_all(&mut self) {
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        // Assign all homes before moving any geometry. Off-screen columns keep
+        // their owner until an explicit move or monitor disconnection.
+        for window in self.space.elements() {
+            if let Some(home) = self.window_home(window) {
+                *window.tile().output.borrow_mut() = Some(home.name());
+            }
+            window.tile().clip.set(None);
+        }
+        self.layout.outputs.retain(|name, _| outputs.iter().any(|o| o.name() == *name));
         for output in outputs {
             self.arrange_output(&output);
         }
     }
 
-    /// The output a window belongs to (the first one it overlaps).
+    /// A tiled window stays with its monitor even when its column is off-screen.
     pub fn window_home(&self, window: &WindowElement) -> Option<Output> {
-        self.space
-            .outputs_for_element(window)
-            .into_iter()
-            .next()
-            .or_else(|| self.space.outputs().next().cloned())
+        let outputs: Vec<_> = self.space.outputs().filter_map(|o| self.space.output_geometry(o).map(|r| (o.name(), r))).collect();
+        let owner = window.tile().output.borrow();
+        let name = output_owner(owner.as_deref(), self.layout.mode.is_tiling() || window.tile().snap.borrow().is_some(), self.space.element_geometry(window), &outputs)?;
+        self.space.outputs().find(|o| o.name() == name).cloned()
     }
 
     /// Lay out every window on `output` for the current mode.
@@ -468,7 +503,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             // Maintain the order: new tiles go after the focused window.
             let pending = std::mem::take(&mut self.layout.pending);
             let tiling = self.layout.outputs.entry(name).or_default();
-            tiling.order.retain(|w| w.tileable());
+            tiling.order.retain(|w| w.tileable() && windows.contains(w));
             for (w, after) in pending {
                 if !windows.contains(&w) || !w.tileable() || tiling.order.contains(&w) {
                     if !windows.contains(&w) && w.alive() {
@@ -530,6 +565,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 self.remember_untiled(w);
                 let (rect, tiled) = if w.pending_maximized() { (area, false) } else { (rect, true) };
                 let loc = self.apply_rect(w, rect, tiled);
+                if let Some(mut clip) = self.space.output_geometry(output) {
+                    // Space input/render origins subtract the window geometry.
+                    clip.loc -= loc - w.0.geometry().loc;
+                    w.tile().clip.set(Some(clip));
+                }
                 targets.push((w.clone(), loc));
             }
         }
@@ -538,7 +578,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             if handled.contains(w) || dragging.as_ref() == Some(w) || w.pending_fullscreen() {
                 continue;
             }
-            if w.pending_maximized() {
+            let zone = w.tile().snap.borrow().clone();
+            if let Some(zone) = zone {
+                let loc = self.apply_rect(w, snap_rect(area, &zone), false);
+                targets.push((w.clone(), loc));
+            } else if w.pending_maximized() {
                 let loc = self.apply_rect(w, area, false);
                 targets.push((w.clone(), loc));
             } else if let Some(loc) = self.ensure_untiled(w) {
@@ -572,6 +616,41 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     /// Ask a window to take `rect` (bar included); returns where its
     /// element goes. `tiled` sets the xdg tiled states so clients drop
     /// their rounded corners and shadows.
+    pub fn snap_window(&mut self, window: &WindowElement, zone: &str, output: Option<&str>) {
+        self.unminimize_window(window);
+        if zone == "release" {
+            window.tile().snap.borrow_mut().take();
+            let saved = window.tile().snap_saved.borrow_mut().take();
+            if let Some((rect, floating, fullscreen, maximized, owner)) = saved {
+                *window.tile().output.borrow_mut() = owner;
+                window.tile().floating.set(floating);
+                let loc = self.apply_rect(window, rect, false);
+                self.space.map_element(window.clone(), loc, false);
+                if maximized && !window.pending_maximized() { self.toggle_maximize_window(window); }
+                if fullscreen && !window.pending_fullscreen() { self.toggle_fullscreen_window(window); }
+            }
+        } else {
+            if window.tile().snap_saved.borrow().is_none() {
+                if let Some(rect) = self.space.element_geometry(window) {
+                    *window.tile().snap_saved.borrow_mut() = Some((rect, window.tile().floating.get(), window.pending_fullscreen(), window.pending_maximized(), self.window_home(window).map(|o| o.name())));
+                }
+            }
+            if window.pending_fullscreen() { self.toggle_fullscreen_window(window); }
+            if window.pending_maximized() { self.toggle_maximize_window(window); }
+            window.tile().tiled_now.set(false);
+            window.tile().untiled.borrow_mut().take();
+            *window.tile().snap.borrow_mut() = Some(zone.into());
+            let target = output.and_then(|name| self.space.outputs().find(|o| o.name() == name).cloned()).or_else(|| self.window_home(window));
+            if let Some(ref output) = target { *window.tile().output.borrow_mut() = Some(output.name()); }
+            if let Some(area) = target.and_then(|o| usable_area(&self.space, &o)) {
+                let loc = self.apply_rect(window, snap_rect(area, zone), false);
+                self.space.map_element(window.clone(), loc, true);
+            }
+        }
+        self.layout.dirty = true;
+        self.activate_window(window);
+    }
+
     fn apply_rect(&mut self, window: &WindowElement, rect: Rectangle<i32, Logical>, tiled: bool) -> Point<i32, Logical> {
         // The layout has placed it: no centring on its first commit.
         if let Some(flag) = window.user_data().get::<crate::shell::CenterOnFirstCommit>() {
@@ -729,7 +808,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         let geos: Vec<(WindowElement, Rectangle<i32, Logical>)> = self
             .space
             .elements()
-            .filter(|w| **w != from)
+            .filter(|w| **w != from && (!self.layout.mode.is_tiling() || self.window_home(w) == self.window_home(&from)))
             .filter_map(|w| self.space.element_geometry(w).map(|g| (w.clone(), g)))
             .collect();
         let next = neighbour_in(from_geo, dir, geos.iter().map(|(w, g)| (w, *g))).cloned();
@@ -737,6 +816,59 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             self.activate_window(&next);
             self.layout.dirty = true;
         }
+    }
+
+    /// Super + the mouse wheel: step through the windows in the layout order,
+    /// wrapping round at the ends (in columns that walks the strip left and
+    /// right). Floating windows are a stack, not an order, so the wheel is
+    /// left to the application there.
+    pub fn focus_step(&mut self, forward: bool) {
+        if !self.layout.mode.is_tiling() {
+            return;
+        }
+        // The wheel belongs to the screen the pointer is on.
+        let output = self
+            .space
+            .output_under(self.pointer.current_location())
+            .next()
+            .cloned()
+            .or_else(|| self.focused_window().and_then(|w| self.window_home(&w)))
+            .or_else(|| self.space.outputs().next().cloned());
+        let Some(output) = output else {
+            return;
+        };
+        let order: Vec<WindowElement> = self
+            .layout
+            .outputs
+            .get(&output.name())
+            .map(|tiling| tiling.order.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| !self.is_minimized(w))
+            .collect();
+        if order.is_empty() {
+            return;
+        }
+        let index = self
+            .focused_window()
+            .and_then(|w| order.iter().position(|o| *o == w));
+        let next = match index {
+            Some(i) => {
+                let n = order.len();
+                if forward {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                }
+            }
+            // Nothing focused, or the focused window was taken out of the
+            // tiling: come in at the end the wheel is turning from.
+            None if forward => 0,
+            None => order.len() - 1,
+        };
+        let next = order[next].clone();
+        self.activate_window(&next);
+        self.layout.dirty = true;
     }
 
     /// Super+Shift+arrows: swap the focused tile with its neighbour.
@@ -765,7 +897,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         let geos: Vec<(WindowElement, Rectangle<i32, Logical>)> = self
             .space
             .elements()
-            .filter(|w| **w != from && self.layout.is_tiled(w))
+            .filter(|w| **w != from && self.layout.is_tiled(w) && self.window_home(w) == self.window_home(&from))
             .filter_map(|w| self.space.element_geometry(w).map(|g| (w.clone(), g)))
             .collect();
         let target = neighbour_in(from_geo, dir, geos.iter().map(|(w, g)| (w, *g))).cloned();
@@ -786,15 +918,36 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         }
     }
 
-    /// The end of a title-bar drag in a tiling mode: swap with the tile under
-    /// the pointer, then snap everything back into the grid.
-    pub fn drag_finished(&mut self, window: &WindowElement) {
+    /// Snap an edge drop, or swap with the tile at the release position.
+    pub fn drag_finished(&mut self, window: &WindowElement, pointer: Point<f64, Logical>) {
         self.layout.dragging = None;
-        if !self.layout.is_tiled(window) {
+        let destination = self.space.output_under(pointer).next().map(|o| o.name());
+        let changed_output = destination.is_some() && *window.tile().output.borrow() != destination;
+        if changed_output {
+            *window.tile().output.borrow_mut() = destination;
+            for tiling in self.layout.outputs.values_mut() { tiling.order.retain(|w| w != window); }
+        }
+        window.tile().clip.set(None);
+        // Dragging a pinned window detaches it. Dropping at a display edge
+        // uses the same zones as the companion's explicit snap controls.
+        window.tile().snap.borrow_mut().take();
+        let target = self.space.outputs().find_map(|output| {
+            let area = usable_area(&self.space, output)?;
+            if pointer.y < area.loc.y as f64 || pointer.y >= (area.loc.y + area.size.h) as f64 { return None; }
+            let x = pointer.x - area.loc.x as f64;
+            if x >= 0.0 && x <= 20.0 { Some((output.name(), "left-two-thirds")) }
+            else if x >= (area.size.w - 20) as f64 && x < area.size.w as f64 { Some((output.name(), "right-third")) }
+            else { None }
+        });
+        if let Some((output, zone)) = target {
+            self.snap_window(window, zone, Some(&output));
+            return;
+        }
+        window.tile().snap_saved.borrow_mut().take();
+        if changed_output || !self.layout.is_tiled(window) {
             self.layout.dirty = true;
             return;
         }
-        let pointer = self.pointer.current_location();
         let stack: Vec<WindowElement> = self.space.elements().cloned().collect();
         let target = stack
             .iter()
@@ -854,6 +1007,43 @@ mod tests {
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
         Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn monitors_keep_independent_column_ownership_and_scroll() {
+        let outputs = vec![("left".into(), rect(-1000, 0, 1000, 800)), ("right".into(), rect(0, 0, 1600, 900))];
+        // A left-hand column now physically extends across the right display.
+        assert_eq!(output_owner(Some("left"), true, Some(rect(100, 0, 700, 800)), &outputs), Some("left"));
+        // An explicit transfer changes its owner, even before its geometry catches up.
+        assert_eq!(output_owner(Some("right"), true, Some(rect(-900, 0, 700, 800)), &outputs), Some("right"));
+        // Floating windows follow the largest overlap, and unplugged owners recover.
+        assert_eq!(output_owner(Some("left"), false, Some(rect(-10, 0, 700, 800)), &outputs), Some("right"));
+        assert_eq!(output_owner(Some("unplugged"), true, Some(rect(-900, 0, 700, 800)), &outputs), Some("left"));
+        assert_eq!(output_owner(Some("left"), true, None, &[]), None);
+        let left_widths = [0.5, 0.5, 0.5, 0.5];
+        let right_widths = [0.5, 0.5];
+        let left_scroll = scroll_to_show(1000, &left_widths, 10, 0, Some(3));
+        assert!(left_scroll > 0);
+        assert_eq!(scroll_to_show(1600, &right_widths, 10, 0, None), 0);
+        let left = column_rects(outputs[0].1, &left_widths, 10, left_scroll);
+        assert!(left[0].loc.x < outputs[0].1.loc.x);
+        // The crop rejects off-screen input and render geometry.
+        assert!(outputs[0].1.intersection(left[0]).is_none());
+        assert!(outputs[0].1.intersection(left[3]).is_some());
+        let tiles = dwindle_rects(outputs[1].1, 3, 10);
+        assert!(tiles.iter().all(|r| r.loc.x >= 0 && r.loc.x + r.size.w <= 1600));
+    }
+
+    #[test]
+    fn companion_snap_partitions_odd_width_and_offset_outputs() {
+        let area = rect(-1919, 42, 1919, 1001);
+        let game = snap_rect(area, "left-two-thirds");
+        let companion = snap_rect(area, "right-third");
+        assert_eq!(game.loc, area.loc);
+        assert_eq!(game.loc.x + game.size.w, companion.loc.x);
+        assert_eq!(companion.loc.x + companion.size.w, area.loc.x + area.size.w);
+        assert_eq!(companion.size.h, area.size.h);
+        assert_eq!(snap_rect(area, "left-half").size.w + snap_rect(area, "right-half").size.w, area.size.w);
     }
 
     #[test]

@@ -1,7 +1,6 @@
 # MindOS live ISO package list
 # --- MindOS ---
 linux-mindos
-linux-mindos-headers
 mindos-base
 mindos-theme
 mindos-session
@@ -9,6 +8,8 @@ mindos-mind
 mindwm
 mindshell
 mindos-apps
+mindos-gaming
+octopi
 mindos-install
 # --- boot / live ---
 base
@@ -24,16 +25,14 @@ efibootmgr
 edk2-shell
 memtest86+
 memtest86+-efi
-# --- graphics (also pulled by mindos-base) ---
+# --- graphics (live media supports both Mesa and NVIDIA systems) ---
 mesa
 vulkan-radeon
 vulkan-icd-loader
-nvidia-open-dkms
+linux-mindos-nvidia-open
 nvidia-utils
-dkms
-clang
-llvm
-lld
+lib32-nvidia-utils
+nvidia-settings
 # --- install / disks ---
 arch-install-scripts
 gptfdisk
@@ -66,21 +65,20 @@ wget
 bind
 ethtool
 # --- desktop bits for the live session ---
-foot
+kitty
 firefox
 wl-clipboard
 pipewire
 wireplumber
 pipewire-pulse
 pipewire-alsa
+pipewire-jack
 alsa-utils
 sof-firmware
 bluez
 bluez-utils
 # --- tools ---
-git
 nano
-vim
 less
 man-db
 man-pages
@@ -93,5 +91,3 @@ htop
 btop
 nvtop
 fastfetch
-tmux
-zsh

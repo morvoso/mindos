@@ -22,6 +22,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -53,6 +54,7 @@ pub struct WindowInfo {
     pub id: u64,
     pub title: String,
     pub app_id: String,
+    pub pid: Option<u32>,
     pub focused: bool,
     pub fullscreen: bool,
     pub maximized: bool,
@@ -80,6 +82,7 @@ pub struct WindowsSnapshot {
 /// logical pixels; `refresh` is in Hz.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OutputInfo {
+    pub software_rendering: bool,
     pub name: String,
     pub make: String,
     pub model: String,
@@ -157,6 +160,7 @@ pub enum Request {
     ToggleMinimize { window: u64 },
     ToggleFullscreen { window: u64 },
     ToggleMaximize { window: u64 },
+    Snap { window: u64, zone: String, #[serde(default)] output: Option<String> },
     Mindbar {
         action: PanelAction,
         /// Text for the input; with `ask` it is sent to the Mind at once.
@@ -174,6 +178,7 @@ pub enum Request {
     Terminal,
     Quit,
     GetPrefs,
+    GetInput,
     /// Change any of the keys of the `prefs` event (`layout_mode`,
     /// `mind_show_tools`, `primary_output`).
     SetPrefs { prefs: Value },
@@ -350,9 +355,20 @@ pub struct IpcServer {
     pub last_outputs: Option<Vec<OutputInfo>>,
     pub last_mindbar_open: bool,
     pub last_tray: Option<Vec<TrayItemInfo>>,
+    last_refresh: Option<Instant>,
 }
 
 impl IpcServer {
+    /// Coalesce taskbar/display snapshots during high-rate input and rendering.
+    /// Direct request replies still read current state immediately.
+    fn refresh_due(&mut self, now: Instant) -> bool {
+        if self.last_refresh.is_some_and(|last| now.duration_since(last) < Duration::from_millis(16)) {
+            return false;
+        }
+        self.last_refresh = Some(now);
+        true
+    }
+
     /// Bind the socket (replacing a stale file from a crashed compositor).
     /// The listener is returned for the event loop; the server remembers the
     /// path so it can be exported and removed on exit.
@@ -636,7 +652,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     /// `windows`/`outputs`/`mindbar` events when the last snapshot changed.
     pub fn ipc_refresh(&mut self) {
         self.minimized.retain(|m| m.window.alive());
-        if !self.ipc.has_subscribers() {
+        if !self.ipc.has_subscribers() || !self.ipc.refresh_due(Instant::now()) {
             return;
         }
         let windows = self.windows_snapshot();
@@ -704,6 +720,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     | Request::Terminal
                     | Request::Overview { .. }
                     | Request::Focus { .. }
+                    | Request::Snap { .. }
             )
         {
             return Reply::Err("the session is locked".into());
@@ -742,7 +759,17 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 state.unminimize_window(&window);
                 state.toggle_maximize_window(&window);
             }),
+            Request::Snap { window, zone, output } => {
+                if !["right-third", "left-two-thirds", "left-half", "right-half", "release"].contains(&zone.as_str()) {
+                    return Reply::Err("Unknown snap zone".into());
+                }
+                if output.as_ref().is_some_and(|name| !self.space.outputs().any(|o| o.name() == *name)) {
+                    return Reply::Err("Output is no longer connected".into());
+                }
+                self.with_window(window, |state, w| state.snap_window(&w, &zone, output.as_deref()))
+            }
             Request::Mindbar { action, text, ask } => {
+                self.target_mindbar();
                 match (action, text) {
                     (PanelAction::Close, _) => self.mindbar.close(),
                     (_, Some(text)) if !text.trim().is_empty() => {
@@ -779,6 +806,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 ok()
             }
             Request::GetPrefs => Reply::Ok(json!({"prefs": self.prefs.to_json()})),
+            Request::GetInput => Reply::Ok(json!({"settings": self.prefs.input, "mice": self.backend_data.mouse_devices()})),
             Request::SetPrefs { prefs } => match self.apply_prefs(prefs) {
                 Ok(()) => Reply::Ok(json!({"prefs": self.prefs.to_json()})),
                 Err(err) => Reply::Err(err),
@@ -918,6 +946,7 @@ mod tests {
                 id: 1,
                 title: "Steam".into(),
                 app_id: "steam".into(),
+                pid: None,
                 focused: true,
                 fullscreen: false,
                 maximized: true,
@@ -1004,5 +1033,17 @@ mod tests {
         drop(server);
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn high_rate_input_coalesces_snapshots_without_starving_them() {
+        let mut server = IpcServer::default();
+        let start = Instant::now();
+        // One second of 8 kHz mouse events needs only 63 full snapshots.
+        let snapshots = (0..8000)
+            .filter(|i| server.refresh_due(start + Duration::from_micros(i * 125)))
+            .count();
+        assert_eq!(snapshots, 63);
+        assert!(server.refresh_due(start + Duration::from_secs(2)));
     }
 }

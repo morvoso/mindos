@@ -32,7 +32,7 @@ export const MODES: ModeInfo[] = [
     icon: 'mode-tiles',
     like: 'like Hyprland',
     blurb: 'Every window occupies a tile. Each new window splits the focused tile in half. Windows do not overlap.',
-    hint: 'Super+arrows focus · Super+Shift+arrows move · Super+Shift+F float',
+    hint: 'Super+arrows or Super+wheel focus · Super+Shift+arrows move · Super+Shift+F float',
   },
   {
     name: 'columns',
@@ -40,7 +40,7 @@ export const MODES: ModeInfo[] = [
     icon: 'mode-columns',
     like: 'like Niri',
     blurb: 'Windows are arranged in columns on a horizontally scrolling strip. Suited to ultrawide displays.',
-    hint: 'Super+R column width · Super+arrows focus',
+    hint: 'Super+R column width · Super+arrows or Super+wheel focus',
   },
 ];
 

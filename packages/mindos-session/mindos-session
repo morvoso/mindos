@@ -3,8 +3,11 @@
 # start the MindOS compositor on the current seat. Started by greetd.
 
 export XDG_SESSION_TYPE=wayland
-# MindOS application defaults (foot.ini, ...) come first; /etc/xdg stays as the fallback
-export XDG_CONFIG_DIRS="/etc/mindos/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
+# MindOS application defaults (GTK settings, ...) come first; /etc/xdg stays as the fallback
+case ":${XDG_CONFIG_DIRS:-}:" in
+  *:/etc/mindos/xdg:*) ;;
+  *) export XDG_CONFIG_DIRS="/etc/mindos/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}" ;;
+esac
 export XDG_CURRENT_DESKTOP=MindOS
 export XDG_SESSION_DESKTOP=mindos
 export MOZ_ENABLE_WAYLAND=1
@@ -39,8 +42,30 @@ for f in /etc/mindos/session-env "${XDG_CONFIG_HOME:-$HOME/.config}/mindos/sessi
   [[ -r $f ]] && . "$f"
 done
 
+# The user manager can outlive a login. Stop stale session services before
+# publishing a new display, and stop them on logout or compositor failure.
+# Keep a parent process so an ordinary compositor exit reaches this cleanup.
+compositor_pid=
+cleanup_session() {
+  trap - EXIT HUP INT TERM
+  systemctl --user stop mindos-session.target 2>/dev/null || true
+  if [[ -n $compositor_pid ]]; then kill -TERM "$compositor_pid" 2>/dev/null || true; fi
+  if [[ -n $compositor_pid ]]; then wait "$compositor_pid" 2>/dev/null || true; fi
+}
+trap cleanup_session EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+systemctl --user stop mindos-session.target 2>/dev/null || true
+
 # Compositor output goes to the journal: journalctl -t mindwm
 if command -v systemd-cat >/dev/null 2>&1; then
-  exec systemd-cat -t mindwm mindwm --tty-udev
+  systemd-cat -t mindwm mindwm --tty-udev &
+else
+  mindwm --tty-udev &
 fi
-exec mindwm --tty-udev
+compositor_pid=$!
+wait "$compositor_pid"
+compositor_status=$?
+compositor_pid=
+exit "$compositor_status"

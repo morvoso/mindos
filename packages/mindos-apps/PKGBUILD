@@ -1,14 +1,15 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-apps
 pkgver=0.1.0
-pkgrel=2
-pkgdesc="The MindOS standard applications (Files, Image Viewer, Archive Manager, Text Editor) in the MindOS look: libadwaita colours, default handlers, Open in Terminal in the file manager, the mindos-wallpaper command"
+pkgrel=5
+pkgdesc="The MindOS standard applications (browser, files, images, archives, text, PDF, media, calculator) in the MindOS look: libadwaita colours, default handlers, Open in Terminal in the file manager, the mindos-wallpaper command"
 arch=(any)
 url="https://github.com/morvoso/mindos"
 license=('LicenseRef-MindOS')
-# Every app is GTK 4 + libadwaita so one stylesheet themes them all; the
-# terminal stays foot (mindos-session). Trash, mounts and phones need gvfs.
-depends=(nautilus nautilus-python gvfs gvfs-mtp loupe file-roller gnome-text-editor foot python)
+# The GTK apps share a stylesheet; Firefox gets session defaults. The
+# terminal stays kitty (mindos-session). Trash, mounts and phones need gvfs.
+depends=(nautilus nautilus-python gvfs gvfs-mtp loupe file-roller gnome-text-editor kitty python
+         firefox celluloid papers gnome-calculator octopi)
 optdepends=('sushi: preview a file in Files with the space bar'
             'gvfs-smb: Windows shares in Files'
             'gvfs-nfs: NFS shares in Files')

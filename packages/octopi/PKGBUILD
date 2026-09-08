@@ -1,0 +1,46 @@
+# Based on upstream's recipe; release sources and its ALPM library are pinned.
+pkgname=octopi
+pkgver=0.19.0
+pkgrel=1
+pkgdesc='Visual software manager: browse, install, remove and update packages'
+arch=(x86_64)
+url='https://github.com/aarnt/octopi'
+license=('GPL-2.0-or-later' 'GPL-3.0-or-later')
+depends=(pacman libalpm.so pacman-contrib qt6-base qt6-5compat qt6-multimedia qt6-svg qtermwidget kstatusnotifieritem)
+makedepends=(cmake ninja qt6-tools vala)
+optdepends=('paru: optional community package support')
+conflicts=(alpm_octopi_utils)
+_commit=ed4cd0e8c3ad751c0f2761132e8f460ab72b90a9
+_alpm=789ba9acc52b7b0624fb08de9f4756b5d51c10f1
+source=("octopi-$_commit.tar.gz::https://codeload.github.com/aarnt/octopi/tar.gz/$_commit"
+        "alpm_octopi_utils-$_alpm.tar.gz::https://codeload.github.com/aarnt/alpm_octopi_utils/tar.gz/$_alpm" mindos.qss)
+sha256sums=('bc1c7737658099402870116fc185a973f0abc24da915546b7fa8b935cb48bd31'
+            '588fdc01ecec506014e204f14ef3097c96d9fb1acee1575b7d6bf04f856e3abb' SKIP)
+
+build() {
+  cmake -S "alpm_octopi_utils-$_alpm" -B build-alpm -G Ninja \
+    -DCMAKE_BUILD_TYPE=None -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build build-alpm
+  DESTDIR="$srcdir/stage" cmake --install build-alpm
+  cmake -S "octopi-$_commit" -B build-octopi -G Ninja \
+    -DCMAKE_BUILD_TYPE=None -DCMAKE_INSTALL_PREFIX=/usr \
+    -Dalpm_octopi_utils_DIR="$srcdir/stage/usr/lib/cmake/alpm_octopi_utils"
+  cmake --build build-octopi
+}
+
+package() {
+  # Runtime executable, unnecessary for compilation. Built by packages/qt-sudo
+  # and resolved from the MindOS repo during image/target installation.
+  depends+=(qt-sudo)
+  DESTDIR="$pkgdir" cmake --install build-octopi
+  install -Dm755 "$srcdir/stage/usr/lib/libalpm_octopi_utils.so" "$pkgdir/usr/lib/libalpm_octopi_utils.so"
+  install -Dm644 /usr/share/licenses/spdx/GPL-3.0-or-later.txt "$pkgdir/usr/share/licenses/$pkgname/LICENSE-alpm"
+  # MindOS already has its own update indicator. Keep Octopi's full manager,
+  # cache cleaner and repository editor without a second update tray app.
+  rm -f "$pkgdir/etc/xdg/autostart/octopi-notifier.desktop"
+  # Searching "Octopi" should open the manager, not start a second tray app.
+  printf '\nNoDisplay=true\n' >> "$pkgdir/usr/share/applications/octopi-notifier.desktop"
+  install -Dm644 mindos.qss "$pkgdir/usr/share/mindos/octopi.qss"
+  sed -i 's|^Exec=.*|Exec=/usr/bin/octopi -style Fusion -stylesheet /usr/share/mindos/octopi.qss|' "$pkgdir/usr/share/applications/octopi.desktop"
+  sed -i 's/^Name=Octopi$/Name=Software (Octopi)/; s/^Name\[en_US\]=Octopi$/Name[en_US]=Software (Octopi)/; s/^Comment=.*/Comment=Find, install, remove and update software/' "$pkgdir/usr/share/applications/octopi.desktop"
+}

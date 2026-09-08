@@ -60,23 +60,24 @@ pub use self::element::*;
 pub use self::grabs::*;
 pub use crate::layout::client_rect;
 
-fn fullscreen_output_geometry(
+fn fullscreen_output(
     wl_surface: &WlSurface,
     wl_output: Option<&wl_output::WlOutput>,
-    space: &mut Space<WindowElement>,
-) -> Option<Rectangle<i32, Logical>> {
-    // First test if a specific output has been requested
-    // if the requested output is not found ignore the request
+    space: &Space<WindowElement>,
+) -> Option<Output> {
     wl_output
         .and_then(Output::from_resource)
+        .filter(|output| space.output_geometry(output).is_some())
         .or_else(|| {
-            let w = space
-                .elements()
-                .find(|window| window.wl_surface().map(|s| &*s == wl_surface).unwrap_or(false));
-            w.and_then(|w| space.outputs_for_element(w).first().cloned())
+            let window = space.elements().find(|w| w.wl_surface().as_deref() == Some(wl_surface))?;
+            space.outputs_for_element(window).first().cloned().or_else(|| {
+                // A startup fullscreen request can precede the first buffer,
+                // so Space has not associated this window with an output yet.
+                let location = space.element_location(window)?;
+                space.outputs().find(|o| space.output_geometry(o).is_some_and(|r| r.contains(location))).cloned()
+            })
         })
-        .as_ref()
-        .and_then(|o| space.output_geometry(o))
+        .or_else(|| space.outputs().next().cloned())
 }
 
 #[derive(Default)]
@@ -188,6 +189,7 @@ impl<BackendData: Backend> CompositorHandler for AnvilState<BackendData> {
                 window.0.on_commit();
 
                 if &root == surface {
+                    let is_toplevel = window.0.toplevel().is_some();
                     let buffer_offset = with_states(surface, |states| {
                         states
                             .cached_state
@@ -200,6 +202,12 @@ impl<BackendData: Backend> CompositorHandler for AnvilState<BackendData> {
                     if let Some(buffer_offset) = buffer_offset {
                         let current_loc = self.space.element_location(&window).unwrap();
                         self.space.map_element(window, current_loc + buffer_offset, false);
+                    }
+                    if is_toplevel {
+                        // Post-commit hooks run before on_commit_buffer_handler
+                        // and Window::on_commit. Place using the new geometry
+                        // here so a dialog never flashes at the output origin.
+                        xdg::handle_toplevel_commit(&mut self.space, surface);
                     }
                 }
             }

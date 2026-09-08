@@ -27,6 +27,7 @@ pub struct Prefs {
     pub cursor_size: Option<u32>,
     /// What happens when nobody touches the machine (Settings > Screen).
     pub idle: IdleSettings,
+    pub input: crate::input_config::InputSettings,
     pub outputs: BTreeMap<String, OutputPrefs>,
 }
 

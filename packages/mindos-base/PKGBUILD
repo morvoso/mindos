@@ -1,28 +1,34 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-base
 pkgver=0.1.0
-pkgrel=8
-pkgdesc="MindOS base system: branding, gaming/dev kernel and system tuning, performance modes, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
+pkgrel=27
+pkgdesc="MindOS base system: branding, gaming kernel and system tuning, performance modes, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
 arch=(any)
 url="https://github.com/morvoso/mindos"
 license=('LicenseRef-MindOS')
-depends=(base linux-mindos linux-mindos-headers linux-firmware amd-ucode intel-ucode
+depends=(base linux-mindos linux-firmware amd-ucode intel-ucode
          mkinitcpio zram-generator plymouth mindos-theme
          networkmanager wireguard-tools bluez bluez-utils sudo limine efibootmgr btrfs-progs dosfstools e2fsprogs
          snapper snap-pac scx-scheds python
-         nvidia-open-dkms nvidia-utils lib32-nvidia-utils nvidia-settings dkms clang llvm lld
          mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader vulkan-radeon lib32-vulkan-radeon
+         vulkan-intel lib32-vulkan-intel sof-firmware
          fastfetch flatpak libnotify openssh)
+optdepends=('linux-mindos-nvidia-open: prebuilt kernel driver for supported NVIDIA GPUs'
+            'nvidia-open-dkms: alternative NVIDIA driver built locally for other driver versions'
+            'linux-mindos-headers: build external kernel modules'
+            'nvidia-utils: NVIDIA graphics userspace'
+            'lib32-nvidia-utils: NVIDIA support for 32-bit games'
+            'nvidia-settings: advanced NVIDIA configuration')
 install=mindos-base.install
 backup=(etc/systemd/zram-generator.conf etc/mindos/boot.conf etc/snapper/configs/root etc/mindos/perf.conf)
 source=(os-release apply-branding 90-mindos-branding.hook 60-mindos-gaming.conf
         60-mindos-ioscheduler.rules 70-mindos-controllers.rules zram-generator.conf
         mindos-nvidia.conf 60-mindos.conf kernel-cmdline mkinitcpio-mindos.conf
-        mindos-boot boot.conf snapper-root 10-mindos-boot 95-mindos-boot.hook remount-fs-snapshot.conf
+        mindos-boot boot.conf snapper-root 10-mindos-boot 95-mindos-boot.hook remount-fs-snapshot.conf snapshot-prune fstab-paths mindos-snapshot-seal.service
         mindos-perf perf.conf mindos-perf.service 20-mindos-perf.sudoers mindos-base.sysusers)
 sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP
             SKIP SKIP SKIP SKIP SKIP SKIP
-            SKIP SKIP SKIP SKIP SKIP)
+            SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm644 os-release                 "$pkgdir/usr/share/mindos/os-release"
@@ -44,6 +50,9 @@ package() {
   install -Dm644 boot.conf                  "$pkgdir/etc/mindos/boot.conf"
   install -Dm644 snapper-root               "$pkgdir/etc/snapper/configs/root"
   install -Dm755 10-mindos-boot             "$pkgdir/usr/lib/snapper/plugins/10-mindos-boot"
+  install -Dm755 snapshot-prune            "$pkgdir/usr/lib/mindos/snapshot-prune"
+  install -Dm644 mindos-snapshot-seal.service "$pkgdir/usr/lib/systemd/system/mindos-snapshot-seal.service"
+  install -Dm755 fstab-paths               "$pkgdir/usr/lib/mindos/fstab-paths"
   install -Dm644 95-mindos-boot.hook        "$pkgdir/usr/share/libalpm/hooks/95-mindos-boot.hook"
   install -Dm644 remount-fs-snapshot.conf   "$pkgdir/usr/lib/systemd/system/systemd-remount-fs.service.d/mindos-snapshot.conf"
   # Performance modes: balanced / performance / quiet, applied at boot and by
@@ -55,6 +64,7 @@ package() {
   install -Dm644 mindos-base.sysusers       "$pkgdir/usr/lib/sysusers.d/mindos-base.conf"
   install -dm755 "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"
   ln -s ../mindos-perf.service "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/mindos-perf.service"
+  ln -s ../mindos-snapshot-seal.service "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/mindos-snapshot-seal.service"
 
   # The MindOS licence: a custom licence, so pacman wants it under the package.
   install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
@@ -62,4 +72,10 @@ package() {
   # the licence and the third-party notice for the whole distribution.
   install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/doc/mindos/LICENSE"
   install -Dm644 "$startdir/../../THIRD-PARTY.md" "$pkgdir/usr/share/doc/mindos/THIRD-PARTY.md"
+  # Settings links to these local guides, including on minimal installations.
+  for guide in GRAPHICS GAMES PACKAGES PERFORMANCE ROLLBACK SHELL THEME UPDATES WEB WINDOWS-APPS; do
+    install -Dm644 "$startdir/../../docs/$guide.md" "$pkgdir/usr/share/doc/mindos/$guide.md"
+  done
+  install -dm755 "$pkgdir/usr/share/doc/mindos/img"
+  install -m644 "$startdir/../../docs/img/"* "$pkgdir/usr/share/doc/mindos/img/"
 }

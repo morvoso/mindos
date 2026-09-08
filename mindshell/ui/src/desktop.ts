@@ -2,6 +2,7 @@
 
 import * as actions from './actions';
 import * as bridge from './bridge';
+import { renderWorkspace, isMainOutput } from './workspace';
 import { desktopIconMenu, renderDesktopIcons } from './desktop-icons';
 import { clamp, h, reconcile } from './dom';
 import { EDIT_EXTRA, rectIn } from './geometry';
@@ -24,12 +25,13 @@ interface Mounted {
 export function renderDesktop(root: HTMLElement, output: string): () => void {
   root.classList.add('desktop-window');
   const wall = h('div', { class: 'wallpaper' });
-  const mark = h('div', { class: 'wordmark' }, h('span', { class: 'wordmark-text' }, 'MINDOS'), h('span', { class: 'wordmark-sub' }, 'GAMING · DEV'));
+  const mark = h('div', { class: 'wordmark' }, h('span', { class: 'wordmark-text' }, 'MINDOS'), h('span', { class: 'wordmark-sub' }, 'GAMING'));
   const icons = h('div', { class: 'desktop-icons' });
   const layer = h('div', { class: 'desktop-widgets' });
   const toolbar = h('div', { class: 'edit-toolbar', hidden: true });
   root.append(wall, mark, icons, layer, toolbar);
   const disposeIcons = renderDesktopIcons(root, icons, output);
+  const disposeGaming = renderWorkspace(root, output);
 
   const mounted = new Map<string, Mounted>();
   const editing = () => store.state.editMode;
@@ -182,7 +184,7 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
   };
 
   const renderWidgets = () => {
-    const entries = desktopWidgetsForOutput(store.state.layout, output);
+    const entries = isMainOutput(output) ? desktopWidgetsForOutput(store.state.layout, output) : [];
     reconcile(
       layer,
       entries,
@@ -280,13 +282,13 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
   // ----- context menu ------------------------------------------------------
 
   root.addEventListener('contextmenu', (e) => {
-    if ((e.target as HTMLElement).closest('.dw, .edit-toolbar, .di')) return;
+    if ((e.target as HTMLElement).closest('.dw, .edit-toolbar, .di, .gaming-workspace')) return;
     e.preventDefault();
     const scale = root.getBoundingClientRect().width / root.offsetWidth || 1;
     const b = root.getBoundingClientRect();
     const x = (e.clientX - b.left) / scale;
     const y = (e.clientY - b.top) / scale;
-    const terminal = store.state.config.terminal || 'foot';
+    const terminal = store.state.config.terminal || 'kitty';
     const items: MenuAction[] = editing()
       ? [
           { label: 'Add widget', icon: 'plus', action: { popup: 'widget-catalog', arg: { target: { kind: 'desktop', output } } } },
@@ -312,7 +314,8 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
   // ----- render -------------------------------------------------------------
 
   const render = () => {
-    const edit = editing();
+    root.classList.toggle('secondary-desktop', !isMainOutput(output));
+    const edit = editing() && isMainOutput(output);
     root.classList.toggle('editing', edit);
     toolbar.hidden = !edit;
     panelMenu.hidden = true;
@@ -325,6 +328,7 @@ export function renderDesktop(root: HTMLElement, output: string): () => void {
   return () => {
     offs.forEach((off) => off());
     disposeIcons();
+    disposeGaming();
     for (const id of Array.from(mounted.keys())) unmount(id);
     root.replaceChildren();
   };

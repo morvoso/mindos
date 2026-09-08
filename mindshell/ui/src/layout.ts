@@ -5,15 +5,15 @@ import type { DesktopWidgetEntry, Layout, PanelDef, WidgetEntry } from './types'
 
 export function defaultLayout(): Layout {
   return {
-    version: 3,
+    version: 4,
     panels: [
       {
-        // One bar along the bottom, flush with the edge: the apps centred,
+        // A floating shelf along the bottom: the apps centred,
         // the tray, Mind and the clock at the right.
-        id: 'bar', output: '*', edge: 'bottom', size: 48, length: 100, align: 'center', margin: 0, layer: 'top', opacity: 0.85, float: false,
+        id: 'bar', output: '*', edge: 'bottom', size: 64, length: 100, align: 'center', margin: 8, layer: 'top', opacity: 0.9, float: true,
         widgets: [
           { id: 'sp-l', type: 'spacer', config: { expand: true } },
-          { id: 'tasks', type: 'taskbar', config: { pins: ['firefox.desktop', 'org.gnome.Nautilus.desktop', 'foot.desktop', 'steam.desktop', 'mindos-settings.desktop'] } },
+          { id: 'tasks', type: 'taskbar', config: { pins: ['mindos-library.desktop', 'steam.desktop', 'firefox.desktop', 'org.gnome.Nautilus.desktop', 'kitty.desktop', 'mindos-settings.desktop'] } },
           { id: 'sp-r', type: 'spacer', config: { expand: true } },
           { id: 'tray', type: 'tray', config: {} },
           { id: 'audio', type: 'audio', config: {} },
@@ -56,7 +56,7 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
   const panels = Array.isArray(raw.panels) ? raw.panels : base.panels;
   const desktop = raw.desktop && typeof raw.desktop === 'object' ? raw.desktop : base.desktop;
   return {
-    version: 3,
+    version: 4,
     panels: panels.map((p, i) => ({
       id: p.id ?? `panel-${i}`,
       output: p.output ?? '*',
@@ -73,6 +73,9 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
     desktop: {
       wallpaper: desktop.wallpaper ?? { mode: 'builtin' },
       icons: desktop.icons !== false,
+      workspace: { mode: desktop.workspace?.mode === 'productivity' ? 'productivity' : 'gaming', notes: String(desktop.workspace?.notes ?? '') },
+      ...(desktop.appearance ? { appearance: { theme: desktop.appearance.theme === 'light' ? 'light' as const : 'dark' as const } } : {}),
+      ...(desktop.library ? { library: desktop.library } : {}),
       widgets: (desktop.widgets ?? []).map((w, j) => ({
         id: w.id ?? `d-${j}`, type: w.type ?? 'unknown', output: w.output ?? '*',
         x: Number(w.x) || 0, y: Number(w.y) || 0, w: Number(w.w) || 240, h: Number(w.h) || 120, config: w.config ?? {},

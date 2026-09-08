@@ -1,18 +1,18 @@
 # Maintainer: MindOS <build@mindos.local>
 # The MindOS gaming kernel: vanilla kernel.org stable + BORE + MindOS patches,
-# compiled with Clang ThinLTO for the machine it is built on.
+# compiled with Clang ThinLTO, portable by default.
 #
-#   MINDOS_CPU=generic makepkg   portable x86-64 instead of -march=native
+#   MINDOS_CPU=native makepkg    optimize for this CPU (not a distribution image)
 #   MINDOS_LTO=none makepkg      plain (faster) build without LTO
 
 pkgbase=linux-mindos
 pkgver=7.2.3
-pkgrel=1
+pkgrel=2.1
 pkgdesc='MindOS gaming kernel (BORE, 1000 Hz, full preemption, sched_ext, ThinLTO)'
 url='https://github.com/morvoso/mindos'
 arch=(x86_64)
 license=(GPL-2.0-only)
-makedepends=(bc cpio gettext libelf pahole perl python tar xz zstd clang llvm lld)
+makedepends=(bc cpio gettext libelf pahole perl python tar xz zstd clang llvm lld openssl pkgconf)
 options=(!debug !strip !lto)
 _srcname=linux-$pkgver
 source=(
@@ -32,7 +32,7 @@ sha256sums=(
   SKIP
 )
 
-: "${MINDOS_CPU:=native}"
+: "${MINDOS_CPU:=generic}"
 : "${MINDOS_LTO:=thin}"
 export MINDOS_CPU MINDOS_LTO
 export KBUILD_BUILD_HOST=mindos
@@ -44,7 +44,8 @@ prepare() {
   cd $_srcname
 
   echo "Setting version..."
-  echo "-$pkgrel" > localversion.10-pkgrel
+  # Decimal subreleases change packaging metadata without changing the ABI.
+  echo "-${pkgrel%%.*}" > localversion.10-pkgrel
   echo "${pkgbase#linux}" > localversion.20-pkgname
 
   local src
@@ -69,7 +70,7 @@ prepare() {
 
 build() {
   cd $_srcname
-  make "${_make_flags[@]}" all
+  make -j"${MINDOS_JOBS:-$(nproc)}" "${_make_flags[@]}" all
 }
 
 _package() {
@@ -78,7 +79,7 @@ _package() {
   optdepends=('wireless-regdb: to set the correct wireless channels of your country'
               'linux-firmware: firmware images needed for some devices'
               'scx-scheds: sched_ext schedulers (scx_lavd) tuned for gaming')
-  provides=(KSMBD-MODULE VIRTUALBOX-GUEST-MODULES WIREGUARD-MODULE)
+  provides=(KSMBD-MODULE NTSYNC-MODULE VIRTUALBOX-GUEST-MODULES WIREGUARD-MODULE)
 
   cd $_srcname
   local modulesdir="$pkgdir/usr/lib/modules/$(<version)"

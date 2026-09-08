@@ -1,0 +1,9 @@
+#!/bin/bash
+# xdg-desktop-portal-wlr supplies the available sources, one per line.
+set -euo pipefail
+mapfile -t sources
+((${#sources[@]})) || exit 1
+exec zenity --list --title='Screen sharing' --width=520 --height=320 \
+  --text='Choose a display to share. Everything visible on it will be shared.' \
+  --column='Display' --ok-label='Share display' --cancel-label='Cancel' \
+  "${sources[@]}"

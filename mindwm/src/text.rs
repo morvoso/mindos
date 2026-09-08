@@ -388,6 +388,35 @@ impl Canvas {
     }
 
     /// Composite another canvas onto this one at (x, y) (source over).
+    pub fn draw_scaled_canvas(&mut self, x: i32, y: i32, w: i32, h: i32, src: &Canvas) {
+        if w <= 0 || h <= 0 || src.width <= 0 || src.height <= 0 { return; }
+        let mut scaled = Canvas::new(w, h);
+        for yy in 0..h {
+            for xx in 0..w {
+                let from = (((yy * src.height / h) * src.width + xx * src.width / w) * 4) as usize;
+                let to = ((yy * w + xx) * 4) as usize;
+                scaled.data[to..to + 4].copy_from_slice(&src.data[from..from + 4]);
+            }
+        }
+        self.draw_canvas(x, y, &scaled);
+    }
+
+    /// Analytic rounded-rectangle falloff: bounded work per pixel, independent
+    /// of blur radius. Large HiDPI launcher shadows must not stall input.
+    pub fn soft_shadow(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, blur: i32, color: Rgba) {
+        let r = r.max(0).min(w.min(h) / 2) as f32;
+        let spread = blur.max(1) as f32;
+        for yy in (y - blur).max(0)..(y + h + blur).min(self.height) {
+            for xx in (x - blur).max(0)..(x + w + blur).min(self.width) {
+                let qx = ((xx - x) as f32 - w as f32 * 0.5).abs() - (w as f32 * 0.5 - r);
+                let qy = ((yy - y) as f32 - h as f32 * 0.5).abs() - (h as f32 * 0.5 - r);
+                let distance = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
+                let a = (1.0 - distance.max(0.0) / spread).clamp(0.0, 1.0);
+                if a > 0.0 { self.blend(xx, yy, [color[0], color[1], color[2], color[3] * a * a]); }
+            }
+        }
+    }
+
     pub fn draw_canvas(&mut self, x: i32, y: i32, src: &Canvas) {
         for sy in 0..src.height {
             let dy = y + sy;

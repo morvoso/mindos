@@ -1,6 +1,20 @@
 # MindOS default applications (mindos-apps). Users override these in
 # ~/.config/mimeapps.list; `xdg-mime default APP.desktop MIME` writes it.
 [Default Applications]
+application/x-ms-dos-executable=mindos-win-open.desktop;
+application/x-msdownload=mindos-win-open.desktop;
+application/x-msi=mindos-win-open.desktop;
+application/vnd.microsoft.portable-executable=mindos-win-open.desktop;
+x-scheme-handler/http=firefox.desktop
+x-scheme-handler/https=firefox.desktop
+text/html=firefox.desktop
+application/pdf=org.gnome.Papers.desktop
+video/mp4=io.github.celluloid_player.Celluloid.desktop
+video/webm=io.github.celluloid_player.Celluloid.desktop
+video/x-matroska=io.github.celluloid_player.Celluloid.desktop
+audio/mpeg=io.github.celluloid_player.Celluloid.desktop
+audio/flac=io.github.celluloid_player.Celluloid.desktop
+audio/ogg=io.github.celluloid_player.Celluloid.desktop
 inode/directory=org.gnome.Nautilus.desktop
 image/png=org.gnome.Loupe.desktop
 image/jpeg=org.gnome.Loupe.desktop

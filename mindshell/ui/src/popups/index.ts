@@ -2,7 +2,6 @@
 // closes it on Escape or a click outside.
 
 import { clamp, h } from '../dom';
-import { rootScale } from '../geometry';
 import { glassLayer } from '../glass';
 import { store } from '../state';
 import type { Anchor } from '../types';
@@ -126,12 +125,11 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
   root.append(backdrop, pop);
 
   const place = () => {
-    const s = rootScale(root);
-    const r = pop.getBoundingClientRect();
-    // What it asked for or what it grew to, whichever is wider: a popup whose
-    // content does not fit its declared width must still be placed on screen.
-    const w = Math.max(content.w ?? 0, r.width / s);
-    const hh = Math.max(content.h ?? 0, r.height / s);
+    // Layout dimensions exclude the entrance animation's scale and already
+    // include max-width/height constraints. Measuring the animated rectangle
+    // underestimates the final height and lets tall popups overlap the shelf.
+    const w = pop.offsetWidth;
+    const hh = pop.offsetHeight;
     const p = placePopup(anchor, w, hh, out);
     pop.style.left = `${p.x}px`;
     pop.style.top = `${p.y}px`;
@@ -141,6 +139,9 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
   };
   placeFn = place;
   place();
+  // Font loading and notification content can change the final height.
+  const observer = new ResizeObserver(place);
+  observer.observe(pop);
   requestAnimationFrame(() => pop.classList.add('in'));
 
   backdrop.addEventListener('pointerdown', doClose);
@@ -154,6 +155,7 @@ export function renderPopupWindow(root: HTMLElement, name: string, arg: unknown,
   window.addEventListener('keydown', onKey);
   content.focus?.();
   return () => {
+    observer.disconnect();
     window.removeEventListener('keydown', onKey);
     root.removeEventListener('keydown', onKey);
     glass.dispose();

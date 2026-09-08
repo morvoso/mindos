@@ -101,6 +101,8 @@ const P: Record<string, string> = {
   shield: '<path d="M12 3l7.5 3v5.5c0 4.5-3 8-7.5 9.5-4.5-1.5-7.5-5-7.5-9.5V6z"/><path d="M9 12l2 2 4-4"/>',
   history: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4v5h5"/><path d="M12 8v4l2.5 2"/>',
   pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="1"/><path d="m3 6 9 7 9-7"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
   swap: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>',
   wrench: '<path d="M14.5 4.5a4.5 4.5 0 0 0-5.7 5.7L4 15v5h5l4.8-4.8a4.5 4.5 0 0 0 5.7-5.7l-3 3-2-2z"/>',

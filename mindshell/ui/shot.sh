@@ -23,6 +23,7 @@ shot preview-settings    'kind=preview&edit=1&popup=widget-settings'
 shot preview-vertical    'kind=preview&vertical=1&labels=1&battery=1'
 shot preview-app         'kind=preview&app=settings&page=displays'
 # The apps at their default window size.
+shot app-overview        'kind=app&id=settings' 1440,1000
 shot app-settings        'kind=app&id=settings&arg=%7B%22page%22%3A%22mind%22%7D' 1040,700
 shot app-wallpaper       'kind=app&id=settings&arg=%7B%22page%22%3A%22wallpaper%22%7D' 1040,700
 shot app-displays        'kind=app&id=settings&arg=%7B%22page%22%3A%22displays%22%7D' 1040,700
@@ -30,7 +31,8 @@ shot app-desktop         'kind=app&id=settings&arg=%7B%22page%22%3A%22shell%22%7
 shot app-updates         'kind=app&id=settings&arg=%7B%22page%22%3A%22updates%22%7D' 1040,760
 shot app-performance     'kind=app&id=settings&arg=%7B%22page%22%3A%22performance%22%7D' 1040,760
 shot app-games           'kind=app&id=settings&arg=%7B%22page%22%3A%22games%22%7D' 1040,760
-shot app-developer       'kind=app&id=settings&arg=%7B%22page%22%3A%22developer%22%7D' 1040,760
+shot app-software        'kind=app&id=settings&arg=%7B%22page%22%3A%22software%22%7D' 1040,760
+shot app-input           'kind=app&id=settings&arg=%7B%22page%22%3A%22input%22%7D' 1040,760
 shot preview-notifications 'kind=preview&popup=notifications'
 shot preview-perf        'kind=preview&popup=perf'
 shot preview-auth        'kind=preview&popup=auth'

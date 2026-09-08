@@ -165,7 +165,7 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerMoveS
     }
 
     fn unset(&mut self, data: &mut AnvilState<BackendData>) {
-        data.drag_finished(&self.window);
+        finish_move(data, &self.window, self.initial_window_location, self.start_data.location);
     }
 }
 
@@ -268,8 +268,30 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchMoveSurfa
     }
 
     fn unset(&mut self, data: &mut AnvilState<BackendData>) {
-        data.drag_finished(&self.window);
+        finish_move(data, &self.window, self.initial_window_location, self.start_data.location);
     }
+}
+
+fn finish_move<BackendData: Backend>(
+    data: &mut AnvilState<BackendData>,
+    window: &WindowElement,
+    initial_location: Point<i32, Logical>,
+    start_location: Point<f64, Logical>,
+) {
+    // Grab callbacks hold the input device's lock. Relayout and focus must
+    // run after that lock is released. Derive the release position from the
+    // last move, which also works for touch without reading a stale pointer.
+    let release = data.space.element_location(window).unwrap_or(initial_location).to_f64()
+        - initial_location.to_f64() + start_location;
+    let window = window.clone();
+    data.handle.insert_idle(move |data| {
+        if window.alive() {
+            data.drag_finished(&window, release);
+        } else {
+            data.layout.dragging = None;
+            data.layout.dirty = true;
+        }
+    });
 }
 
 bitflags::bitflags! {

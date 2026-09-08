@@ -5,14 +5,20 @@
 
 systemctl --user import-environment WAYLAND_DISPLAY DISPLAY MINDWM_SOCKET XDG_CURRENT_DESKTOP XDG_CONFIG_DIRS \
   XDG_SESSION_TYPE XDG_SESSION_DESKTOP 2>/dev/null
+# XDG_CONFIG_HOME is optional; do not leave a previous login's override behind.
+if [[ -n ${XDG_CONFIG_HOME:-} ]]; then
+  systemctl --user import-environment XDG_CONFIG_HOME 2>/dev/null
+else
+  systemctl --user unset-environment XDG_CONFIG_HOME 2>/dev/null
+fi
 dbus-update-activation-environment --systemd --all 2>/dev/null
 # XDG_CONFIG_DIRS carries /etc/mindos/xdg (the GTK settings.ini: Adwaita-dark,
 # fonts); without it the portal dialogs (xdg-desktop-portal-gtk, a systemd
 # user service) come up in the light theme.
-# xdg-desktop-portal-wlr is not started: it needs wlr_screencopy/ext_image_copy_capture,
-# which mindwm does not implement yet (it exits with "Compositor supports neither").
+# Portal backends activate on demand using this session environment.
 
 # Autostart: every executable file in these directories, detached.
+xdg-user-dirs-update
 for dir in /etc/xdg/mindos/autostart "${XDG_CONFIG_HOME:-$HOME/.config}/mindos/autostart"; do
   [[ -d $dir ]] || continue
   for f in "$dir"/*; do
@@ -20,4 +26,14 @@ for dir in /etc/xdg/mindos/autostart "${XDG_CONFIG_HOME:-$HOME/.config}/mindos/a
     setsid -f "$f" >/dev/null 2>&1
   done
 done
+
+# Generate units from the standard desktop autostart directories after the
+# session environment is available. Its search paths come from environment.d;
+# imported variables above are passed to the apps. The generator handles user overrides,
+# Hidden, TryExec, OnlyShowIn and NotShowIn, without shell-evaluating Exec.
+systemctl --user daemon-reload
+systemctl --user start --no-block mindos-session.target
+if [[ ${MINDOS_OPEN_LIBRARY:-0} == 1 ]]; then
+  setsid -f mindshell --app library >/dev/null 2>&1
+fi
 exit 0

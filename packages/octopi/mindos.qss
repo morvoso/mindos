@@ -1,0 +1,22 @@
+/* MindOS palette for the standard Octopi UI. */
+QWidget { background-color: #10151c; color: #e6edf3; selection-background-color: #176978; selection-color: #ffffff; }
+QToolTip { background-color: #18232e; color: #e6edf3; border: 1px solid #385062; padding: 5px; }
+QAbstractItemView, QTextEdit, QTextBrowser, QPlainTextEdit, QLineEdit {
+  background-color: #0a0d12; alternate-background-color: #131c26; color: #e6edf3;
+  border: 1px solid #2f4257; selection-background-color: #176978; selection-color: #ffffff;
+}
+QLineEdit { padding: 5px; border-radius: 4px; }
+QLineEdit:focus { border-color: #19d3e5; }
+QHeaderView::section { background-color: #1b2734; color: #e6edf3; padding: 5px; border: 1px solid #2f4257; }
+QPushButton, QToolButton, QComboBox { background-color: #1b2734; border: 1px solid #2f4257; border-radius: 4px; padding: 5px; }
+QPushButton:hover, QToolButton:hover, QComboBox:hover { border-color: #19d3e5; background-color: #233748; }
+QPushButton:disabled, QToolButton:disabled { color: #728196; background-color: #151c25; }
+QMenu, QMenuBar { background-color: #10151c; color: #e6edf3; }
+QMenu::item:selected, QMenuBar::item:selected { background-color: #176978; }
+QTabBar::tab { background-color: #151f2b; color: #b7c5d6; border: 1px solid #2f4257; padding: 7px 12px; }
+QTabBar::tab:selected { background-color: #233748; color: #ffffff; border-bottom-color: #19d3e5; }
+QTabWidget::pane, QGroupBox { border: 1px solid #2f4257; }
+QScrollBar { background-color: #10151c; }
+QScrollBar::handle { background-color: #41576b; border-radius: 4px; min-height: 20px; min-width: 20px; }
+QProgressBar { border: 1px solid #2f4257; text-align: center; }
+QProgressBar::chunk { background-color: #176978; }

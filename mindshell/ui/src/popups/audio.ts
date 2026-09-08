@@ -4,14 +4,16 @@ import { icon } from '../icons';
 import { volumeIcon } from '../widgets/audio';
 import type { AudioState } from '../types';
 import type { PopupContent, PopupCtx } from './shared';
+import { openApp } from '../apps/shared';
 
 export function audioPopup(ctx: PopupCtx): PopupContent {
   const store = ctx.store;
   const mute = h('button', { class: 'tool big', title: 'Mute' });
-  const slider = h('input', { type: 'range', min: 0, max: 100, step: 1, class: 'vol' }) as HTMLInputElement;
+  const slider = h('input', { type: 'range', min: 0, max: 100, step: 1, class: 'vol', 'aria-label': 'Output volume' }) as HTMLInputElement;
   const val = h('span', { class: 'mono vol-val' });
   const sink = h('div', { class: 'aud-sink' });
   const el = h('div', { class: 'pop-body aud' }, h('div', { class: 'pop-title' }, 'OUTPUT'), sink, h('div', { class: 'aud-row' }, mute, slider, val));
+  el.append(h('button', { class: 'btn small', onclick: () => { openApp('settings', 'connections'); ctx.close(); } }, icon('gear', 14), 'Sound & devices'));
 
   const render = () => {
     const a = store.state.audio;

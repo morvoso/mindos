@@ -62,7 +62,8 @@ pub async fn run() -> Vec<Finding> {
     }
 
     // disk space
-    let df = sh("df -P -x tmpfs -x devtmpfs -x efivarfs -x overlay 2>/dev/null | awk 'NR>1 {gsub(\"%\",\"\",$5); if ($5+0 >= 90) print $6\" \"$5\" \"$4}'").await;
+    // Immutable live media and Flatpak images are full by design.
+    let df = sh("df -P -x tmpfs -x devtmpfs -x efivarfs -x overlay -x squashfs -x erofs -x iso9660 2>/dev/null | awk 'NR>1 {gsub(\"%\",\"\",$5); if ($5+0 >= 90) print $6\" \"$5\" \"$4}'").await;
     for line in df.lines() {
         let mut it = line.split_whitespace();
         let (Some(mnt), Some(pct), Some(avail_k)) = (it.next(), it.next(), it.next()) else { continue };
@@ -99,7 +100,7 @@ pub async fn run() -> Vec<Finding> {
 
     // snapshots: none at all means no way back
     let snaps = sh("snapper --no-dbus --csvout -c root list --columns number 2>/dev/null | grep -cE '^[1-9][0-9]*$' ").await;
-    if Path::new("/etc/snapper/configs/root").exists() && snaps.trim() == "0" {
+    if !Path::new("/run/archiso/bootmnt").exists() && Path::new("/etc/snapper/configs/root").exists() && snaps.trim() == "0" {
         f.push(finding("no-snapshots", "info", "No system snapshots yet", "The first update creates one; snapshots appear in the boot menu and `mindos-boot restore` goes back to one.".into()));
     }
     f

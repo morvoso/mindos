@@ -7,6 +7,9 @@ fetched from the DLSS Swapper manifest, and swaps them in and out with backups.
 Standard library only.  Every command accepts --json for the desktop shell.
 """
 import argparse
+import contextlib
+import fcntl
+import stat
 import hashlib
 import json
 import mmap
@@ -58,6 +61,88 @@ SWAPS_FILE = DATA_DIR / "swaps.json"
 
 class Fail(Exception):
     """A user-facing error: printed as text or as {"error": ...} with exit 1."""
+
+
+@contextlib.contextmanager
+def mutation_lock():
+    """Serialize CLI and shell writers; don't queue a second stale action."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(DATA_DIR / '.write.lock', 'a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Fail('Another upscaler change is running. Wait for it to finish and try again.')
+        yield
+
+
+def atomic_json(path, value):
+    """Publish complete JSON only; a failed write leaves the old record intact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as out:
+            json.dump(value, out, indent=1, sort_keys=True)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, path)
+        sync_directory(path.parent)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def staged_copy(source, destination, mode=None):
+    """Copy beside the destination; never truncate a live DLL or its backup."""
+    destination = Path(destination)
+    fd, tmp = tempfile.mkstemp(prefix='.' + destination.name + '-', dir=destination.parent)
+    try:
+        with os.fdopen(fd, 'wb') as out, open(source, 'rb') as src:
+            shutil.copyfileobj(src, out)
+            os.fchmod(out.fileno(), mode if mode is not None else stat.S_IMODE(os.fstat(src.fileno()).st_mode))
+            out.flush()
+            os.fsync(out.fileno())
+        yield Path(tmp)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def atomic_copy(source, destination, mode=None, expected_hash=None):
+    with staged_copy(source, destination, mode) as tmp:
+        if expected_hash and sha256sum(tmp) != expected_hash:
+            raise Fail('Source changed while copying; no replacement was made.')
+        os.replace(tmp, destination)
+        sync_directory(Path(destination).parent)
+
+
+def sha256sum(path):
+    with open(path, 'rb') as src:
+        return hashlib.file_digest(src, 'sha256').hexdigest()
+
+
+def regular_file(path):
+    """Do not replace symlinks, directories or special files in a game."""
+    path = Path(path)
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise Fail(f'{path}: expected a regular file, not a link or special file')
+    return path
+
+
+def known_hashes(record):
+    hashes = {record.get('to_hash'), record.get('before_hash'), record.get('backup_hash')} - {None}
+    if not hashes and record.get('kind') in KINDS:
+        # Upgrade old swap records only when their library DLL proves identity.
+        entry = find_lib(record['kind'], record.get('to_version'))
+        if entry:
+            hashes.add(sha256sum(entry['path']))
+    return hashes
 
 
 def fetch(url):
@@ -132,9 +217,7 @@ def load_manifest(refresh=False):
                 data = r.read()
             json.loads(data)  # refuse to cache garbage
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_bytes(data)
-            tmp.replace(path)
+            atomic_json(path, json.loads(data))
         except (OSError, urllib.error.URLError, ValueError) as e:
             if not path.exists():
                 raise Fail(f"cannot fetch manifest: {e}")
@@ -173,6 +256,9 @@ def check_kind(kind):
 
 def lib_dir(kind, version):
     """Library directory for a kind/version pair."""
+    check_kind(kind)
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,7}", version):
+        raise Fail(f"invalid DLL version {version!r}; use a dotted numeric version")
     return DATA_DIR / kind / version
 
 
@@ -222,8 +308,8 @@ def store_dll(src, kind, version, source, md5=None):
     dst_dir = lib_dir(kind, version)
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / KINDS[kind][0]
-    shutil.copyfile(src, dst)
-    (dst_dir / "meta.json").write_text(json.dumps({"source": source, "md5": md5 or md5sum(dst)}))
+    atomic_copy(src, dst)
+    atomic_json(dst_dir / "meta.json", {"source": source, "md5": md5 or md5sum(dst)})
     return lib_entry_from(dst, kind, version, source)
 
 
@@ -275,6 +361,9 @@ def import_dll(path):
 
 def delete(kind, version):
     """Remove a downloaded or imported library entry."""
+    directory = lib_dir(kind, version)
+    if directory.is_symlink():
+        raise Fail(f"{directory}: refusing to delete a linked library directory")
     entry = find_lib(kind, version)
     if not entry:
         raise Fail(f"{kind} {version} is not in the library")
@@ -293,6 +382,25 @@ def load_json(path, default):
             return json.load(f)
     except (OSError, ValueError):
         return default
+
+
+def load_swaps():
+    try:
+        with open(SWAPS_FILE) as src:
+            records = json.load(src)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise Fail(f'Cannot read swap history {SWAPS_FILE}: {e}. Original DLL backups have not been changed.') from e
+    if not isinstance(records, dict) or any(
+        not isinstance(path, str) or not isinstance(record, dict)
+        or record.get('kind') not in KINDS or not isinstance(record.get('to_version'), str)
+        or any(key in record and (not isinstance(record[key], str) or not re.fullmatch(r'[0-9a-f]{64}', record[key]))
+               for key in ('before_hash', 'to_hash', 'backup_hash'))
+        for path, record in records.items()
+    ):
+        raise Fail(f'Invalid swap history in {SWAPS_FILE}. Original DLL backups have not been changed.')
+    return records
 
 
 def steam_games():
@@ -377,10 +485,19 @@ def scan_dir(path, swaps):
             if not kind:
                 continue
             file = os.path.join(cur, name)
-            info = {"kind": kind, "label": KINDS[kind][1], "file": file,
-                    "version": dll_version(file), "swapped": file in swaps}
+            if os.path.islink(file) or not os.path.isfile(file):
+                continue
+            record = swaps.get(file)
             backup = file + BACKUP_SUFFIX
-            if os.path.isfile(backup):
+            # Hash only previously swapped DLLs; ordinary scans stay cheap.
+            current_hash = sha256sum(file) if record else None
+            changed = bool(record) and current_hash not in known_hashes(record)
+            swapped = bool(record) and not changed and current_hash != record.get('backup_hash')
+            has_backup = os.path.isfile(backup) and not os.path.islink(backup)
+            info = {"kind": kind, "label": KINDS[kind][1], "file": file,
+                    "version": dll_version(file), "swapped": swapped,
+                    "changed": changed, "restorable": swapped and has_backup}
+            if has_backup:
                 info["backup_version"] = dll_version(backup)
             found.append(info)
     return found
@@ -388,7 +505,7 @@ def scan_dir(path, swaps):
 
 def all_games(include_empty=False):
     """Every discovered game with its DLLs (empty ones only with include_empty)."""
-    swaps = load_json(SWAPS_FILE, {})
+    swaps = load_swaps()
     games, seen = [], set()
     for gid, name, source, path in steam_games() + heroic_games() + lutris_games() + extra_games():
         if gid in seen or not path.is_dir():
@@ -410,7 +527,7 @@ def find_game(query):
                 return g
         path = Path(real)
         return {"id": "dir:" + real, "name": path.name, "source": "dir", "path": real,
-                "dlls": scan_dir(path, load_json(SWAPS_FILE, {}))}
+                "dlls": scan_dir(path, load_swaps())}
     for key in (lambda g: g["id"] == query, lambda g: g["name"] == query,
                 lambda g: query.lower() in g["name"].lower()):
         hits = [g for g in games if key(g)]
@@ -425,10 +542,7 @@ def find_game(query):
 
 def save_swaps(swaps):
     """Write swaps.json atomically."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = SWAPS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(swaps, indent=1, sort_keys=True))
-    tmp.replace(SWAPS_FILE)
+    atomic_json(SWAPS_FILE, swaps)
 
 
 def resolve_version(manifest_fn, kind, version):
@@ -445,7 +559,7 @@ def resolve_version(manifest_fn, kind, version):
 
 
 def swap(game, kind, version):
-    """Replace every <kind> DLL in a game with the library version, keeping a pristine backup."""
+    """Atomically replace each DLL, recording recoverable before/after hashes."""
     check_kind(kind)
     entry = find_lib(kind, version)
     if not entry:
@@ -453,46 +567,91 @@ def swap(game, kind, version):
     targets = [d for d in game["dlls"] if d["kind"] == kind]
     if not targets:
         raise Fail(f"{game['name']} has no {KINDS[kind][0]}")
-    swaps = load_json(SWAPS_FILE, {})
+    swaps = load_swaps()
     done = []
     for d in targets:
-        file = d["file"]
-        backup = file + BACKUP_SUFFIX
         try:
-            if not os.path.exists(backup):
-                os.rename(file, backup)
-            shutil.copyfile(entry["path"], file)
-        except OSError as e:
-            raise Fail(f"{file}: {e}")
-        from_version = swaps.get(file, {}).get("from_version") or dll_version(backup)
-        swaps[file] = {"kind": kind, "from_version": from_version, "to_version": version,
-                       "when": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-        done.append({"file": file, "from_version": from_version, "to_version": version})
-    save_swaps(swaps)
-    return {"game": game["id"], "name": game["name"], "kind": kind, "version": version,
-            "source": entry["source"], "files": done}
+            file = regular_file(d['file'])
+            key = str(file)
+            backup = Path(key + BACKUP_SUFFIX)
+            if backup.exists() or backup.is_symlink():
+                regular_file(backup)
+            before = sha256sum(file)
+            old = swaps.get(key, {})
+            # An updater's DLL is the new original. Retain the old backup by
+            # content hash so reapplying never silently throws an original away.
+            rebase = not old or before not in known_hashes(old)
+            if backup.exists() and old.get('backup_hash') and sha256sum(backup) != old['backup_hash']:
+                raise Fail('Original backup changed; refusing to replace its recorded identity.')
+            if not backup.exists() and old and not rebase and before != old.get('backup_hash'):
+                raise Fail('Original backup is missing. Verify the game in its launcher before reapplying.')
+            with staged_copy(entry['path'], file, stat.S_IMODE(file.stat().st_mode)) as staged:
+                target_hash = sha256sum(staged)
+                if entry.get('md5') and md5sum(staged) != entry['md5'].upper():
+                    raise Fail('Library DLL changed since import/download; import or download it again.')
+                if backup.exists() and rebase and sha256sum(backup) != before:
+                    archive = Path(str(backup) + '.' + sha256sum(backup))
+                    if archive.exists() or archive.is_symlink():
+                        regular_file(archive)
+                        if sha256sum(archive) != sha256sum(backup):
+                            raise Fail(f'{archive}: archived original has changed')
+                    else:
+                        atomic_copy(backup, archive)
+                if not backup.exists() or rebase:
+                    atomic_copy(file, backup, expected_hash=before)
+                if sha256sum(file) != before:
+                    raise Fail('Game DLL changed during the operation. Close the game/updater and scan again.')
+                record = {'kind': kind, 'from_version': dll_version(backup), 'to_version': version,
+                          'before_hash': before, 'to_hash': target_hash, 'backup_hash': sha256sum(backup),
+                          'when': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+                swaps[key] = record
+                # Write ahead: after a power loss either complete file is known,
+                # and Restore can recover even if the replacement never happened.
+                save_swaps(swaps)
+                os.replace(staged, file)
+                done.append({'file': key, 'from_version': record['from_version'], 'to_version': version})
+                sync_directory(file.parent)
+        except (OSError, Fail) as e:
+            raise Fail(f"{d['file']}: {e}. {len(done)} DLL(s) changed; originals are retained.") from e
+    return {'game': game['id'], 'name': game['name'], 'kind': kind, 'version': version,
+            'source': entry['source'], 'files': done}
 
 
 def restore(game, kind=None):
-    """Put the original DLL(s) back from their .mindos-orig backups."""
+    """Restore a verified original without overwriting a launcher's later update."""
     if kind:
         check_kind(kind)
-    swaps = load_json(SWAPS_FILE, {})
+    swaps = load_swaps()
     done = []
-    for d in game["dlls"]:
-        backup = d["file"] + BACKUP_SUFFIX
-        if (kind and d["kind"] != kind) or not os.path.isfile(backup):
+    for d in game['dlls']:
+        key = d['file']
+        backup = Path(key + BACKUP_SUFFIX)
+        if (kind and d['kind'] != kind) or not (backup.exists() or backup.is_symlink()):
             continue
         try:
-            shutil.copyfile(backup, d["file"])
-        except OSError as e:
-            raise Fail(f"{d['file']}: {e}")
-        swaps.pop(d["file"], None)
-        done.append({"file": d["file"], "kind": d["kind"], "version": dll_version(backup)})
+            file = regular_file(key)
+            regular_file(backup)
+            before, original = sha256sum(file), sha256sum(backup)
+            record = swaps.get(key, {})
+            if record.get('backup_hash') and record['backup_hash'] != original:
+                raise Fail('Original backup changed; refusing to restore an unverified file.')
+            if before != original and before not in known_hashes(record):
+                raise Fail('Game DLL changed since the swap. Scan again and reapply a library version to use the updated game DLL as its new original.')
+            with staged_copy(backup, file, stat.S_IMODE(file.stat().st_mode)) as staged:
+                if sha256sum(staged) != original:
+                    raise Fail('Original backup changed while copying; no replacement was made.')
+                if sha256sum(file) != before:
+                    raise Fail('Game DLL changed during the operation. Close the game/updater and scan again.')
+                os.replace(staged, file)
+                done.append({'file': key, 'kind': d['kind'], 'version': dll_version(file)})
+                sync_directory(file.parent)
+            swaps.pop(key, None)
+            save_swaps(swaps)
+        except (OSError, Fail) as e:
+            raise Fail(f'{key}: {e}. {len(done)} DLL(s) restored; originals are retained.') from e
     if not done:
         raise Fail(f"nothing to restore in {game['name']}")
-    save_swaps(swaps)
-    return {"game": game["id"], "name": game["name"], "files": done}
+    return {'game': game['id'], 'name': game['name'], 'files': done}
 
 
 # ---------------------------------------------------------------- output
@@ -517,7 +676,7 @@ def print_games(games):
         print(f"{g['name']}  [{g['source']}]  {g['path']}  ({g['id']})")
         rows = []
         for d in g["dlls"]:
-            note = f"swapped, original {d.get('backup_version', '?')}" if d["swapped"] else ""
+            note = "game DLL changed since swap" if d.get("changed") else f"swapped, original {d.get('backup_version', '?')}" if d["swapped"] else ""
             rows.append(["  " + d["label"], d["version"], os.path.relpath(d["file"], g["path"]), note])
         table(rows) if rows else print("  (no upscaler DLLs)")
 
@@ -583,8 +742,12 @@ def main():
         return 0
     manifest = lambda: load_manifest(args.refresh)
     try:
-        out = run(args, manifest)
-    except Fail as e:
+        if args.cmd in {'swap', 'restore', 'download', 'import', 'delete'}:
+            with mutation_lock():
+                out = run(args, manifest)
+        else:
+            out = run(args, manifest)
+    except (Fail, OSError, ValueError, zipfile.BadZipFile) as e:
         if args.json:
             print(json.dumps({"error": str(e)}))
         else:
@@ -608,8 +771,9 @@ def run(args, manifest):
         return out
     if args.cmd == "library":
         out = library()
-        j or table([[e["kind"], e["version"], e["source"], human_size(e["size"]), e["path"]] for e in out],
-                   ["KIND", "VERSION", "SOURCE", "SIZE", "PATH"]) if out else print("library is empty")
+        if not j:
+            table([[e["kind"], e["version"], e["source"], human_size(e["size"]), e["path"]] for e in out],
+                  ["KIND", "VERSION", "SOURCE", "SIZE", "PATH"]) if out else print("library is empty")
         return out
     if args.cmd == "versions":
         have = {e["version"] for e in library() if e["kind"] == args.kind}

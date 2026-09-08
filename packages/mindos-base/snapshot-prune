@@ -1,0 +1,152 @@
+#!/usr/bin/python3
+"""Remove empty systemd child subvolumes before Snapper deletes a kept root.
+
+Only roots created by mindos-boot restore are eligible. Never recursively
+delete subvolumes: container/portable-image data must keep its parent alive.
+"""
+
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+import btrfsutil
+
+
+SYSTEM_DIRS = {"var/lib/machines", "var/lib/portables"}
+
+
+def mounted(snapshot):
+    """Include bind mounts and snapshot boots underneath a volatile overlay."""
+    fs_uuid = subprocess.check_output(
+        ["findmnt", "-n", "-o", "UUID", "--target", str(snapshot)], text=True
+    ).strip()
+    if not fs_uuid:
+        raise RuntimeError("cannot identify snapshot filesystem")
+    root = "/" + btrfsutil.subvolume_path(snapshot).lstrip("/")
+    mounts = json.loads(subprocess.check_output(
+        ["findmnt", "--json", "--list", "--types", "btrfs", "--output", "UUID,FSROOT"],
+        text=True,
+    ))
+    return any(m.get("uuid") == fs_uuid and
+               (m.get("fsroot") == root or m.get("fsroot", "").startswith(root + "/"))
+               for m in mounts["filesystems"])
+
+
+def kept_root(snapshot):
+    snapshot = Path(snapshot).absolute()
+    if snapshot.resolve(strict=True) != snapshot:
+        raise RuntimeError("snapshot path contains a symlink")
+    info = ET.parse(snapshot.parent / "info.xml").getroot()
+    if (info.findtext("type") != "single" or
+            not re.fullmatch(r"the system before restoring #[0-9]+", info.findtext("description", ""))):
+        return None
+    return snapshot
+
+
+def seal(snapshot):
+    """Finish a restore after the old root is no longer in use.
+
+    Only change the parent flag. Container data and child flags are left alone;
+    the pruning path still verifies every child before permitting deletion.
+    Mounted/default/received roots are deferred, including overlay boot lowers.
+    """
+    snapshot = kept_root(snapshot)
+    if snapshot is None or btrfsutil.get_subvolume_read_only(snapshot):
+        return False
+    details = btrfsutil.subvolume_info(snapshot)
+    if (details.received_uuid != bytes(16) or
+            btrfsutil.get_default_subvolume(snapshot) == details.id or mounted(snapshot)):
+        return False
+    btrfsutil.set_subvolume_read_only(snapshot, True)
+    return True
+
+
+def prune(snapshot):
+    snapshot = kept_root(snapshot)
+    if snapshot is None:
+        return 0
+    details = btrfsutil.subvolume_info(snapshot)
+    if (not btrfsutil.get_subvolume_read_only(snapshot) or
+            details.received_uuid != bytes(16) or
+            btrfsutil.get_default_subvolume(snapshot) == details.id or mounted(snapshot)):
+        raise RuntimeError("kept root is writable, received, default or mounted; left intact")
+    children = list(btrfsutil.SubvolumeIterator(snapshot))
+    if not children:
+        return 0
+    if any(path not in SYSTEM_DIRS for path, _ in children):
+        raise RuntimeError("kept root contains other nested subvolumes; left intact")
+
+    frozen = []
+    parent_writable = False
+    removed = 0
+    try:
+        for relative, subvol_id in children:
+            child = snapshot / relative
+            if child.resolve(strict=True) != child or btrfsutil.subvolume_id(child) != subvol_id:
+                raise RuntimeError("nested subvolume path changed; left intact")
+            was_read_only = btrfsutil.get_subvolume_read_only(child)
+            if not was_read_only:
+                btrfsutil.set_subvolume_read_only(child, True)
+                frozen.append(child)
+            # Freeze before inspecting: a concurrent writer cannot add data
+            # between this check and deletion. Inspect every child first.
+            with os.scandir(child) as entries:
+                if next(entries, None) is not None:
+                    raise RuntimeError(f"{relative} contains data; kept root left intact")
+        btrfsutil.set_subvolume_read_only(snapshot, False)
+        parent_writable = True
+        for relative, _ in children:
+            btrfsutil.delete_subvolume(snapshot / relative)
+            removed += 1
+    finally:
+        # Restore the parent first, including when deletion fails halfway.
+        try:
+            if parent_writable:
+                btrfsutil.set_subvolume_read_only(snapshot, True)
+        finally:
+            for child in frozen:
+                if child.exists():
+                    btrfsutil.set_subvolume_read_only(child, False)
+    return removed
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit("snapshot-prune: run as root")
+
+    def interrupted(_signal, _frame):
+        raise InterruptedError("cleanup interrupted")
+
+    signal.signal(signal.SIGTERM, interrupted)
+    failed = False
+    sealing = sys.argv[1:] == ["--seal-kept"]
+    numbers = sys.argv[1:]
+    if sealing:
+        numbers = sorted(p.name for p in Path("/.snapshots").iterdir()
+                         if re.fullmatch(r"[1-9][0-9]*", p.name)
+                         and (p / "info.xml").is_file())
+    for number in numbers:
+        try:
+            if not re.fullmatch(r"[1-9][0-9]*", number):
+                raise ValueError("invalid snapshot number")
+            snapshot = Path("/.snapshots") / number / "snapshot"
+            if sealing:
+                if seal(snapshot):
+                    print(f"snapshot-prune: #{number}: sealed retained root read-only")
+                continue
+            count = prune(snapshot)
+            if count:
+                print(f"snapshot-prune: #{number}: removed {count} empty systemd subvolumes")
+        except (OSError, ValueError, RuntimeError, ET.ParseError, subprocess.SubprocessError) as error:
+            print(f"snapshot-prune: #{number}: {error}", file=sys.stderr)
+            failed = True
+    return int(failed)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

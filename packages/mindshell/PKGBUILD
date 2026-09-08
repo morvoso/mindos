@@ -4,7 +4,7 @@
 # the user service and the session autostart entry.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=34
+pkgrel=54
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://github.com/morvoso/mindos"
@@ -15,7 +15,8 @@ license=('LicenseRef-MindOS' OFL-1.1)
 # `makepkg -s` in the build box resolves dependencies from the Arch repos only.
 depends=(glibc gcc-libs gtk4 webkitgtk-6.0 gtk4-layer-shell glib2 libsoup3
          pam breeze-icons hicolor-icon-theme polkit)
-optdepends=('mindos-session: starts the shell from the session autostart directory'
+optdepends=('mindos-gaming: installed games, session controls, saves and recording integrations'
+            'mindos-session: starts the shell from the session autostart directory'
             'mindos-theme: Orbitron in /usr/share/fonts/mindos and the system font rendering defaults (the UI bundle ships its own copies of Inter, JetBrains Mono and Orbitron)'
             'wireplumber: audio widget (wpctl)'
             'networkmanager: network widget (nmcli)'
@@ -41,8 +42,14 @@ prepare() {
 
 build() {
   cd "$srcdir/mindshell"
-  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=x86-64-v3"
-  cargo build --release --target-dir "$srcdir/target"
+  local cpu
+  case "${MINDOS_CPU:-generic}" in
+    generic) cpu=x86-64 ;;
+    native) cpu=native ;;
+    *) echo "MINDOS_CPU must be generic or native" >&2; return 1 ;;
+  esac
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=$cpu"
+  cargo build --jobs "${MINDOS_JOBS:-$(nproc)}" --release --target-dir "$srcdir/target"
   bash "$srcdir/mindshell/ui/build.sh" "$srcdir/ui-dist"
 }
 
@@ -71,7 +78,7 @@ package() {
   install -Dm644 "$srcdir/mindshell/data/mindos-lock.pam" "$pkgdir/etc/pam.d/mindos-lock"
 
   # The Settings app (the same binary with --app).
-  for entry in mindos-settings mindos-displays mindos-wallpaper; do
+  for entry in mindos-settings mindos-displays mindos-wallpaper mindos-library mindos-gaming mindos-companion; do
     install -Dm644 "$srcdir/mindshell/data/$entry.desktop" "$pkgdir/usr/share/applications/$entry.desktop"
   done
 

@@ -38,7 +38,7 @@ die() { echo "mindos-perf: $*" >&2; exit 1; }
 w() { # write a sysfs/procfs value if the file exists; never fail the run
   local f=$1 v=$2
   [ -w "$f" ] || return 0
-  echo "$v" > "$f" 2>/dev/null
+  { printf '%s\n' "$v" > "$f"; } 2>/dev/null || true
 }
 first() { for f in "$@"; do [ -r "$f" ] && { cat "$f" 2>/dev/null; return; }; done; echo ""; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -48,13 +48,38 @@ need_root() { [ "$(id -u)" = 0 ] || die "$1 needs root (members of the mindos gr
 mode_get() { first "$MODE_FILE" | tr -d '[:space:]'; }
 valid_mode() { case "$1" in balanced|performance|quiet) return 0;; esac; return 1; }
 
+# Serialize mode/config/game transitions, including their hardware writes.
+# Readers do not take the lock: rename publishes a complete value at once.
+lock_state() {
+  need_root "$1"
+  mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
+  exec 9>"$RUN_DIR/lock" || die "cannot open performance lock"
+  flock -x 9 || die "cannot lock performance state"
+  [ ! -r "$CONF" ] || . "$CONF"
+}
+save_value() {
+  local path=$1 value=$2
+  printf '%s\n' "$value" > "$path.tmp" && mv -f -- "$path.tmp" "$path" || die "cannot write $path"
+}
+game_count() {
+  local n; n=$(first "$GAME_FILE")
+  [[ "$n" =~ ^[0-9]{1,9}$ ]] || n=0
+  printf '%s\n' "$((10#$n))"
+}
+
 # ----- knobs ------------------------------------------------------------------
 cpu_policies() { ls -d /sys/devices/system/cpu/cpufreq/policy* 2>/dev/null; }
 
 set_governor() { # $1 governor, $2 epp
-  local p gov=$1 epp=$2 avail
+  local p gov epp=$2 avail
   for p in $(cpu_policies); do
+    gov=$1
     avail=$(first "$p/scaling_available_governors")
+    # Active pstate drivers offer powersave/performance, not schedutil.
+    # Switch the governor BEFORE EPP: performance rejects a balanced EPP.
+    if [ "$gov" = schedutil ]; then
+      case " $avail " in *" schedutil "*) ;; *) gov=powersave;; esac
+    fi
     if [ -n "$avail" ]; then
       case " $avail " in *" $gov "*) w "$p/scaling_governor" "$gov";; esac
     fi
@@ -82,10 +107,12 @@ set_platform_profile() {
 
 set_scheduler() { # $1 on|off
   local unit=mindos-scx.service
+  local -a args=()
+  read -r -a args <<< "$SCX_ARGS"
   if [ "$1" = on ] && [ -n "$SCX_SCHEDULER" ] && have "$SCX_SCHEDULER" && [ -d /sys/kernel/sched_ext ]; then
     if ! systemctl -q is-active "$unit" 2>/dev/null; then
       systemd-run -q --unit="$unit" --collect -p Nice=-10 --description="MindOS sched_ext scheduler ($SCX_SCHEDULER)" \
-        "$(command -v "$SCX_SCHEDULER")" $SCX_ARGS >/dev/null 2>&1 || true
+        "$(command -v "$SCX_SCHEDULER")" "${args[@]}" >/dev/null 2>&1 || true
     fi
   else
     systemctl -q is-active "$unit" 2>/dev/null && systemctl stop "$unit" >/dev/null 2>&1
@@ -96,14 +123,20 @@ set_scheduler() { # $1 on|off
 set_nvidia() { # $1 performance|balanced|quiet
   have nvidia-smi || return 0
   [ -e /dev/nvidiactl ] || return 0
-  nvidia-smi -pm 1 >/dev/null 2>&1
-  local limit
+  local field uuid limit persistence=1
+  [ "$1" = quiet ] && persistence=0
+  nvidia-smi -pm "$persistence" >/dev/null 2>&1
   case "$1:$NVIDIA_POWER_LIMIT" in
-    performance:max) limit=$(nvidia-smi --query-gpu=power.max_limit --format=csv,noheader,nounits 2>/dev/null | head -1);;
-    performance:default|balanced:*|quiet:*) limit=$(nvidia-smi --query-gpu=power.default_limit --format=csv,noheader,nounits 2>/dev/null | head -1);;
-    performance:*) limit=$NVIDIA_POWER_LIMIT;;
+    performance:max) field=power.max_limit;;
+    *) field=power.default_limit;;
   esac
-  [ -n "${limit:-}" ] && nvidia-smi -pl "${limit%.*}" >/dev/null 2>&1
+  # Each GPU has its own supported limits; GPU 0's limit is not a system default.
+  while IFS=, read -r uuid limit; do
+    uuid=${uuid//[[:space:]]/}; limit=${limit//[[:space:]]/}
+    case "$1:$NVIDIA_POWER_LIMIT" in performance:default|performance:max) ;; performance:*) limit=$NVIDIA_POWER_LIMIT;; esac
+    [[ "$limit" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
+    [ -n "$uuid" ] && nvidia-smi -i "$uuid" -pl "$limit" >/dev/null 2>&1
+  done < <(nvidia-smi --query-gpu="uuid,$field" --format=csv,noheader,nounits 2>/dev/null)
   return 0
 }
 
@@ -111,11 +144,11 @@ apply_mode() {
   local m=$1
   case "$m" in
     performance)
+      set_platform_profile performance
       set_governor performance performance
       set_boost 1
-      set_platform_profile performance
       w /sys/kernel/mm/transparent_hugepage/enabled always
-      w /sys/kernel/mm/transparent_hugepage/defrag defer+madvise
+      w /sys/kernel/mm/transparent_hugepage/defrag defer
       w /proc/sys/vm/compaction_proactiveness 0
       w /proc/sys/kernel/split_lock_mitigate 0
       w /proc/sys/vm/swappiness 10
@@ -124,13 +157,9 @@ apply_mode() {
       set_nvidia performance
       ;;
     balanced)
-      set_governor schedutil balance_performance
-      # amd-pstate-epp / intel_pstate: the "powersave" governor + EPP is the balanced setup
-      for p in $(cpu_policies); do
-        case " $(first "$p/scaling_available_governors") " in *" schedutil "*) ;; *) w "$p/scaling_governor" powersave;; esac
-      done
-      set_boost 1
       set_platform_profile balanced
+      set_governor schedutil balance_performance
+      set_boost 1
       w /sys/kernel/mm/transparent_hugepage/enabled always
       w /sys/kernel/mm/transparent_hugepage/defrag madvise
       w /proc/sys/vm/compaction_proactiveness 20
@@ -141,9 +170,9 @@ apply_mode() {
       set_nvidia balanced
       ;;
     quiet)
+      set_platform_profile low-power
       set_governor powersave power
       set_boost 0
-      set_platform_profile low-power
       w /sys/kernel/mm/transparent_hugepage/enabled madvise
       w /sys/kernel/mm/transparent_hugepage/defrag madvise
       w /proc/sys/vm/compaction_proactiveness 20
@@ -155,28 +184,35 @@ apply_mode() {
     *) die "unknown mode '$m' (balanced, performance, quiet)";;
   esac
   mkdir -p "$RUN_DIR"
-  echo "$m" > "$RUN_DIR/effective"
+  save_value "$RUN_DIR/effective" "$m"
   logger -t mindos-perf "mode $m applied" 2>/dev/null || true
 }
 
 # ----- Mind -------------------------------------------------------------------
 mind_sleep() { # $1 on|off — as the invoking user if possible (group mindos)
-  [ "$MIND_SLEEPS_WHILE_GAMING" = 1 ] || return 0
+  # Remember what this gaming interval did, even if its preference changes.
+  if [ "$1" = on ]; then
+    [ "$MIND_SLEEPS_WHILE_GAMING" = 1 ] || return 0
+  else
+    [ -f "$RUN_DIR/mind-slept" ] || return 0
+  fi
   have mind || return 0
+  [ "$1" != on ] || save_value "$RUN_DIR/mind-slept" 1
   local u=${SUDO_USER:-}
   if [ -n "$u" ] && [ "$(id -u)" = 0 ]; then
-    runuser -u "$u" -- mind sleep "$1" >/dev/null 2>&1 || true
+    timeout 5s runuser -u "$u" -- mind sleep "$1" >/dev/null 2>&1 || true
   else
-    mind sleep "$1" >/dev/null 2>&1 || true
+    timeout 5s mind sleep "$1" >/dev/null 2>&1 || true
   fi
+  [ "$1" != off ] || rm -f "$RUN_DIR/mind-slept"
 }
 
 # ----- status -----------------------------------------------------------------
 status_json() {
-  local mode eff game gov epp boost prof thp scx nv nvname nvlimit
+  local mode eff game gov epp boost prof thp scx nv nvname nvlimit persistence=false
   mode=$(mode_get); [ -n "$mode" ] || mode=balanced
   eff=$(first "$RUN_DIR/effective"); [ -n "$eff" ] || eff=$mode
-  game=false; [ -e "$GAME_FILE" ] && [ "$(first "$GAME_FILE")" != 0 ] && game=true
+  game=$(game_count)
   gov=$(first /sys/devices/system/cpu/cpufreq/policy0/scaling_governor)
   epp=$(first /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference)
   boost=$(first /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpufreq/policy0/boost)
@@ -199,13 +235,26 @@ status_json() {
       nv=true
       nvname=${line%%,*}; nvname=${nvname## }
       nvlimit=${line##*,}; nvlimit=${nvlimit## }
+      local pm=${line#*,}; pm=${pm%%,*}; pm=${pm//[[:space:]]/}
+      [ "$pm" != Enabled ] || persistence=true
     fi
   fi
   local cpu; cpu=$(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')
   local driver; driver=$(first /sys/devices/system/cpu/cpufreq/policy0/scaling_driver)
-  printf '{"mode":"%s","effective":"%s","game":%s,"gameMode":"%s","mindSleeps":%s,"cpu":"%s","driver":"%s","governor":"%s","epp":"%s","boost":%s,"platformProfile":"%s","thp":"%s","scheduler":"%s","scx":"%s","nvidia":%s,"gpu":"%s","powerLimit":"%s"}\n' \
-    "$mode" "$eff" "$game" "$GAME_MODE" "$([ "$MIND_SLEEPS_WHILE_GAMING" = 1 ] && echo true || echo false)" \
-    "$cpu" "$driver" "$gov" "$epp" "$([ "$boost" = 1 ] && echo true || echo false)" "$prof" "$thp" "$scx" "$SCX_SCHEDULER" "$nv" "$nvname" "$nvlimit"
+  python3 - "$mode" "$eff" "$game" "$GAME_MODE" "$MIND_SLEEPS_WHILE_GAMING" \
+    "$cpu" "$driver" "$gov" "$epp" "$boost" "$prof" "$thp" "$scx" "$SCX_SCHEDULER" \
+    "$nv" "$nvname" "$nvlimit" "$NVIDIA_POWER_LIMIT" "$persistence" <<'PY'
+import json, sys
+keys = ('mode effective game gameMode mindSleeps cpu driver governor epp boost '
+        'platformProfile thp scheduler scx nvidia gpu powerLimit powerLimitPolicy persistence').split()
+s = dict(zip(keys, sys.argv[1:]))
+s['game'] = int(s['game'])
+s['mindSleeps'] = s['mindSleeps'] == '1'
+s['boost'] = None if s['boost'] == '' else s['boost'] == '1'
+for k in ('nvidia', 'persistence'):
+    s[k] = s[k] == 'true'
+print(json.dumps(s, separators=(',', ':')))
+PY
 }
 
 status_text() {
@@ -246,13 +295,13 @@ case "$cmd" in
     modes_text
     ;;
   set)
-    need_root set
+    lock_state set
     m=${2:-}; valid_mode "$m" || die "usage: mindos-perf set balanced|performance|quiet"
     mkdir -p "$STATE_DIR" "$RUN_DIR"
-    echo "$m" > "$MODE_FILE"
-    if [ -e "$GAME_FILE" ] && [ "$(first "$GAME_FILE")" != 0 ] && [ -n "$GAME_MODE" ]; then
+    save_value "$MODE_FILE" "$m"
+    if [ "$(game_count)" != 0 ] && [ -n "$GAME_MODE" ]; then
       # a game is running: the new mode takes over when it ends
-      echo "$m" > "$PREV_FILE"
+      save_value "$PREV_FILE" "$m"
       echo "mode $m saved; $GAME_MODE stays in effect until the game ends"
     else
       apply_mode "$m"
@@ -260,58 +309,60 @@ case "$cmd" in
     fi
     ;;
   config)
-    need_root config
+    lock_state config
     key=${2:-}; val=${3-}
     case "$key" in
       GAME_MODE) [ -z "$val" ] || valid_mode "$val" || die "GAME_MODE: balanced|performance|quiet or empty";;
       MIND_SLEEPS_WHILE_GAMING) case "$val" in 0|1) ;; *) die "MIND_SLEEPS_WHILE_GAMING: 0|1";; esac;;
-      SCX_SCHEDULER) case "$val" in ''|scx_[a-z0-9_]*) ;; *) die "SCX_SCHEDULER: scx_* or empty";; esac;;
+      SCX_SCHEDULER) [[ -z "$val" || "$val" =~ ^scx_[a-z0-9_]+$ ]] || die "SCX_SCHEDULER: scx_* or empty";;
       SCX_ARGS) case "$val" in *["'"'"'\`$]*) die "SCX_ARGS: no quotes or expansions";; esac;;
-      NVIDIA_POWER_LIMIT) case "$val" in default|max|[0-9]*) ;; *) die "NVIDIA_POWER_LIMIT: default|max|<watts>";; esac;;
+      NVIDIA_POWER_LIMIT) [[ "$val" = default || "$val" = max || "$val" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "NVIDIA_POWER_LIMIT: default|max|<watts>";;
       *) die "config: unknown key '$key'";;
     esac
     mkdir -p "$(dirname "$CONF")"; touch "$CONF"
-    if grep -q "^$key=" "$CONF"; then
-      sed -i "s|^$key=.*|$key=\"$val\"|" "$CONF"
-    else
-      printf '%s="%s"\n' "$key" "$val" >> "$CONF"
-    fi
+    # Preserve comments and quote shell data literally (including SCX_ARGS).
+    { sed "/^$key=/d" "$CONF"; printf '%s=%q\n' "$key" "$val"; } > "$CONF.tmp"
+    chmod --reference="$CONF" "$CONF.tmp"
+    mv -f -- "$CONF.tmp" "$CONF" || die "cannot write $CONF"
     echo "$key=$val"
     # a changed game/scheduler setting takes effect at the next mode switch;
     # the power limit applies now when performance mode is in effect
     if [ "$key" = NVIDIA_POWER_LIMIT ] && [ "$(first "$RUN_DIR/effective")" = performance ]; then
-      . "$CONF"; apply_mode performance
+      . "$CONF"; set_nvidia performance
     fi
     ;;
   apply)
-    need_root apply
+    lock_state apply
     m=$(mode_get); valid_mode "${m:-}" || m=balanced
     mkdir -p "$RUN_DIR"
-    rm -f "$GAME_FILE" "$PREV_FILE"
+    # A service restart must not make the shell/daemon think the game ended.
+    if [ "$(game_count)" != 0 ] && [ -n "$GAME_MODE" ]; then m=$GAME_MODE; fi
     apply_mode "$m"
     ;;
   game-start)
-    need_root game-start
-    mkdir -p "$RUN_DIR"
-    n=$(first "$GAME_FILE"); n=${n:-0}
-    echo $((n + 1)) > "$GAME_FILE"
+    lock_state game-start
+    n=$(game_count)
+    save_value "$GAME_FILE" "$((n + 1))"
     if [ "$n" = 0 ]; then
       mind_sleep on
       if [ -n "$GAME_MODE" ]; then
-        m=$(mode_get); echo "${m:-balanced}" > "$PREV_FILE"
-        [ "$m" = "$GAME_MODE" ] || apply_mode "$GAME_MODE"
+        m=$(mode_get); save_value "$PREV_FILE" "${m:-balanced}"
+        apply_mode "$GAME_MODE"
       fi
     fi
     ;;
   game-end)
-    need_root game-end
-    n=$(first "$GAME_FILE"); n=${n:-0}
-    n=$((n > 0 ? n - 1 : 0))
-    echo "$n" > "$GAME_FILE"
+    lock_state game-end
+    n=$(game_count)
+    [ "$n" != 0 ] || exit 0
+    n=$((n - 1))
+    save_value "$GAME_FILE" "$n"
     if [ "$n" = 0 ]; then
       rm -f "$PREV_FILE"
       m=$(mode_get); m=${m:-balanced}
-      [ "$(first "$RUN_DIR/effective")" = "$m" ] || apply_mode "$m"
+      # GameMode restores its own saved governor before this hook; reapply
+      # even when our effective-mode label already matches the user's wish.
+      apply_mode "$m"
       mind_sleep off
     fi
     ;;

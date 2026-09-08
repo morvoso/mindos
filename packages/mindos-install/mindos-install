@@ -4,7 +4,9 @@
 # Interactive by default. Non-interactive with MINDOS_AUTO=1 and:
 #   MINDOS_DISK=/dev/nvme0n1  MINDOS_HOSTNAME=mindos  MINDOS_USER=alice
 #   MINDOS_PASSWORD=secret    MINDOS_TZ=America/Chicago
-#   MINDOS_INSTALL_GAMING=1   MINDOS_INSTALL_DEV=1   MINDOS_AUTOLOGIN=0
+#   MINDOS_INSTALL_GAMING=1   MINDOS_AUTOLOGIN=0
+#   MINDOS_GPU_DRIVER=auto    (mesa explicitly chooses Nouveau on NVIDIA)
+#   MINDOS_NVIDIA_MODULES=auto (prefer prebuilt; prebuilt or dkms can be forced)
 #
 # Layout: GPT — 1 MiB BIOS boot, 1 GiB EFI (/boot), rest btrfs (@ @home @log @pkg @snapshots).
 # Boot: Limine on the EFI partition (and the BIOS boot partition); snapper keeps
@@ -21,6 +23,7 @@ die()  { printf 'mindos-install: %s\n' "$*" >&2; exit 1; }
 [[ -r /etc/mindos/pacman-install.conf ]] || die "/etc/mindos/pacman-install.conf missing"
 TARGET=/mnt
 AUTO=${MINDOS_AUTO:-0}
+[[ $AUTO == 0 || $AUTO == 1 ]] || die "MINDOS_AUTO must be 0 or 1"
 UEFI=0; [[ -d /sys/firmware/efi/efivars ]] && UEFI=1
 
 # ---- live medium (never offered as a target) ---------------------------------
@@ -34,6 +37,22 @@ list_disks() {
   lsblk -dpno NAME,SIZE,MODEL,TYPE | awk -v live="$live_disk" '$NF=="disk" && $1!=live {print}'
 }
 
+# Check GPU compatibility before requesting passwords or planning disk changes.
+GPU_POLICY=${MINDOS_GPU_DRIVER:-auto}
+if ! GPU_PLAN=$(/usr/lib/mindos/install-gpu.py --json --driver "$GPU_POLICY"); then
+  [[ $AUTO == 0 && $GPU_POLICY == auto ]] || die "automatic graphics selection failed"
+  echo "This graphics card cannot use the current NVIDIA driver."
+  echo "1) Try Mesa/Nouveau compatibility graphics (gaming performance may be limited)"
+  echo "2) Cancel installation"
+  ask gpu_choice "Choose an option" 2
+  [[ $gpu_choice == 1 ]] || die "installation cancelled before disk changes"
+  GPU_POLICY=mesa
+  GPU_PLAN=$(/usr/lib/mindos/install-gpu.py --json --driver mesa)
+fi
+mapfile -t GPU_PKGS < <(python3 -c 'import json,sys; sys.stdout.write("\n".join(json.load(sys.stdin)["packages"]))' <<<"$GPU_PLAN")
+mapfile -t GPU_MODULES < <(python3 -c 'import json,sys; sys.stdout.write("\n".join(json.load(sys.stdin)["modules"]))' <<<"$GPU_PLAN")
+GPU_SUMMARY=$(python3 -c 'import json,sys; p=json.load(sys.stdin); print(p["driver"] + " — " + "; ".join(d["name"] for d in p["devices"]))' <<<"$GPU_PLAN")
+
 # ---- inputs -----------------------------------------------------------------
 echo "${RED} MindOS installer ${NC}"
 echo "Firmware: $([[ $UEFI == 1 ]] && echo UEFI || echo BIOS)   live medium: ${live_disk:-unknown}"
@@ -45,7 +64,7 @@ if [[ $AUTO == 1 ]]; then
   PASSWORD=${MINDOS_PASSWORD:?MINDOS_PASSWORD required}
   TZ_=${MINDOS_TZ:-America/Chicago}
   GAMING=${MINDOS_INSTALL_GAMING:-1}
-  DEV=${MINDOS_INSTALL_DEV:-1}
+  DEV=0
   AUTOLOGIN=${MINDOS_AUTOLOGIN:-0}
 else
   say "Disks:"; list_disks | sed 's/^/    /'; echo
@@ -67,22 +86,33 @@ else
   ask TZ_ "Timezone" "${deftz:-America/Chicago}"
   ask g "Install the gaming stack (Steam, gamescope, Lutris, Wine)? [Y/n]" Y
   GAMING=$([[ $g =~ ^[Nn] ]] && echo 0 || echo 1)
-  ask d "Install the development stack (Rust, Node, Docker, editors)? [Y/n]" Y
-  DEV=$([[ $d =~ ^[Nn] ]] && echo 0 || echo 1)
+  DEV=0
   ask l "Skip the login screen and sign $USERNAME in automatically at boot? [y/N]" N
   AUTOLOGIN=$([[ $l =~ ^[Yy] ]] && echo 1 || echo 0)
 fi
-[[ -b $DISK ]] || die "$DISK is not a block device"
-[[ -f /usr/share/zoneinfo/$TZ_ ]] || die "unknown timezone $TZ_"
+DISK=$(readlink -f -- "$DISK") || die "cannot resolve install disk"
+# Validate both entry paths before constructing shell configuration or touching
+# storage. The same mounted-device checks protect live media and installed roots.
+/usr/lib/mindos/install-check.py "$DISK" "$HOSTNAME_" "$USERNAME" "$TZ_" "$GAMING" "$DEV" "$AUTOLOGIN"
+[[ -n $PASSWORD && $PASSWORD != *$'\n'* && $PASSWORD != *$'\r'* ]] || die "password must be nonempty and contain no line breaks"
 LOCALE=en_US.UTF-8
 KEYMAP=us
-NVIDIA=0; lspci -d 10de: 2>/dev/null | grep -qiE "vga|3d|display" && NVIDIA=1
-AMDGPU=0; lspci -d 1002: 2>/dev/null | grep -qiE "vga|3d|display" && AMDGPU=1
 
-PKGS=(base base-devel linux-firmware mindos-base mindos-session mindos-mind mindwm mindos-theme mindos-apps)
-[[ $NVIDIA == 1 ]] && PKGS+=(ggml-cuda)
+# Select the JACK provider explicitly before dependency resolution. Otherwise
+# media apps may select jack2 before mindos-session pulls in pipewire-jack.
+PKGS=(base linux-firmware pipewire-jack mindos-base mindos-session mindos-mind mindwm mindos-theme mindos-apps)
+PKGS+=("${GPU_PKGS[@]}")
 [[ $GAMING == 1 ]] && PKGS+=(mindos-gaming)
-[[ $DEV == 1 ]] && PKGS+=(mindos-dev)
+
+# Resolve from an empty package DB before erasing anything. A rolling Arch
+# userspace update can outpace our prebuilt NVIDIA modules; auto then uses DKMS.
+say "Checking package repositories and dependencies"
+if ! grep -q '^Server' /etc/pacman.d/mirrorlist 2>/dev/null; then
+  sed -E -i 's/^#(Server = https:)/\1/' /etc/pacman.d/mirrorlist
+fi
+PACKAGE_PLAN=$(/usr/lib/mindos/install-packages.py --nvidia-modules "${MINDOS_NVIDIA_MODULES:-auto}" -- "${PKGS[@]}")
+mapfile -t PKGS < <(python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["packages"]))' <<<"$PACKAGE_PLAN")
+python3 -c 'import json,sys; p=json.load(sys.stdin); print("NVIDIA modules: " + p["nvidia_modules"]) if p["nvidia_modules"] != "none" else None; print("Using DKMS because prebuilt dependencies are unavailable: " + p["fallback_reason"]) if p["fallback_reason"] else None' <<<"$PACKAGE_PLAN"
 
 echo
 say "Plan"
@@ -90,15 +120,17 @@ cat <<PLAN
     disk      $DISK  (GPT: BIOS boot 1M, EFI 1G, btrfs rest)
     hostname  $HOSTNAME_      user  $USERNAME      timezone  $TZ_
     login     $([[ $AUTOLOGIN == 1 ]] && echo "automatic (no login screen)" || echo "MindOS login screen")
-    gpu       nvidia=$NVIDIA amdgpu=$AMDGPU
+    graphics  $GPU_SUMMARY
     packages  ${PKGS[*]}
 PLAN
 [[ $AUTO == 1 ]] || { read -rp "Proceed? [y/N] " ok; [[ $ok =~ ^[Yy] ]] || die "aborted"; }
 
 # ---- partition + format -----------------------------------------------------
+# Recheck after the review prompt in case devices or mounts changed.
+GPU_RECHECK=$(/usr/lib/mindos/install-gpu.py --json --driver "$GPU_POLICY")
+[[ $GPU_RECHECK == "$GPU_PLAN" ]] || die "graphics hardware changed during review; restart the installer"
+/usr/lib/mindos/install-check.py "$DISK" "$HOSTNAME_" "$USERNAME" "$TZ_" "$GAMING" "$DEV" "$AUTOLOGIN"
 say "Partitioning $DISK"
-umount -R "$TARGET" 2>/dev/null || true
-swapoff -a 2>/dev/null || true
 sgdisk --zap-all "$DISK" >/dev/null
 sgdisk --clear \
   -n 1:0:+1M   -t 1:ef02 -c 1:"BIOS boot" \
@@ -127,19 +159,19 @@ mount "$EFI" "$TARGET/boot"
 
 # ---- mirrors + local MindOS repo -------------------------------------------
 say "Package repositories"
-if ! grep -q '^Server' /etc/pacman.d/mirrorlist 2>/dev/null; then
-  sed -E -i 's/^#(Server = https:)/\1/' /etc/pacman.d/mirrorlist
-fi
 if [[ -d /var/lib/mindos/repo ]]; then
   mkdir -p "$TARGET/var/lib/mindos"
   cp -a /var/lib/mindos/repo "$TARGET/var/lib/mindos/"
 fi
-pacman -Sy --config /etc/mindos/pacman-install.conf >/dev/null
 
 # ---- install ----------------------------------------------------------------
 say "Installing packages (this needs internet for the Arch repositories)"
-pacstrap -C /etc/mindos/pacman-install.conf "$TARGET" "${PKGS[@]}"
+# The root Snapper configuration and baseline are created below. Bootstrap
+# package hooks cannot snapshot that not-yet-configured target filesystem.
+SNAP_PAC_SKIP=1 pacstrap -C /etc/mindos/pacman-install.conf "$TARGET" "${PKGS[@]}"
 genfstab -U "$TARGET" >> "$TARGET/etc/fstab"
+# Named subvolumes keep their paths across rollback, but receive new IDs.
+"$TARGET/usr/lib/mindos/fstab-paths" "$TARGET/etc/fstab"
 install -Dm644 /etc/mindos/pacman-install.conf "$TARGET/etc/pacman.conf"
 cp /etc/pacman.d/mirrorlist "$TARGET/etc/pacman.d/mirrorlist"
 if [[ -d /var/lib/mindos/models ]]; then
@@ -150,9 +182,7 @@ fi
 # ---- configure --------------------------------------------------------------
 say "Configuring the system"
 # mkinitcpio: MindOS hooks, modules trimmed to the GPUs present
-mods=()
-[[ $NVIDIA == 1 ]] && mods+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
-[[ $AMDGPU == 1 ]] && mods+=(amdgpu)
+mods=("${GPU_MODULES[@]}")
 mkdir -p "$TARGET/etc/mkinitcpio.conf.d"
 sed "s/^MODULES=.*/MODULES=(${mods[*]})/" /usr/share/mindos/mkinitcpio-mindos.conf \
   > "$TARGET/etc/mkinitcpio.conf.d/mindos.conf"
@@ -178,8 +208,10 @@ echo "KEYMAP=$KEYMAP" > /etc/vconsole.conf
 echo "$HOSTNAME_" > /etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" > /etc/hosts
 systemd-sysusers >/dev/null 2>&1 || true
+# Logind grants primary DRM access to the active session. Permanent video
+# membership lets inactive applications acquire DRM master and block VT return.
 groups=""
-for g in wheel mindos video input audio storage seat docker; do
+for g in wheel mindos input audio storage seat; do
   getent group "\$g" >/dev/null && groups="\$groups,\$g"
 done
 useradd -m -s /bin/bash -G "\${groups#,}" "$USERNAME"
@@ -197,9 +229,6 @@ mindos-boot sync
 for u in greetd mindd NetworkManager bluetooth fstrim.timer systemd-timesyncd mindos-console-theme snapper-cleanup.timer; do
   systemctl enable "\$u" >/dev/null 2>&1 || echo "  (could not enable \$u)"
 done
-if [[ $DEV == 1 ]] && systemctl list-unit-files docker.service >/dev/null 2>&1; then
-  systemctl enable docker >/dev/null 2>&1 || true
-fi
 CHROOT
 chmod 700 "$TARGET/root/mindos-configure.sh"
 arch-chroot "$TARGET" /root/mindos-configure.sh

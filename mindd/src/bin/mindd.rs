@@ -65,6 +65,11 @@ async fn main() -> Result<()> {
             }
             tokio::time::sleep(Duration::from_secs(45)).await;
             loop {
+                // Scheduled journal/disk/package probes can wait for the game.
+                // User-requested and post-update verification remain immediate.
+                while mindos_mind::daemon::updates::game_running() {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
                 let _ = tokio::time::timeout(Duration::from_secs(120), mindos_mind::daemon::health::run_and_notify(&d)).await;
                 tokio::time::sleep(Duration::from_secs(mins * 60)).await;
             }

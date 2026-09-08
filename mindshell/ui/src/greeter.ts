@@ -5,8 +5,10 @@
 // the conversation (greeter.login / greeter.respond) and reports the outcome.
 
 import * as bridge from './bridge';
+import { appearanceControls } from './appearance';
 import { h } from './dom';
 import { icon } from './icons';
+import { showKeyboard } from './controller';
 
 interface GUser {
   name: string;
@@ -38,8 +40,11 @@ export function renderGreeter(root: HTMLElement, arg: unknown): void {
   const a = (arg && typeof arg === 'object' ? arg : {}) as { primary?: boolean };
   const primary = a.primary !== false;
   root.classList.add('greeter-window');
-  root.append(h('div', { class: 'wallpaper builtin' }), h('div', { class: 'g-vignette' }), clock());
+  const wall = h('div', { class: 'wallpaper builtin' });
+  root.append(wall, h('div', { class: 'g-vignette' }), clock());
   if (!primary) return;
+  const appearance = appearanceControls();
+  root.append(h('div', { class: 'g-appearance' }, h('strong', {}, 'MINDOS'), appearance.el));
 
   const stage = h('div', { class: 'g-stage' });
   const foot = h('footer', { class: 'g-foot' });
@@ -80,6 +85,7 @@ function build(root: HTMLElement, stage: HTMLElement, foot: HTMLElement, info: G
   const caps = h('div', { class: 'g-caps', hidden: true }, icon('keyboard', 14), 'Caps Lock is on');
   const card = h('div', { class: 'g-card' }, avatar, who, whoSub, form, msg, caps);
   stage.appendChild(card);
+  card.append(h('button', { class: 'btn', type: 'button', onclick: () => showKeyboard(input) }, 'On-screen keyboard · controller A'));
 
   // Other accounts, when there are any.
   const chips = new Map<string, HTMLElement>();
@@ -103,7 +109,7 @@ function build(root: HTMLElement, stage: HTMLElement, foot: HTMLElement, info: G
 
   // ----- the footer ------------------------------------------------------------
   foot.append(
-    h('div', { class: 'g-brand' }, h('span', { class: 'g-brand-text' }, 'MINDOS'), h('span', { class: 'g-brand-sub' }, info.host || 'gaming · dev')),
+    h('div', { class: 'g-brand' }, h('span', { class: 'g-brand-text' }, 'MINDOS'), h('span', { class: 'g-brand-sub' }, info.host || 'gaming')),
     h('div', { class: 'g-power' }, powerButton('Restart', 'reboot', 'reboot'), powerButton('Power off', 'power', 'poweroff')),
   );
 

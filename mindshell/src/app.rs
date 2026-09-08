@@ -39,32 +39,6 @@ const GREETER_ALLOWED: &[&str] = &["shell.state", "shell.ready", "shell.reload",
 /// How long a closed window keeps its view alive for late bridge requests.
 const RETIRE_GRACE: Duration = Duration::from_millis(1500);
 
-/// Settings > Developer: the services, groups and packages its buttons may
-/// act on. Each command still goes through pkexec, so the user sees and
-/// authorises it; these lists fix the set the UI can request.
-const DEV_UNITS: &[&str] = &["docker.service", "sshd.service"];
-const DEV_GROUPS: &[&str] = &["docker", "kvm", "libvirt", "uucp", "wireshark"];
-const DEV_PACKAGES: &[&str] = &[
-    "rustup", "go", "nodejs", "npm", "deno", "bun", "python", "python-pip", "uv",
-    "jdk-openjdk", "dotnet-sdk", "zig", "ruby", "php", "lua", "elixir", "ghc",
-    "crystal", "nim", "julia", "dart", "r", "kotlin", "perl",
-    "docker", "docker-compose", "podman", "distrobox", "openssh",
-];
-
-/// `~/.ssh/id_ed25519`: the one key path the Developer page may create.
-fn is_ssh_key_path(path: &str) -> bool {
-    system::home_dir().map(|h| h.join(".ssh/id_ed25519")).is_some_and(|p| p == PathBuf::from(path))
-}
-
-/// A public key inside `~/.ssh`, so the page can show it for copying.
-fn is_ssh_pub_path(path: &str) -> bool {
-    let p = PathBuf::from(path);
-    let Some(dir) = system::home_dir().map(|h| h.join(".ssh")) else { return false };
-    p.parent() == Some(dir.as_path())
-        && p.extension().is_some_and(|e| e == "pub")
-        && !path.contains("..")
-}
-
 #[derive(Debug, Default, Clone)]
 pub struct Options {
     pub devtools: bool,
@@ -87,6 +61,9 @@ pub struct AppMode {
 fn app_title(name: &str) -> String {
     match name {
         "settings" => "Settings".into(),
+        "library" => "Game Library".into(),
+        "gaming" => "Gaming Center".into(),
+        "companion" => "Game Companion".into(),
         "files" => "Files".into(),
         other => {
             let mut c = other.chars();
@@ -238,6 +215,7 @@ impl App {
         settings.set_user_agent(Some(&format!("mindshell/{}", env!("CARGO_PKG_VERSION"))));
 
         let ipc = IpcClient::start(events.clone());
+        if app_mode.is_none() { crate::workspace::start(events.clone()); }
         let tray = if app_mode.is_some() { None } else { Some(TrayHandle::start(events.clone(), icon_theme.clone())) };
         let notify = if app_mode.is_some() { None } else { Some(NotifyHandle::start(events.clone())) };
         let polkit = if app_mode.is_some() { None } else { Some(PolkitHandle::start(events.clone())) };
@@ -398,6 +376,22 @@ impl App {
         }
         self.sync_lock_windows(locked, &stage);
         self.broadcast("lock", &idle);
+        if was.get("stage").and_then(Value::as_str) == Some("blank") && stage != "blank" {
+            self.recover_shell_graphics();
+        }
+    }
+
+    fn recover_shell_graphics(&self) {
+        // Reload only the stateless shell surfaces. Settings forms, apps and
+        // the authenticated lock state stay alive. New page content recreates
+        // WebKit's display lists instead of reusing pre-sleep textures.
+        for window in self.windows.borrow().iter() {
+            if matches!(window.kind, Kind::Desktop | Kind::Panel) {
+                window.view.reload();
+            }
+            window.view.queue_draw();
+            window.window.queue_draw();
+        }
     }
 
     /// One full-screen lock window per output while the screensaver is up or
@@ -664,11 +658,13 @@ impl App {
             return;
         }
         let monitors = windows::monitors();
-        let names: Vec<(String, gdk::Monitor)> = monitors
+        let mut names: Vec<(String, gdk::Monitor)> = monitors
             .iter()
             .enumerate()
             .map(|(i, m)| (windows::monitor_name(m, i), m.clone()))
             .collect();
+        let primary = self.state.borrow().ipc_outputs.iter().find(|o| o["primary"] == true).and_then(|o| o["name"].as_str()).map(str::to_owned);
+        names.sort_by_key(|(name, _)| primary.as_ref().is_some_and(|p| p != name));
         let edit_mode = self.state.borrow().edit_mode;
         let layout = self.state.borrow().layout.clone();
 
@@ -696,7 +692,7 @@ impl App {
                 w.window.set_visible(false);
             }
             // Horizontal panels first: their exclusive zones inset the vertical ones.
-            let mut wanted: Vec<&Panel> = Self::panels_for(&layout, name, i == 0).collect();
+            let mut wanted: Vec<&Panel> = if i == 0 { Self::panels_for(&layout, name, true).collect() } else { Vec::new() };
             wanted.sort_by_key(|p| p.edge == "left" || p.edge == "right");
             for panel in &wanted {
                 let mut spec = PanelSpec::from(*panel);
@@ -1127,6 +1123,22 @@ impl App {
                     .ok_or("popup.close: missing 'name'")?;
                 Ok(json!({ "closed": self.close_popup(&name) }))
             }
+            "media.open" => {
+                let path = str_param("path")?;
+                blocking(move || crate::media::open(&path)).await.map(|uri| json!({"uri":uri}))
+            }
+            "windows.current" => {
+                let snapshot = self.ipc.request(json!({"type":"get_windows"})).await?;
+                Ok(snapshot.get("windows").and_then(Value::as_array).and_then(|list| list.iter().find(|w| w.get("pid").and_then(Value::as_u64) == Some(std::process::id() as u64))).cloned().unwrap_or(Value::Null))
+            }
+            "windows.snap" => {
+                let id = params.get("id").cloned().ok_or("windows.snap: missing id")?;
+                self.ipc.request(json!({"type":"snap", "window":id, "zone":str_param("zone")?, "output":params.get("output")})).await
+            }
+            "gaming.request" => {
+                let params = params.clone();
+                blocking(move || crate::gaming::request(params)).await
+            }
             "windows.focus" | "windows.close" | "windows.minimize" | "windows.unminimize" | "windows.toggleMinimize"
             | "windows.toggleFullscreen" | "windows.toggleMaximize" => {
                 let id = params.get("id").cloned().ok_or_else(|| format!("{method}: missing 'id'"))?;
@@ -1146,7 +1158,7 @@ impl App {
                 let (exec, terminal) = if let Some(id) = params.get("id").and_then(Value::as_str) {
                     let state = self.state.borrow();
                     let app = apps::find(&state.apps, id).ok_or_else(|| format!("unknown application '{id}'"))?;
-                    (app.exec.clone(), app.terminal)
+                    (app.launch_command(), app.terminal)
                 } else {
                     (str_param("exec")?, params.get("terminal").and_then(Value::as_bool).unwrap_or(false))
                 };
@@ -1427,12 +1439,24 @@ impl App {
                     .and_then(Value::as_str)
                     .map(|s| s.to_string())
                     .ok_or("lock.unlock: missing 'password'")?;
-                self.unlock(password).await
+                let mut result = self.unlock(password).await?;
+                if result.get("ok").and_then(Value::as_bool) == Some(true) {
+                    if let Some(game) = params.get("resume").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                        // The lock WebView may already be gone. Finish the
+                        // requested resume in the host, only after PAM passed.
+                        let request = json!({"action":"session.resume", "game":game});
+                        if let Err(error) = blocking(move || crate::gaming::request(request)).await {
+                            result["resume_error"] = Value::String(error);
+                        }
+                    }
+                }
+                Ok(result)
             }
             "lock.now" => self.ipc.request(json!({ "type": "lock" })).await,
             "lock.wake" => self.ipc.request(json!({ "type": "wake" })).await,
             "lock.blank" => self.ipc.request(json!({ "type": "blank" })).await,
             "prefs.get" => self.ipc.request(json!({ "type": "get_prefs" })).await,
+            "input.get" => self.ipc.request(json!({ "type": "get_input" })).await,
             "prefs.set" => {
                 let prefs = params.get("prefs").cloned().filter(Value::is_object).ok_or("prefs.set: missing 'prefs'")?;
                 self.ipc.request(json!({ "type": "set_prefs", "prefs": prefs })).await
@@ -1468,6 +1492,13 @@ impl App {
                 let count = blocking(move || fs::trash(&paths)).await?;
                 Ok(json!({ "count": count }))
             }
+            "shell.open" => {
+                let uri = str_param("uri")?;
+                if !["https://", "http://", "steam://", "heroic://", "lutris:"].iter().any(|s| uri.starts_with(s)) || uri.chars().any(char::is_control) {
+                    return Err("Unsupported external link".into());
+                }
+                self.launch(&format!("gio open {}", shell_quote(&uri)), false).await
+            }
             "fs.open" => {
                 let path = fs::expand(&str_param("path")?);
                 let (cmd, terminal) = fs::opener(&path).ok_or("no application is set up to open this file")?;
@@ -1479,6 +1510,13 @@ impl App {
                 let page = params.get("page").and_then(Value::as_str).unwrap_or("");
                 let arg = params.get("arg").and_then(Value::as_str).unwrap_or("");
                 self.open_app(&name, page, arg)
+            }
+            "desktop.panel" => {
+                use gtk4_layer_shell::{Layer, LayerShell};
+                if win.kind == Kind::Desktop {
+                    win.window.set_layer(if params["active"] == true { Layer::Top } else { Layer::Background });
+                }
+                Ok(Value::Null)
             }
             "app.close" => {
                 if self.app_mode.is_some() {
@@ -1530,6 +1568,14 @@ impl App {
     fn open_app(&self, name: &str, page: &str, arg: &str) -> Result<Value, String> {
         if !crate::APPS.contains(&name) {
             return Err(format!("unknown app '{name}'"));
+        }
+        if matches!(name, "settings" | "gaming" | "library") {
+            let request = json!({"name": name, "page": page, "arg": arg});
+            if self.app_mode.is_none() {
+                self.broadcast("desktop.open", &request);
+                return Ok(Value::Null);
+            }
+            if crate::workspace::forward(&request) { return Ok(Value::Null); }
         }
         let exe = std::env::current_exe().map_err(|e| format!("cannot find mindshell: {e}"))?;
         let mut cmd = format!("{} --app {}", shell_quote(&exe.to_string_lossy()), shell_quote(name));
@@ -1603,6 +1649,8 @@ impl App {
                 let name = windows::monitor_name(m, i);
                 let mut v = windows::output_info(m, &name);
                 if let Some(c) = state.ipc_outputs.iter().find(|o| o["name"] == name) {
+                    v["primary"] = c["primary"].clone();
+                    v["software_rendering"] = c["software_rendering"].clone();
                     if v["refresh"].is_null() {
                         v["refresh"] = c["refresh"].clone();
                     }
@@ -1725,28 +1773,12 @@ impl App {
         let allowed = match cmd {
             ["mindos-perf", verb, ..] => matches!(*verb, "status" | "get" | "modes" | "set" | "config" | "apply"),
             ["mindos-dlss", ..] => !sudo,
-            ["mindos-dev-setup", ..] => true,
+            ["mindos-games", "scan"] | ["mindos-games", "launch", _] => !sudo,
             ["mindos-boot", "list", ..] => true,
             ["pacman", flag, ..] => !sudo && flag.starts_with("-Q"),
             ["checkupdates", ..] => !sudo,
             ["nvidia-smi", ..] => !sudo,
-            // Settings > Developer, through the authentication dialog.
-            ["pkexec", "systemctl", verb, "--now", unit] => {
-                !sudo && matches!(*verb, "enable" | "disable") && DEV_UNITS.contains(unit)
-            }
-            ["pkexec", "usermod", "-aG", group, who] => {
-                !sudo && DEV_GROUPS.contains(group) && *who == system::user_name()
-            }
-            // A toolchain from the Developer page's catalogue. --repo-only is
-            // part of the pattern, not an argument the UI supplies, so this
-            // path never reaches Flathub or the AUR.
-            ["pkexec", "mindos-pkg", "install", "--repo-only", pkgs @ ..] => {
-                !sudo && !pkgs.is_empty() && pkgs.iter().all(|p| DEV_PACKAGES.contains(p))
-            }
-            // Unprivileged, run as the user: the SSH key and the git identity.
-            ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", _, "-f", path] => !sudo && is_ssh_key_path(path),
-            ["cat", path] => !sudo && is_ssh_pub_path(path),
-            ["git", "config", "--global", key, _] => !sudo && matches!(*key, "user.name" | "user.email"),
+            ["pkexec", "mindos-pkg", "install", "--repo-only", "mindos-gaming"] => !sudo,
             _ => false,
         };
         if !allowed {
@@ -2074,6 +2106,14 @@ impl App {
                         state.windows = windows.clone();
                         state.focused = focused.clone();
                     }
+                    if !focused.is_null() {
+                        // A launched or focused application must remain reachable
+                        // even when a system page is raised over the desktop.
+                        use gtk4_layer_shell::{Layer, LayerShell};
+                        for win in self.windows.borrow().iter().filter(|w| w.kind == Kind::Desktop) {
+                            win.window.set_layer(Layer::Background);
+                        }
+                    }
                     self.broadcast("windows", &json!({ "windows": windows, "focused": focused }));
                 }
                 "outputs" => {
@@ -2087,7 +2127,7 @@ impl App {
                     self.schedule_sync();
                 }
                 "shortcut" => {
-                    // Forwarded to the views (the compositor opens the Mind bar for `launcher` itself).
+                    // Forwarded to the views (the compositor keeps Super+Space for its own Mind bar).
                     let shortcut = value.get("name").cloned().unwrap_or(Value::Null);
                     tracing::debug!(name = %shortcut, "forwarding compositor shortcut");
                     self.broadcast("shortcut", &json!({ "name": shortcut }));
@@ -2130,7 +2170,9 @@ impl App {
             HostEvent::Gpu(gpu) => self.state.borrow_mut().gpu = gpu,
             HostEvent::LayoutFile => self.layout_file_changed(),
             HostEvent::DesktopDir => self.desktop_dir_changed(),
+            HostEvent::DesktopOpen(value) => self.broadcast("desktop.open", &value),
             HostEvent::Game => self.game_changed(),
+            HostEvent::Resumed => self.recover_shell_graphics(),
             HostEvent::Notify(mut n) => {
                 let id = n.get("id").and_then(Value::as_u64).unwrap_or(0);
                 {
@@ -2247,11 +2289,12 @@ impl App {
         if !self.is_greeter() {
             crate::mindwatch::start(self.events.clone());
         }
-        if self.app_mode.is_some() {
+        if self.is_greeter() {
             return;
         }
-        // Lock the screen before the machine suspends (a logind delay inhibitor).
-        crate::sleepwatch::start(self.ipc.clone(), self.lock_on_sleep.clone());
+        // App windows also need desktop entries: the library discovers native
+        // games and Gaming Center launches provider clients through
+        // this catalog. Keep it current without starting desktop-only services.
         let events = self.events.clone();
         let theme = self.icon_theme.clone();
         let size = self.config.shell.icon_size;
@@ -2262,6 +2305,9 @@ impl App {
                 let _ = events.send_blocking(HostEvent::Apps(apps::load_apps(&theme.get(), size)));
                 loop {
                     std::thread::sleep(Duration::from_secs(5));
+                    if game_running() {
+                        continue;
+                    }
                     let now = apps::fingerprint();
                     if now != fingerprint {
                         fingerprint = now;
@@ -2272,6 +2318,12 @@ impl App {
                 }
             })
             .expect("spawn apps thread");
+
+        if self.app_mode.is_some() {
+            return;
+        }
+        // Lock the screen before the machine suspends (a logind delay inhibitor).
+        crate::sleepwatch::start(self.lock_on_sleep.clone(), self.events.clone());
 
         let events = self.events.clone();
         std::thread::Builder::new()
@@ -2327,7 +2379,9 @@ impl App {
             .spawn(move || {
                 let mut stats = system::Stats::default();
                 loop {
-                    let gpu = stats.gpu_sample();
+                    // Hidden desktop telemetry must not contend with a game.
+                    // Keep the cheap counter check so sampling resumes promptly.
+                    let gpu = if game_running() { None } else { stats.gpu_sample() };
                     if events.send_blocking(HostEvent::Gpu(gpu)).is_err() {
                         return;
                     }

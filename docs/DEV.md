@@ -3,7 +3,9 @@
 `mindos-dev` (`packages/mindos-dev/`) is the developer stack. It is a meta
 package: the tools come from the Arch repositories, and the package adds a
 shell prompt, git defaults, kernel limits and a setup command. None of it runs
-until a shell is opened.
+until a shell is opened. New installs leave Docker disabled until it is
+enabled from Settings › Developer or `mindos-dev-setup`; installing the
+developer tools alone does not add a background container daemon.
 
 The package is language-neutral. It installs the components most projects
 need (a C toolchain, a build system, a debugger, git, containers, an editor)
@@ -15,7 +17,7 @@ the system treats it the same as the ones installed by default.
 
 | Area | Packages |
 | --- | --- |
-| Compilers and build | base-devel, clang/llvm/lld, cmake, ninja, mold (linker), sccache (compilation cache), just (task runner) |
+| Compilers and build | base-devel, linux-mindos-headers (external kernel modules), clang/llvm/lld, cmake, ninja, mold (linker), sccache (compilation cache), just (task runner) |
 | Runtimes | rustup (Rust), nodejs + npm, python + pip + uv, go |
 | Git and remotes | git, git-lfs, github-cli, lazygit, git-delta, difftastic, openssh |
 | Debugging and profiling | gdb, lldb, strace, ltrace, perf, valgrind, hyperfine, tokei |
@@ -24,7 +26,8 @@ the system treats it the same as the ones installed by default.
 | Shell | fish, zsh, starship, zoxide, direnv, fzf, shellcheck, man-db + man-pages, tldr |
 | File and system utilities | ripgrep, fd, bat, eza, jq, sd, dust, duf, btop, bottom, htop, nvtop |
 
-Every entry is an Arch package. `mindos-pkg info NAME` or `pacman -Qi NAME`
+Tools come from Arch; matching kernel headers come from the MindOS repository.
+`mindos-pkg info NAME` or `pacman -Qi NAME`
 describes a tool, and `mindos-pkg install NAME` installs anything not listed,
 from the repositories or Flathub. The AUR is disabled by default and requires
 an explicit `--aur`; see `docs/PACKAGES.md`.

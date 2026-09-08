@@ -1,3 +1,3 @@
 #!/bin/bash
 # Live ISO: open a terminal with the welcome text.
-exec foot -T "MindOS Live" bash -c 'cat /etc/motd; exec bash'
+exec kitty -T "MindOS Live" bash -c 'cat /etc/motd; exec bash'

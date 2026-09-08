@@ -30,6 +30,7 @@ CONF=/etc/mindos/boot.conf
 THEME=/usr/share/mindos/limine-theme.conf
 CMDLINE_FILE=/usr/share/mindos/kernel-cmdline
 KERNEL=linux-mindos
+BOOT_LOCK=/run/lock/mindos-boot.lock
 # /etc/mindos/boot.conf overrides these.
 TIMEOUT=1            # seconds the menu waits
 CMDLINE=""           # replaces the packaged kernel command line when set
@@ -44,6 +45,13 @@ log()  { [[ $QUIET == 1 ]] || printf 'mindos-boot: %s\n' "$*"; }
 warn() { printf 'mindos-boot: %s\n' "$*" >&2; }
 die()  { printf 'mindos-boot: %s\n' "$*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "run as root"; }
+lock_boot() {
+  # Pacman, snapper and manual updates share the menu and kernel-copy store.
+  # Keep the lock for the entire mutation, including the final atomic rename.
+  mkdir -p "${BOOT_LOCK%/*}"
+  exec {boot_lock_fd}>"$BOOT_LOCK"
+  flock -x "$boot_lock_fd"
+}
 
 # ---- where things are --------------------------------------------------------
 btrfs_dev()  { findmnt -no SOURCE "$SNAPDIR" 2>/dev/null | sed 's/\[.*//'; }
@@ -284,7 +292,9 @@ do_restore() {
   if [[ -d $top/@ ]]; then
     # The current @ becomes a snapper snapshot, so the restore can be undone.
     keep=$(( $( { ls -1 "$top/@snapshots" | grep -E '^[0-9]+$'; echo 0; } | sort -n | tail -1) + 1 ))
-    # Nested subvolumes cannot live inside a snapshot; drop the empty ones systemd creates.
+    # Moving a root preserves nested subvolumes. Drop empty systemd-created
+    # ones where possible; the pre-delete hook also handles ones recreated
+    # by the still-running old root before reboot. Content is always kept.
     while read -r sv; do
       [[ -n $sv ]] || continue
       p=$top/$sv
@@ -307,10 +317,22 @@ do_restore() {
 XML
     echo "$id_keep" > "$STORE/snapshots/$keep"
     # Booted from @ itself: it keeps running until the reboot, so it stays writable.
+    # mindos-snapshot-seal.service seals it once it is no longer mounted.
     [[ -z $booted ]] || btrfs property set -ts "$top/@snapshots/$keep/snapshot" ro true 2>/dev/null || true
     log "kept the current system as snapshot #$keep"
   fi
   btrfs subvolume snapshot "$top/@snapshots/$n/snapshot" "$top/@" >/dev/null
+  # Restoring creates a new ID. genfstab may have recorded both the stable
+  # subvolume path and its old numeric ID, which must not pin the new root.
+  /usr/lib/mindos/fstab-paths "$top/@/etc/fstab"
+  # snap-pac runs while pacman holds its lock, including for post snapshots.
+  # This freshly created root has no running package transaction. Remove the
+  # copied lock there only; never touch the running root's lock or follow a
+  # relocated package database outside the new root.
+  p="$top/@/var/lib/pacman"
+  if [[ -d $p && $(realpath -e -- "$p") == "$p" ]]; then
+    rm -f -- "$p/db.lck"
+  fi
   # The kernel that belongs to the restored system goes back to the main entry.
   id=$(snapshot_kernel_id "$n")
   if [[ -n $id && $id != - && -f $STORE/k/$id/vmlinuz ]]; then
@@ -362,6 +384,9 @@ do_hook() {  # target paths on stdin
 
 cmd=${1:-status}; shift || true
 [[ ${1:-} == --quiet ]] && { QUIET=1; shift; }
+case $cmd in
+  install|config|sync|setup|restore|hook) need_root; lock_boot ;;
+esac
 case $cmd in
   install) do_install "$@" ;;
   config)  need_root; write_config ;;

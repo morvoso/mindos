@@ -1,15 +1,18 @@
 # The MindOS look
 
-MindOS has two visual stages with a hard line between them:
+The shell's current design is documented in [Gaming desktop](GAMING-DESKTOP.md).
+It has dark/light modes, square surfaces, orange accents and an optional live
+circuit background. Native application themes and boot visuals remain
+configured by the components described below.
+
+MindOS has distinct boot and desktop stages:
 
 * **Boot stage: white on MindOS red.** The boot loader and the kernel console
   paint white text (`#ffffff`) on MindOS red (`#8c1010`). Red means "the
-  machine is still booting"; nothing after the kernel hands over to the splash
-  uses it.
-* **System stage: dark glass.** Plymouth, the compositor and the desktop
-  shell share one dark palette with a single electric-cyan accent: a navy
-  void with a cyan and violet aurora behind everything, and translucent,
-  frosted surfaces with soft corners in front of it. No red anywhere.
+  machine is still booting".
+* **System stage.** Plymouth and the compositor retain their graphite/cyan
+  configuration. The shell uses warm graphite or light stone, orange action
+  buttons and Inter text, with the game library as its desktop home.
 
 ## Boot stage (red)
 
@@ -20,56 +23,69 @@ MindOS has two visual stages with a hard line between them:
 | syslinux (BIOS ISO) | red menu with white text | `iso/syslinux/` |
 | Kernel console | `linux-mindos` carries a patch that makes the VT default attribute white on red and sets the palette's red to `#8c1010`, so every message from the first kernel line onwards is white on red. On a stock kernel the same look comes from `vt.color=0x4f vt.default_red=... vt.default_grn=... vt.default_blu=...` | `packages/linux-mindos/` |
 | Virtual consoles after boot | `mindos-console-theme.service` re-applies the colours to tty1–6, so the tty2 recovery shell stays red | `packages/mindos-theme/console-theme` |
-| Login screen | dark glass like the desktop: the aurora, a frosted card, the cyan accent; rendered by the shell's own UI stack (`mindshell --app greeter`) under mindwm in kiosk mode | `mindshell/ui/src/greeter.ts`, `docs/img/greeter.png` |
+| Login screen | orbital graphite like the desktop: cyan arcs, a dark card and clear Inter text; rendered by the shell's own UI stack (`mindshell --app greeter`) under mindwm in kiosk mode | `mindshell/ui/src/greeter.ts`, `docs/img/greeter.png` |
 
-## System stage (dark glass)
+## System stage (orbital graphite)
 
 ### Tokens
 
 | Token | Value | Used for |
 | --- | --- | --- |
-| void | `#05070a` | screen clear colour, deepest background |
-| bg-0 | `#0a0d12` | panels, the Mind bar |
-| bg-1 | `#10151c` | raised surfaces, progress track |
-| hairline | `#223041` | 1 px borders and separators |
-| line-strong | `#2f4257` | emphasised borders |
-| fg | `#e6edf3` | text |
-| fg-dim | `#8b9bb0` | secondary text |
-| fg-faint | `#55657a` | captions, hints |
-| accent | `#19e3ff` | the one accent: progress, selection, focus, glow |
-| accent-dim | `#0aa7c2` | accent on dark surfaces |
+| void | `#080a0e` | screen clear colour, deepest background |
+| bg-0 | `#0d1016` | panels, the Mind bar |
+| bg-1 | `#141820` | raised surfaces, progress track |
+| hairline | `#2a3442` | 1 px borders and separators |
+| line-strong | `#3c4a5c` | emphasised borders |
+| fg | `#edf2f8` | text |
+| fg-dim | `#adb8c9` | secondary text |
+| fg-faint | `#8b98ac` | captions, hints |
+| accent | `#67dce5` | the one accent: progress, selection, focus, glow |
+| accent-dim | `#48b9c4` | accent on dark surfaces |
 | mind | `#a78bfa` | anything the Mind (LLM) says or does |
 | warn | `#ffb454` | tool calls, confirmations |
 | danger | `#ff5d8f` | errors (deliberately not red) |
 | ok | `#3ddc97` | success |
 
-### Glass
+### Surfaces
 
-Everything in front of the wallpaper is glass: a dark tint (`rgb(12 17 25)`
-at 45–80 % alpha) over a blurred copy of what is behind it, a 1 px light
-border (`white / 9 %`, `16 %` when raised), a lighter line catching the top
-edge, a soft drop shadow, and rounded corners: 9 px on buttons, 12 px on window
-title bars, 12 to 16 px on cards and popups, 22 px on the dock pill.
+Settings uses opaque graphite for predictable text contrast. Cards are a step
+lighter than the page; navigation has a subdued wallpaper tint. Cyan identifies
+focus, selection and primary actions. Secondary text is light slate, and
+Inter carries all labels, headings and descriptions. Orbitron is reserved for
+the desktop and login wordmarks. The overview has quick links and a button
+that launches the configured native terminal.
 
-The bottom bar is present but quiet. Its tint follows the panel opacity in
-the layout (`0.6` by default, so the wallpaper shows through), and when the
-pointer has left it for a few seconds its contents fade to 80 % until the
-pointer returns (`mindshell/ui/src/panel.ts`). A bar with an open popup
-never fades.
+The default bottom shelf is 64 px tall, floats 8 px from the screen edge,
+and has an opacity setting of 0.9. Resting panel contents stay at 94 % opacity
+so status text remains readable. Existing customized layouts are preserved.
+Popups, the shelf and login retain dark tinted glass with fine borders and
+short interaction transitions. Reduced-motion and gaming quiet mode continue
+to suppress animation.
 
-| Where | How the glass is made |
+| Where | Surface |
 | --- | --- |
-| Desktop widgets | real `backdrop-filter: blur(28px) saturate(1.5)` — they live in the wallpaper's own window |
-| Panels, the dock, popups, app sidebars | separate WebKit windows cannot see the wallpaper, so `mindshell/ui/src/glass.ts` puts a `.glass-bd` layer under the surface: the wallpaper blurred once on a small canvas (or the aurora gradient), sized to the output and shifted by the surface's position on it, so the crop under the window shows through. Updated when the wallpaper, the layout or the window moves. |
-| Title bars, window frames and the Mind bar | drawn by the compositor as translucent rounded cards with a sheen, a 1 px light ring and a soft shadow (`mindwm/src/shell/ssd.rs`, `mindwm/src/shell/frame.rs`, `mindwm/src/mindbar.rs`); mindwm does not blur, the alpha alone reads as glass over the desktop |
-| App windows (Settings) | opaque, over the same aurora; the sidebar is frosted with the wallpaper |
-| Files, Image Viewer, Archive Manager, Text Editor (libadwaita) | opaque in the MindOS colours (`mindos-apps`, below); they draw their own header bars, which the compositor leaves alone |
-| Terminals | `foot` runs at 92 % alpha with the MindOS palette (`packages/mindos-session/foot.ini`) |
+| Desktop widgets | dark tint over `backdrop-filter: blur(28px)` |
+| Panels and popups | cached wallpaper crop from `glass.ts` under the dark tint |
+| Window frames and Mind bar | compositor-drawn graphite with cyan focus accents; title bars are 36 px tall with 14 px Inter text |
+| Settings | opaque page and cards; a nearly opaque sidebar tint |
+| GTK applications | matching named colors in `mindos-apps/gtk-{3,4}.0.css` |
+| Terminal | Kitty at 97 % opacity, 12 pt JetBrains Mono and 14 pt padding, configured in `packages/mindos-session/kitty.conf` |
 
-The aurora is `--aurora` in `mindshell/ui/src/app.css` (radial cyan, violet,
-blue and teal light over a navy-to-void diagonal); `wallpaper.png` from
-`mindos-theme` is the same composition rendered by `gen-assets.py`, so the
-built-in wallpaper and the file look alike.
+The built-in **MindOS Circuit** wallpaper uses diagonal CSS gradients in
+`--aurora` and a togglable procedural canvas in `live-background.ts`. Animation
+is capped at 20 updates per second and pauses for GameMode, fullscreen windows,
+hidden WebViews and reduced motion. Custom image wallpapers remain static.
+The earlier aurora remains available as the packaged `wallpaper.png`, generated
+by `mindos-theme/gen-assets.py`.
+
+Kitty merges `/etc/xdg/kitty/kitty.conf` before the user's
+`~/.config/kitty/kitty.conf`, so personal preferences take precedence
+([Kitty configuration loading](https://sw.kovidgoyal.net/kitty/invocation/#cmdoption-kitty-config)).
+The compositor shortcut, Mind launcher, desktop menu, dock, Files menus and
+live welcome use Kitty. Shell commands are quoted and run through `sh -c`
+inside the terminal. The compositor and shell terminal settings can still be
+overridden; existing `/etc` configuration changes may produce `.pacnew` files
+when upgrading and should be merged in the usual way.
 
 ### Dark mode for applications
 
@@ -81,7 +97,7 @@ Every toolkit is told the desktop is dark, from `mindos-session`:
 | libadwaita, GTK 4, Firefox, Electron | the Settings portal: `/usr/share/xdg-desktop-portal/mindos-portals.conf` picks `xdg-desktop-portal-gtk`, which reports `org.gnome.desktop.interface color-scheme` — defaulted to `prefer-dark` by `/usr/share/glib-2.0/schemas/90_mindos.gschema.override` (also the Inter / JetBrains Mono font names) |
 | libadwaita, GTK 4 | the MindOS colours: `/usr/share/mindos/gtk/gtk-4.0.css` (`mindos-apps`) sets libadwaita's named colours (`--accent-bg-color`, `--window-bg-color`, `--headerbar-bg-color`, … and the `@define-color` names for older apps) to the theme tokens: teal accent with dark text, bg-1 windows, bg-0 views, bg-2 header bars and popovers, hot pink destructive. GTK reads `gtk.css` only from `~/.config/gtk-4.0/`, so `/etc/xdg/mindos/autostart/10-mindos-gtk-css` writes a one-line `@import` there on first login (and a GTK 3 one importing `gtk-3.0.css`, which overrides Adwaita-dark's `theme_*` colours). Delete the import to opt out. The accent is also announced through the portal: `accent-color='teal'` in the gschema override |
 | Firefox | `/usr/lib/firefox/defaults/pref/mindos.js`: `ui.systemUsesDarkTheme=1`, dark toolbar and content themes, `prefers-color-scheme: dark` for pages, the compositor's title bar instead of Firefox's own |
-| foot | the palette in `foot.ini` |
+| Kitty | the palette in `/etc/xdg/kitty/kitty.conf` |
 
 Users override any of these in the usual places (`~/.config/gtk-3.0/settings.ini`,
 `gsettings set org.gnome.desktop.interface color-scheme default`, `about:config`).
@@ -146,10 +162,10 @@ The shell uses five sizes, all Inter, defined once as tokens in
 
 | Token | Size | Used for |
 | --- | --- | --- |
-| `--t-title` | 600 15 px | page and dialog titles |
-| `--t-body` | 400 13.5 px | body text, help lines, the title bar |
+| `--t-title` | 600 16 px | page and dialog titles |
+| `--t-body` | 400 14 px | body text, help lines, the title bar |
 | `--t-label` | 500 13 px | widget labels, buttons, navigation |
-| `--t-caption` | 500 11.5 px | dates, secondary lines |
+| `--t-caption` | 400 12 px | dates, secondary lines |
 | `--t-eyebrow` | 600 11 px, `.08em` tracking | section labels, the one uppercase style |
 
 Only section labels (the eyebrow) are uppercase. Widget names, menu items,
@@ -171,7 +187,7 @@ Where each of those lives:
 
 | Surface | Configured by |
 | --- | --- |
-| Everything using fontconfig (GTK, Qt, Electron, foot, …) | `/etc/fonts/conf.d/49-mindos-rendering.conf`, from `mindos-theme` |
+| Everything using fontconfig (GTK, Qt, Electron, Kitty, …) | `/etc/fonts/conf.d/49-mindos-rendering.conf`, from `mindos-theme` |
 | Generic family names (`sans-serif`, `system-ui`, `monospace`, `SF Mono`, …) | `/etc/fonts/conf.d/59-mindos-fonts.conf`, from `mindos-theme` |
 | GTK, which does not read rendering out of fontconfig | `/etc/mindos/xdg/gtk-{3,4}.0/settings.ini`, from `mindos-session` |
 | The Mind bar and window titles, drawn on the CPU by the compositor | `mindwm/src/text.rs` (`TEXT_GAMMA`, plus subpixel glyph placement) |
@@ -216,7 +232,7 @@ until the shell's desktop is up (the same wordmark, progress line, sweeping
 hairline and HUD corners, captioned `STARTING THE DESKTOP`), renders the Mind
 bar as a rounded translucent card with the
 cyan accent glowing along its top edge and a soft shadow beneath it, and
-gives every decorated window the same 32 px glass title bar with rounded top
+gives every decorated window the same 36 px graphite title bar with rounded top
 corners, a 1 px light ring and a drop shadow (40 px on floating windows,
 12 px on tiles, none when maximised)
 (`mindwm/src/mindbar.rs`, `mindwm/src/shell/ssd.rs`,

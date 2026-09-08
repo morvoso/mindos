@@ -35,6 +35,12 @@ read Arch news before breakfast. The pieces:
 
 ## Auto-apply
 
+Scheduled update discovery and periodic health scans wait while GameMode
+is active, checking again after 30 seconds. Explicit checks and post-update
+verification still run when requested. Model assessment uses an already
+ready, awake model and is skipped while gaming, so background maintenance
+does not reload the model onto the GPU.
+
 Off by default. `mind updates --auto on` (or the toggle in Settings ›
 Updates) lets the watcher apply an update on its own when **all** of these
 hold: the risk is `low`, no package is tagged `kernel`, `gpu` or `core`,

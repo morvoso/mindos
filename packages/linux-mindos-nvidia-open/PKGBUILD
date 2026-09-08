@@ -1,0 +1,59 @@
+# Maintainer: MindOS <build@mindos.local>
+# Build and sign against the exact released kernel; no DKMS work on the target.
+pkgname=linux-mindos-nvidia-open
+pkgver=610.57.04
+pkgrel=2
+_kernelver=7.2.3-2.1
+_kernelrelease=7.2.3-2-mindos
+pkgdesc='NVIDIA open modules built and signed for the MindOS kernel'
+arch=(x86_64)
+url='https://github.com/NVIDIA/open-gpu-kernel-modules'
+license=(MIT GPL-2.0-only)
+depends=("linux-mindos=$_kernelver" "nvidia-utils=$pkgver")
+makedepends=("linux-mindos-headers=$_kernelver" clang llvm lld kmod openssl)
+provides=(NVIDIA-MODULE)
+conflicts=(nvidia-open-dkms nvidia-dkms)
+options=(!strip !debug !lto)
+source=("open-gpu-kernel-modules-$pkgver.tar.gz::https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/$pkgver.tar.gz")
+sha256sums=('619d7b5ce1f79c3211afdbf87d02b2174d268b10d005c5b8f994be22299be681')
+
+_srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+_headers=/usr/lib/modules/$_kernelrelease/build
+# These remain build inputs only. Neither key nor certificate is packaged.
+_sign_key=${MINDOS_MODULE_SIGN_KEY:-$_srcroot/build/makepkg/linux-mindos/src/linux-${_kernelver%-*}/certs/signing_key.pem}
+_sign_cert=${MINDOS_MODULE_SIGN_CERT:-$_srcroot/build/makepkg/linux-mindos/src/linux-${_kernelver%-*}/certs/signing_key.x509}
+
+prepare() {
+  [[ -r $_sign_key && -r $_sign_cert ]] || {
+    echo 'The matching kernel signing key/certificate are required. Build the kernel first, or set MINDOS_MODULE_SIGN_KEY and MINDOS_MODULE_SIGN_CERT.' >&2
+    return 1
+  }
+  [[ $(<"$_headers/version") == "$_kernelrelease" ]] || {
+    echo 'Installed headers do not match the released MindOS kernel' >&2; return 1;
+  }
+}
+
+build() {
+  cd "open-gpu-kernel-modules-$pkgver"
+  # makepkg's application flags (notably -fno-plt) produce GOT relocations
+  # the kernel module loader cannot resolve. Let NVIDIA/Kbuild set its flags.
+  unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+  make -j"${MINDOS_JOBS:-$(nproc)}" modules TARGET_ARCH=x86_64 \
+    CC=clang CXX=clang++ LD=ld.lld AR=llvm-ar OBJCOPY=llvm-objcopy \
+    LLVM=1 LLVM_IAS=1 SYSSRC="$_headers" SYSOUT="$_headers"
+}
+
+package() {
+  local module dest
+  cd "open-gpu-kernel-modules-$pkgver/kernel-open"
+  for module in nvidia nvidia-modeset nvidia-uvm nvidia-drm nvidia-peermem; do
+    [[ $(modinfo -F vermagic "$module.ko") == "$_kernelrelease "* ]] || return 1
+    [[ $(modinfo -F version "$module.ko") == "$pkgver" ]] || return 1
+    dest="$pkgdir/usr/lib/modules/$_kernelrelease/extramodules/$module.ko"
+    install -Dm644 "$module.ko" "$dest"
+    llvm-strip --strip-debug "$dest"
+    "$_headers/scripts/sign-file" sha512 "$_sign_key" "$_sign_cert" "$dest"
+    zstd -T0 -19 --rm "$dest"
+  done
+  install -Dm644 ../COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+}

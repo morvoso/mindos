@@ -29,7 +29,7 @@ class MindOSMenu(GObject.GObject, Nautilus.MenuProvider):
             return []
         if info.is_directory():
             item = Nautilus.MenuItem(name="MindOS::terminal", label="Open in Terminal", tip="Open a terminal in this folder")
-            item.connect("activate", lambda _item, p: spawn(["foot"], cwd=p), path)
+            item.connect("activate", lambda _item, p: spawn(["kitty"], cwd=p), path)
             return [item]
         return []
 
@@ -38,5 +38,5 @@ class MindOSMenu(GObject.GObject, Nautilus.MenuProvider):
         if path is None or not os.path.isdir(path):
             return []
         item = Nautilus.MenuItem(name="MindOS::terminal-here", label="Open in Terminal", tip="Open a terminal in this folder")
-        item.connect("activate", lambda _item, p: spawn(["foot"], cwd=p), path)
+        item.connect("activate", lambda _item, p: spawn(["kitty"], cwd=p), path)
         return [item]

@@ -2,15 +2,16 @@
 # The Mind: mindd (local-LLM system daemon) and the `mind` CLI, built from ../../mindd.
 pkgname=mindos-mind
 pkgver=0.1.0
-pkgrel=12
+pkgrel=18
 pkgdesc="MindOS Mind: local LLM system daemon (mindd) and its CLI (mind)"
 arch=(x86_64)
 url="https://github.com/morvoso/mindos"
 license=('LicenseRef-MindOS')
-depends=(glibc gcc-libs llama-cpp ggml-vulkan pacman systemd pciutils coreutils util-linux
-         sudo git base-devel flatpak paru curl)
-# ggml-cuda pulls the full CUDA toolkit (~4 GB); mindos-install adds it on NVIDIA systems.
-optdepends=('ggml-cuda: CUDA backend for llama-server on NVIDIA GPUs (faster than Vulkan)')
+depends=(glibc gcc-libs llama-cpp ggml-vulkan ggml-blas pacman systemd pciutils coreutils util-linux
+         sudo flatpak curl)
+# CUDA and build toolchains are optional; games do not need either.
+optdepends=('paru: optional community package support' 'base-devel: build optional community packages'
+            'ggml-cuda: CUDA backend for llama-server on NVIDIA GPUs (faster than Vulkan)')
 makedepends=(rust clang lld rsync)
 backup=(etc/mindos/mind.toml etc/mindos/model-catalog.json etc/mindos/pkg.conf)
 install=mindos-mind.install
@@ -31,8 +32,14 @@ prepare() {
 
 build() {
   cd "$srcdir/mindd"
-  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=x86-64-v3"
-  cargo build --release --locked --target-dir "$srcdir/target"
+  local cpu
+  case "${MINDOS_CPU:-generic}" in
+    generic) cpu=x86-64 ;;
+    native) cpu=native ;;
+    *) echo "MINDOS_CPU must be generic or native" >&2; return 1 ;;
+  esac
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=$cpu"
+  cargo build --jobs "${MINDOS_JOBS:-$(nproc)}" --release --locked --target-dir "$srcdir/target"
 }
 
 package() {

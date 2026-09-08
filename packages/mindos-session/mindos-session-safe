@@ -1,0 +1,4 @@
+#!/bin/sh
+# Explicit recovery session, selected only after successful authentication.
+export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe MINDOS_SAFE_GPU=1
+exec mindos-session

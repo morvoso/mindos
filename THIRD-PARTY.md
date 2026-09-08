@@ -36,7 +36,7 @@ The BORE patch keeps its authorship headers in `0001-bore.patch`.
 
 The ISO and the installed system pull packages from the Arch Linux repositories:
 `base`, systemd, glibc, GTK 4, WebKitGTK, Mesa, PipeWire, NetworkManager,
-Firefox, Nautilus, Loupe, File Roller, GNOME Text Editor, foot, Steam,
+Firefox, Nautilus, Loupe, File Roller, GNOME Text Editor, Kitty, Steam,
 gamescope, GameMode, Lutris, Wine, llama.cpp, and the rest of the lists in
 `iso/packages.x86_64` and the `depends=()` lines of the `packages/*/PKGBUILD`
 files.
@@ -55,7 +55,7 @@ Notable ones to be aware of:
 | `paru` (`packages/paru/`) | GPL-3.0-or-later | Upstream PKGBUILD, kept as-is with its maintainer line. |
 | Firefox | MPL-2.0 + Mozilla trademark policy | Shipped exactly as Arch builds it, unbranded changes not made. Themed only through the desktop's own dark-mode preference, which is a user setting, not a modification of Firefox. |
 | Steam | Valve Steam Subscriber Agreement | The Arch `steam` package is a bootstrapper; the client itself is downloaded from Valve by the user on first run. Users accept Valve's terms directly. |
-| NVIDIA drivers (`nvidia-open-dkms`, `nvidia-utils`) | NVIDIA Software License Agreement (`nvidia-open-dkms` kernel modules: MIT/GPL-2.0 dual) | Redistributed unmodified under NVIDIA's licence, which permits distribution as part of an operating system. |
+| NVIDIA drivers (`linux-mindos-nvidia-open`, optional `nvidia-open-dkms`, `nvidia-utils`) | Open kernel modules: MIT/GPL-2.0; userspace: NVIDIA Software License Agreement | The prebuilt open modules are compiled from NVIDIA's published source; their package includes `COPYING`. Userspace is redistributed unmodified under NVIDIA's licence, which permits distribution as part of an operating system. |
 | `linux-firmware` | Mixed; many blobs are redistributable-only | The package's own `WHENCE` file carries every blob's terms and ships with it. |
 
 ## The language model — Apache-2.0
@@ -141,3 +141,12 @@ licence it needs, open an issue:
     https://github.com/morvoso/mindos/issues
 
 Black Arrow Software, LLC will correct it.
+
+## Octopi software manager
+
+MindOS builds [Octopi 0.19.0](https://github.com/aarnt/octopi) (GPL-2.0-or-later),
+its [ALPM helper library](https://github.com/aarnt/alpm_octopi_utils)
+(GPL-3.0-or-later), and [qt-sudo 2.4.1](https://github.com/aarnt/qt-sudo)
+(LGPL-2.1-or-later) from pinned sources with SHA-256 checksums. Their recipes are
+in `packages/octopi` and `packages/qt-sudo`; upstream copyright/license notices
+remain in the source and license texts ship with the binary packages.

@@ -50,10 +50,15 @@ export interface Layout {
     widgets: DesktopWidgetEntry[];
     /** Show the Desktop folder as icons (default true). */
     icons?: boolean;
+    workspace?: { mode: 'gaming' | 'productivity'; notes: string };
+    appearance?: { theme: 'dark' | 'light'; live?: boolean };
+    library?: { favorites: string[]; launched: Record<string, number> };
   };
 }
 
 export interface OutputInfo {
+  primary?: boolean;
+  software_rendering?: boolean;
   name: string;
   make?: string;
   model?: string;
@@ -344,6 +349,8 @@ export interface PerfStatus {
   nvidia: boolean;
   gpu: string;
   powerLimit: string;
+  powerLimitPolicy: string;
+  persistence: boolean;
 }
 
 /* ----- shell.run ----- */
@@ -364,6 +371,8 @@ export interface DlssDll {
   file: string;
   version: string;
   swapped: boolean;
+  changed?: boolean;
+  restorable?: boolean;
   backup_version?: string;
 }
 
@@ -398,28 +407,6 @@ export interface DlssKind {
   kind: string;
   dll: string;
   label: string;
-}
-
-/* ----- developer stack (mindos-dev-setup) ----- */
-
-export interface DevTool {
-  name: string;
-  cmd: string;
-  version: string;
-}
-
-export interface DevStatus {
-  /** Languages found on the machine, whatever they are. Installed only. */
-  toolchains: DevTool[];
-  /** Build, debug and container tools, installed only. */
-  tools: DevTool[];
-  docker: { installed: boolean; active: boolean; enabled: boolean; member: boolean };
-  podman: { installed: boolean };
-  ssh: { installed: boolean; active: boolean; enabled: boolean; port: number | null; new_key: string; keys: { path: string; type: string; comment: string }[] };
-  groups: { name: string; help: string; member: boolean }[];
-  limits: { inotify_watches: number | null; inotify_instances: number | null; perf_paranoid: number | null };
-  git: { name: string | null; email: string | null };
-  user: string;
 }
 
 export interface ShellConfig {
@@ -473,11 +460,29 @@ export interface LayoutModeInfo {
 }
 
 export interface Prefs {
+  input?: Partial<InputSettings>;
   layout_mode?: string | null;
   mind_show_tools?: boolean | null;
   primary_output?: string | null;
   idle?: Partial<IdlePrefs>;
   outputs?: Record<string, unknown>;
+}
+
+export interface InputSettings {
+  keyboard_layout: string;
+  keyboard_variant: string;
+  keyboard_options: string;
+  repeat_rate: number;
+  repeat_delay: number;
+  mouse_profile: string;
+  mouse_speed: number;
+  mouse_left_handed: boolean;
+  mouse_natural_scroll: boolean;
+}
+export interface InputState {
+  settings: InputSettings;
+  mice: { name: string; acceleration: boolean; profiles: string[]; profile: string | null;
+    speed: number; left_handed: boolean; natural_scroll: boolean }[];
 }
 
 /** What happens when the machine is left alone (Settings › Screen). Every

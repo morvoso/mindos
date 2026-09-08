@@ -1,6 +1,7 @@
 // Settings › Wallpaper: a grid of the pictures found on the system.
 
 import * as bridge from '../bridge';
+import { appearanceControls } from '../appearance';
 import { h } from '../dom';
 import { icon } from '../icons';
 import { store } from '../state';
@@ -9,6 +10,7 @@ import { card, notice, pageHeader, thumbUrl } from './shared';
 
 export function wallpaperPage(el: HTMLElement): () => void {
   const note = notice();
+  const appearance = appearanceControls();
   const grid = h('div', { class: 'wp-grid' });
   const extra: WallpaperEntry[] = [];
   let entries: WallpaperEntry[] = [];
@@ -22,6 +24,7 @@ export function wallpaperPage(el: HTMLElement): () => void {
   el.append(
     pageHeader('Wallpaper', 'Select a desktop background. Images in ~/Pictures/Wallpapers and /usr/share/backgrounds are listed here.'),
     note.el,
+    card('Appearance', appearance.el, h('p', { class: 'row-help' }, 'Dark grey glass, green highlights and a static wallpaper. Choose a built-in background or one of your own images.')),
     card(null, grid),
     card('Add a folder', h('div', { class: 'inline-form' }, folderIn, addBtn), h('div', { class: 'row-help' }, 'An image can also be set by right-clicking it in Files or Image Viewer and choosing “Set as Background”.')),
   );
@@ -42,7 +45,7 @@ export function wallpaperPage(el: HTMLElement): () => void {
   const render = () => {
     const wp = current();
     grid.replaceChildren();
-    grid.appendChild(tile('MindOS', 'The built-in grid', h('span', { class: 'wallpaper builtin' }), wp.mode !== 'image' || !wp.path, () => choose(null)));
+    grid.appendChild(tile('MindOS Graphite', 'Static graphite wallpaper', h('span', { class: 'wallpaper builtin' }), wp.mode !== 'image' || !wp.path, () => choose(null)));
     const all = [...entries, ...extra.filter((x) => !entries.some((e) => e.path === x.path))];
     const folders = new Map<string, WallpaperEntry[]>();
     for (const e of all) {
@@ -84,5 +87,5 @@ export function wallpaperPage(el: HTMLElement): () => void {
     })
     .catch((e) => note.show(`Could not list wallpapers: ${e instanceof Error ? e.message : e}`, 'error'));
   store.bind(grid, 'layout', render);
-  return () => undefined;
+  return () => appearance.destroy();
 }

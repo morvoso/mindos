@@ -81,7 +81,7 @@ registerWidget({
   description: 'Pinned applications and open windows. Click to focus (a second click minimises in floating mode), middle-click for a new window, right-click for more.',
   icon: 'window',
   containers: ['panel'],
-  defaults: { pins: [], labels: false, maxLabel: 160, showRunning: true, onlyThisOutput: false, indicator: true },
+  defaults: { pins: [], labels: false, maxLabel: 160, showRunning: true, onlyThisOutput: true, indicator: true },
   settings: {
     pins: { label: 'Pinned applications', type: 'list', help: 'Desktop entry IDs, one per line. Right-click a running application to pin it.', placeholder: 'firefox.desktop' },
     showRunning: { label: 'Show open windows', type: 'boolean', help: 'When off, only pinned applications are shown' },
@@ -147,7 +147,7 @@ registerWidget({
     const render = () => {
       const state = ctx.store.state;
       const pins = Array.isArray(cfg.pins) ? (cfg.pins as string[]) : [];
-      const windows = state.windows.filter((w) => !cfg.onlyThisOutput || !w.output || w.output === ctx.output);
+      const windows = state.windows.filter((w) => (!(cfg.onlyThisOutput || ['columns', 'dwindle'].includes(ctx.store.layoutMode?.mode ?? '')) || !w.output || w.output === ctx.output));
       let groups = buildGroups(state, pins, windows);
       if (cfg.showRunning === false) groups = groups.filter((g) => g.pinned);
       el.classList.toggle('labels', !!cfg.labels && cfg.showRunning !== false);
@@ -201,6 +201,7 @@ registerWidget({
     render();
     ctx.store.bind(el, 'windows', render);
     ctx.store.bind(el, 'apps', render);
+    ctx.store.bind(el, 'layoutMode', render);
     if (!ctx.store.layoutMode) void ctx.store.fetchLayoutMode();
     return {
       el,

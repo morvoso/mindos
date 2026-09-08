@@ -5,9 +5,9 @@ SHELL       := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 BUILDBOX    := scripts/buildbox.sh
 # Build order matters only for dependencies at install time, not for makepkg.
-# paru is the AUR helper (vendored AUR recipe, built from source against the current libalpm) that
-# mindos-mind needs for mindos-pkg; the box has the toolchains, so only mindwm syncs deps with -s.
-PKGS        := paru mindos-mind mindwm mindshell mindos-apps mindos-theme mindos-cursors mindos-base mindos-session mindos-gaming mindos-dev mindos-install
+# paru remains available for optional community packages. It is not a default
+# desktop dependency. Native UI packages resolve their build dependencies with -s.
+PKGS        := qt-sudo octopi paru mindos-mind mindwm mindshell mindos-apps mindos-theme mindos-cursors mindos-base mindos-session mindos-gaming mindos-install
 REPO        := build/repo
 ISO_PROFILE := build/iso-profile
 ISO_OUT     := build/out
@@ -15,10 +15,10 @@ ISO_OUT     := build/out
 # replaces an image that is currently booted in QEMU.  Override with `make iso ISO_REV=7`.
 ISO_REV     ?= $(shell n=$$(ls $(ISO_OUT)/*.iso 2>/dev/null | wc -l); echo $$((n + 1)))
 
-.PHONY: buildbox kernel packages repo model iso-stage iso qemu qemu-bios screenshot qemu-stop vm vm-install vm-snapshot vm-console clean help
+.PHONY: buildbox kernel nvidia packages repo model iso-stage iso qemu qemu-bios screenshot qemu-stop vm vm-install vm-snapshot vm-console clean help
 
 help:
-	@echo "targets: buildbox kernel packages repo model iso qemu qemu-bios screenshot qemu-stop clean"
+	@echo "targets: buildbox kernel nvidia packages repo model iso qemu qemu-bios screenshot qemu-stop clean"
 	@echo "dev VM:  vm (create on libvirt from the newest ISO) vm-install vm-snapshot NAME=... vm-console"
 
 buildbox:
@@ -27,26 +27,27 @@ buildbox:
 # The kernel takes ~20 minutes on 8 cores; it is separate from `packages`.
 kernel:
 	mkdir -p build/logs
-	$(BUILDBOX) bash -c 'cd packages/linux-mindos && makepkg -sf --noconfirm --skippgpcheck'
+	$(BUILDBOX) bash -c 'cd packages/linux-mindos && makepkg -Csf --noconfirm --skippgpcheck'
+
+# Requires the released kernel/headers and its build-time signing key.
+# Headers are installed only in the disposable container, never on the host.
+nvidia:
+	mkdir -p build/logs
+	$(BUILDBOX) bash -c 'cd packages/linux-mindos-nvidia-open && source PKGBUILD && sudo pacman -U --noconfirm /work/build/packages/linux-mindos-headers-$${_kernelver}-x86_64.pkg.tar.zst && makepkg -Cfd --noconfirm --skippgpcheck && python3 /work/scripts/tests/check_nvidia_package.py /work/build/packages/$$pkgname-$$pkgver-$$pkgrel-x86_64.pkg.tar.zst /work/build/packages/linux-mindos-$${_kernelver}-x86_64.pkg.tar.zst "$$_sign_cert"'
 
 # Rust packages resolve their deps with -s; the arch=any packages are only files (-d).
 packages:
 	mkdir -p build/logs build/cargo-home
 	for p in $(PKGS); do \
 	  case $$p in \
-	    mindwm|mindshell) opts="-sf" ;; \
+	    mindwm|mindshell|octopi|qt-sudo) opts="-sf" ;; \
 	    *) opts="-fd" ;; \
 	  esac; \
 	  $(BUILDBOX) bash -c "cd packages/$$p && makepkg $$opts --noconfirm --skippgpcheck" || exit 1; \
 	done
 
 repo:
-	rm -rf $(REPO)
-	mkdir -p $(REPO)
-	cp build/packages/*.pkg.tar.zst $(REPO)/
-	# Version order, not glob order: `*` puts pkgrel 10 before 9, and repo-add
-	# keeps whichever it sees last, so a plain glob silently pins the older build.
-	$(BUILDBOX) bash -c 'cd $(REPO) && repo-add -q mindos.db.tar.zst $$(ls *.pkg.tar.zst | sort -V)'
+	$(BUILDBOX) python3 scripts/build-repo.py --output $(REPO)
 
 # The model bundled on the ISO: Qwen3.5 2B, Q4_K_M (~1.2 GB, Apache-2.0), plus its licence.
 # Matches the "recommended" entry of packages/mindos-mind/model-catalog.json.
@@ -62,7 +63,7 @@ models/$(MODEL_FILE):
 	curl -fL --retry 3 -C - -o $@.part $(MODEL_URL) && mv $@.part $@
 
 # Stage the profile with the local repo and the bundled model inside the airootfs.
-iso-stage: model
+iso-stage: model repo
 	mkdir -p $(ISO_PROFILE) $(ISO_OUT) build/logs
 	rsync -a --delete iso/ $(ISO_PROFILE)/
 	mkdir -p $(ISO_PROFILE)/airootfs/var/lib/mindos/repo $(ISO_PROFILE)/airootfs/var/lib/mindos/models

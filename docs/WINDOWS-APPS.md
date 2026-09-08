@@ -1,11 +1,16 @@
 # Windows programs on MindOS
 
-Windows programs run under Wine (Proton for Steam games) and are meant to
-feel native: ordinary windows with the compositor's title bars, their real
-icon in the dock, a tray icon where the program has one, the MindOS look
-inside the program. The one deliberate difference is a marker saying "this
-is a Windows program": a small four-pane badge on the dock icon and a
-`WINDOWS` tag in the Mind bar's results.
+Windows programs use Wine, with Proton for Steam games. MindOS integrates
+supported programs into the launcher, taskbar and system tray. Compatibility
+is app-specific; this does not promise that every Windows program works.
+
+Double-click an EXE/MSI in Files, or use **Settings → Software → Choose installer**.
+Choose **Install** for setup programs or **Run app** for portable EXEs. The
+helper creates a themed prefix, opens the installer, and publishes shortcuts.
+If an installer creates no shortcut, a file chooser can add its installed EXE.
+The Mind popup shows app icons, clickable quick launches and Linux/Windows
+labels. Its index refreshes in the background, so installs appear without
+restarting the desktop. GIO handles desktop-entry paths and escaping.
 
 ## What runs where
 
@@ -86,11 +91,24 @@ request, so the window would not come back from the tray.
 
 ## Limits
 
-* Anti-cheat and kernel-driver software does not run under Wine.
+* Kernel-driver software and many anti-cheat systems do not work under Wine;
+  game support depends on the publisher and its compatibility configuration.
 * Wine's own Wayland driver has no tray support; programs started through
   `mindos-win` use the X11 driver.
 * XEmbed icons have no menu protocol of their own, so the shell's right
   click is replayed as a right click on the icon, which opens the program's
   own menu.
-* `mindos-win` handles installers and Start Menu shortcuts; portable
-  programs are started with `mindos-win run NAME path/to/program.exe`.
+* The QA probe passes close-to-tray/restore with one second for Wine to settle
+  after hiding. An immediate restore intermittently missed the click in the
+  VM; this timing race still needs investigation.
+* The graphical Windows handler offers Install or Run app and creates a Mind
+  shortcut for portable programs. The original EXE must remain at its chosen
+  location. `mindos-win run NAME path/to/program.exe` is also available.
+
+## macOS applications
+
+Reliable, seamless macOS GUI support is not available. Darling's own
+[status page](https://www.darlinghq.org/) describes basic experimental support
+for simple graphical applications. MindOS does not preinstall it or associate
+DMG/APP files with a handler that would imply broader support. macOS tray
+integration is therefore unimplemented. Prefer an app's Linux or Windows build.

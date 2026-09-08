@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive a libvirt VM: vdrive.py [--dom NAME] shot out.png | keys combo... | type "text" | exec "cmd" | state
                                   | move x y | click x y [left|right|middle] | rclick x y | dblclick x y | drag x1 y1 x2 y2
-                                  | press [btn] | release [btn]
+                                  | press [btn] | release [btn] | wheel up|down [n] | keydown name | keyup name
 Key names follow qemu-drive.py (meta_l-spc, ctrl-alt-f2, ret, esc, spc, ...), mapped to linux keycodes.
 Pointer coordinates are screen pixels (VDRIVE_SCREEN=WxH, default 1920x1080) sent as absolute USB-tablet events."""
 import os, subprocess, sys, time, zlib, struct
@@ -79,6 +79,20 @@ def abs_xy(x, y):
 def button(name, down):
     return {'type': 'btn', 'data': {'down': down, 'button': name}}
 
+def wheel(direction, times=1):
+    """Mouse wheel notches: QEMU sends them as button presses."""
+    name = 'wheel-up' if direction in ('up', 'u') else 'wheel-down'
+    for _ in range(int(times)):
+        pointer([button(name, True)]); time.sleep(0.05); pointer([button(name, False)]); time.sleep(0.12)
+
+# QMP key events, for a key that has to stay down while something else happens
+# (Super + the mouse wheel); `keys` only ever taps.
+QCODE = {'meta_l': 'meta_l', 'meta': 'meta_l', 'super': 'meta_l', 'ctrl': 'ctrl', 'alt': 'alt', 'shift': 'shift'}
+
+def key_hold(name, down):
+    qmp({'execute': 'input-send-event', 'arguments': {'events': [
+        {'type': 'key', 'data': {'down': down, 'key': {'type': 'qcode', 'data': QCODE.get(name, name)}}}]}})
+
 def click(x, y, btn='left', times=1):
     pointer(abs_xy(x, y)); time.sleep(0.08)
     for _ in range(times):
@@ -123,6 +137,9 @@ if __name__ == '__main__':
     elif a[0] == 'rclick': click(a[1], a[2], 'right')
     elif a[0] == 'dblclick': click(a[1], a[2], 'left', 2)
     elif a[0] == 'drag': drag(a[1], a[2], a[3], a[4])
+    elif a[0] == 'wheel': wheel(a[1], a[2] if len(a) > 2 else 1)
+    elif a[0] == 'keydown': key_hold(a[1], True)
+    elif a[0] == 'keyup': key_hold(a[1], False)
     elif a[0] == 'press': pointer([button(a[1] if len(a) > 1 else 'left', True)])
     elif a[0] == 'release': pointer([button(a[1] if len(a) > 1 else 'left', False)])
     elif a[0] == 'exec':

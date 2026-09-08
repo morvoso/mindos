@@ -1,0 +1,13 @@
+[Unit]
+Description=Finish retained MindOS rollback snapshots
+RequiresMountsFor=/.snapshots
+After=local-fs.target
+Before=snapper-cleanup.service
+ConditionPathIsDirectory=/.snapshots
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/mindos/snapshot-prune --seal-kept
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,10 @@
 export XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP=MindOS
 export XDG_SESSION_DESKTOP=mindos-greeter
-export XDG_CONFIG_DIRS="/etc/mindos/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
+case ":${XDG_CONFIG_DIRS:-}:" in
+  *:/etc/mindos/xdg:*) ;;
+  *) export XDG_CONFIG_DIRS="/etc/mindos/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}" ;;
+esac
 export GDK_BACKEND=wayland
 
 # The greeter user has no home; give GTK, WebKit and the compositor a

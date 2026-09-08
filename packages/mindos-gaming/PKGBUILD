@@ -2,8 +2,8 @@
 # Meta package: the MindOS gaming stack (Steam/Proton, gamescope, GameMode, MangoHud, Lutris/Wine).
 pkgname=mindos-gaming
 pkgver=0.1.0
-pkgrel=4
-pkgdesc="MindOS gaming stack: Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime, plus mindos-win for Windows programs and mindos-dlss (DLSS/FSR/XeSS DLL swapper)"
+pkgrel=11
+pkgdesc="MindOS gaming stack: Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime, plus managed sessions, saves, storage, OBS controls and Windows/DLSS tools"
 arch=(any)
 url="https://github.com/morvoso/mindos"
 license=('LicenseRef-MindOS')
@@ -12,10 +12,11 @@ depends=(steam gamescope gamemode lib32-gamemode mangohud lib32-mangohud
          lutris wine-staging winetricks protontricks
          vulkan-icd-loader lib32-vulkan-icd-loader
          lib32-pipewire lib32-libpulse lib32-alsa-plugins lib32-gnutls
-         sdl2-compat discord obs-studio python)
+         sdl2-compat python zenity libpulse systemd gst-plugins-good gst-libav)
+optdepends=('discord: voice and chat')
 backup=(etc/gamemode.ini)
-source=(gamemode.ini 60-mindos-gaming.conf 50-mindos-gamemode.rules mindos-win mindos-win-theme.reg mindos-dlss)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP)
+source=(gamemode.ini 60-mindos-gaming.conf 50-mindos-gamemode.rules mindos-win mindos-win-theme.reg mindos-dlss mindos-win-open mindos-win-open.desktop mindos-games mindos-play)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm644 gamemode.ini "$pkgdir/etc/gamemode.ini"
@@ -24,9 +25,18 @@ package() {
   install -Dm644 50-mindos-gamemode.rules "$pkgdir/usr/share/polkit-1/rules.d/50-mindos-gamemode.rules"
   # Windows programs: one themed Wine prefix per program (see docs/WINDOWS-APPS.md).
   install -Dm755 mindos-win "$pkgdir/usr/bin/mindos-win"
+  install -Dm755 mindos-win-open "$pkgdir/usr/bin/mindos-win-open"
+  install -Dm644 mindos-win-open.desktop "$pkgdir/usr/share/applications/mindos-win-open.desktop"
   install -Dm644 mindos-win-theme.reg "$pkgdir/usr/share/mindos/win/theme.reg"
   # DLSS Swapper for Linux: swap DLSS/FSR/XeSS DLLs in installed games (mindos-dlss --help).
   install -Dm755 mindos-dlss "$pkgdir/usr/bin/mindos-dlss"
+  install -Dm755 mindos-games "$pkgdir/usr/bin/mindos-games"
+
+  install -Dm755 mindos-play "$pkgdir/usr/bin/mindos-play"
+  local module
+  for module in __init__ common sessions storage telemetry providers media service; do
+    install -Dm644 "$startdir/play/$module.py" "$pkgdir/usr/lib/mindos/play/$module.py"
+  done
 
   # The MindOS licence: a custom licence, so pacman wants it under the package.
   install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

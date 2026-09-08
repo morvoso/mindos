@@ -7,7 +7,7 @@ use std::{
 use smithay::{
     backend::renderer::{
         element::{
-            memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, AsRenderElements,
+            memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, utils::CropRenderElement, AsRenderElements,
         },
         ImportAll, ImportMem, Renderer, Texture,
     },
@@ -498,6 +498,7 @@ impl SpaceElement for WindowElement {
         bbox
     }
     fn is_in_input_region(&self, point: &Point<f64, Logical>) -> bool {
+        if self.tile().clip.get().is_some_and(|clip| !clip.to_f64().contains(*point)) { return false; }
         let header = self.header_height();
         if header > 0 {
             point.y < header as f64
@@ -529,6 +530,8 @@ render_elements!(
     pub WindowRenderElement<R> where R: ImportAll + ImportMem;
     Window=WaylandSurfaceRenderElement<R>,
     Decoration=MemoryRenderBufferRenderElement<R>,
+    CroppedWindow=CropRenderElement<WaylandSurfaceRenderElement<R>>,
+    CroppedDecoration=CropRenderElement<MemoryRenderBufferRenderElement<R>>,
 );
 
 impl<R: Renderer> std::fmt::Debug for WindowRenderElement<R> {
@@ -536,6 +539,8 @@ impl<R: Renderer> std::fmt::Debug for WindowRenderElement<R> {
         match self {
             Self::Window(arg0) => f.debug_tuple("Window").field(arg0).finish(),
             Self::Decoration(arg0) => f.debug_tuple("Decoration").field(arg0).finish(),
+            Self::CroppedWindow(arg0) => f.debug_tuple("CroppedWindow").field(arg0).finish(),
+            Self::CroppedDecoration(arg0) => f.debug_tuple("CroppedDecoration").field(arg0).finish(),
             Self::_GenericCatcher(arg0) => f.debug_tuple("_GenericCatcher").field(arg0).finish(),
         }
     }
@@ -555,6 +560,19 @@ where
         scale: Scale<f64>,
         alpha: f32,
     ) -> Vec<C> {
+        let clip = self.tile().clip.get().map(|r| {
+            let mut r = r.to_physical_precise_round(scale);
+            r.loc += location;
+            r
+        });
+        let crop = |element: WindowRenderElement<R>| -> Option<C> {
+            let Some(rect) = clip else { return Some(C::from(element)); };
+            match element {
+                WindowRenderElement::Window(e) => CropRenderElement::from_element(e, scale, rect).map(WindowRenderElement::CroppedWindow).map(C::from),
+                WindowRenderElement::Decoration(e) => CropRenderElement::from_element(e, scale, rect).map(WindowRenderElement::CroppedDecoration).map(C::from),
+                other => Some(C::from(other)),
+            }
+        };
         let window_bbox = SpaceElement::bbox(&self.0);
         let header = self.header_height();
 
@@ -598,11 +616,11 @@ where
                         .map(WindowRenderElement::Decoration),
                 );
             }
-            vec.into_iter().map(C::from).collect()
+            vec.into_iter().filter_map(crop).collect()
         } else {
-            AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha)
+            AsRenderElements::render_elements::<WindowRenderElement<R>>(&self.0, renderer, location, scale, alpha)
                 .into_iter()
-                .map(C::from)
+                .filter_map(crop)
                 .collect()
         }
     }

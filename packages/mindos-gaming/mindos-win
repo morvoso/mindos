@@ -18,6 +18,7 @@
 #
 # Prefixes live in ~/.local/share/mindos/win/<name>; MINDOS_WIN_ROOT overrides.
 set -euo pipefail
+shopt -s inherit_errexit
 
 ROOT="${MINDOS_WIN_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/mindos/win}"
 THEME="${MINDOS_WIN_THEME:-/usr/share/mindos/win/theme.reg}"
@@ -32,13 +33,16 @@ usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 slugify() {
   local s
   s=$(basename -- "$1")
-  s=${s%.*}
+  case "${s,,}" in *.exe|*.msi) s=${s%.*} ;; esac
   s=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]' | sed -E 's/\+/-plus/g; s/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
   [ -n "$s" ] || s=windows-app
   printf '%s' "$s"
 }
 
-prefix_of() { printf '%s/%s' "$ROOT" "$1"; }
+prefix_of() {
+  [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid application name"
+  printf '%s/%s' "$ROOT" "$1"
+}
 
 # Wine's own noise off, and no Mono/Gecko download prompts while we set up.
 setup_env() {
@@ -49,9 +53,20 @@ no_prompts() { export WINEDLLOVERRIDES="mscoree=d;mshtml=d${WINEDLLOVERRIDES:+;$
 
 # The desktop entries Wine generated for a prefix (their Exec names it).
 entries_of() {
-  local prefix="$1"
+  local prefix="${1%/}"
   [ -d "$APPS/wine" ] || return 0
-  grep -rlF --include='*.desktop' "WINEPREFIX=$prefix" "$APPS/wine" 2>/dev/null | sort || true
+  python3 - "$APPS/wine" "$prefix" <<'PY'
+import pathlib, shlex, sys
+for path in sorted(pathlib.Path(sys.argv[1]).rglob('*.desktop')):
+    try:
+        line = next(v[5:] for v in path.read_text().splitlines() if v.startswith('Exec='))
+        # Desktop-entry string escaping precedes Exec argument parsing.
+        words = shlex.split(line.replace('\\\\', '\\'))
+        if 'WINEPREFIX=' + sys.argv[2] in words:
+            print(path)
+    except (OSError, ValueError, StopIteration):
+        continue
+PY
 }
 
 entry_name() { sed -n 's/^Name=//p' "$1" | head -1; }
@@ -61,6 +76,7 @@ entry_exec() { sed -n 's/^Exec=//p' "$1" | head -1 | sed -E 's/ %[a-zA-Z]//g; s/
 
 apply_theme() {
   local prefix="$1" dpi="${2:-96}"
+  [[ $dpi =~ ^[0-9]{2,3}$ && $dpi -ge 48 && $dpi -le 768 ]] || die "DPI must be between 48 and 768"
   setup_env "$prefix"
   [ -f "$THEME" ] && "$WINE" regedit /S "$THEME"
   local reg
@@ -73,7 +89,10 @@ apply_theme() {
 
 write_meta() {
   local prefix="$1" name="$2" installer="${3:-}"
-  printf '{"name":"%s","installer":"%s","created":"%s"}\n' "$name" "$installer" "$(date -Iseconds)" > "$prefix/mindos-win.json"
+  python3 - "$prefix/mindos-win.json" "$name" "$installer" <<'PY'
+import datetime, json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(name=sys.argv[2], installer=sys.argv[3], created=datetime.datetime.now().isoformat())) + '\n')
+PY
 }
 
 cmd_create() {
@@ -154,7 +173,11 @@ cmd_run() {
   setup_env "$prefix"
   if [ -n "$target" ] && [[ "${target,,}" == *.exe ]]; then
     shift
-    "$WINE" start /unix "$target" "$@"
+    if [[ $target =~ ^[A-Za-z]: || $target == \\* ]]; then
+      "$WINE" "$target" "$@"
+    else
+      "$WINE" start /unix "$(readlink -f -- "$target")" "$@"
+    fi
     exec wineserver -w
   fi
   local entries
@@ -173,7 +196,7 @@ cmd_run() {
   exec=$(entry_exec "$chosen")
   [ -n "$exec" ] || die "entry has no Exec line: $chosen"
   echo "mindos-win: $exec"
-  sh -c "$exec"
+  gio launch "$chosen"
   exec wineserver -w
 }
 
@@ -219,11 +242,11 @@ cmd_list() {
     [ -f "$d/system.reg" ] || continue
     local slug name
     slug=$(basename "$d")
-    name=$(sed -n 's/.*"name":"\([^"]*\)".*/\1/p' "$d/mindos-win.json" 2>/dev/null || true)
+    name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$d/mindos-win.json" 2>/dev/null || true)
     printf '%s\t%s\n' "$slug" "${name:-$slug}"
     local e
     while IFS= read -r e; do
-      [ -n "$e" ] && printf '\t%s\n' "$(entry_name "$e")"
+      if [ -n "$e" ]; then printf '\t%s\n' "$(entry_name "$e")"; fi
     done <<<"$(entries_of "$d")"
   done
 }
@@ -237,8 +260,9 @@ cmd_remove() {
   (setup_env "$prefix"; wineserver -k >/dev/null 2>&1 || true)
   local e
   while IFS= read -r e; do
-    [ -n "$e" ] && rm -f -- "$e"
+    if [ -n "$e" ]; then rm -f -- "$e"; fi
   done <<<"$(entries_of "$prefix")"
+  rm -f -- "$APPS/mindos-win-$slug.desktop"
   rm -rf -- "$prefix"
   echo "mindos-win: removed $slug"
 }

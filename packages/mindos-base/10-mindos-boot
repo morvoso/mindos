@@ -3,6 +3,11 @@
 # snapper calls every executable in this directory whose name starts with a
 # digit as: <stage> <subvolume> <fstype> <snapshot numbers...>
 case ${1:-} in
+  delete-snapshot-pre)
+    [[ ${2:-} == / && ${3:-} == btrfs ]] || exit 0
+    shift 3
+    exec /usr/lib/mindos/snapshot-prune "$@"
+    ;;
   create-snapshot-post|delete-snapshot-post|modify-snapshot-post|rollback-post)
     [[ ${2:-} == / && -f /boot/limine.conf ]] || exit 0
     exec /usr/bin/mindos-boot sync --quiet

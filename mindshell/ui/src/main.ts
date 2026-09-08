@@ -1,4 +1,6 @@
 import './widgets';
+import { initAppearance } from './appearance';
+import { installController } from './controller';
 import { renderApp } from './apps';
 import * as bridge from './bridge';
 import { renderDesktop } from './desktop';
@@ -17,6 +19,7 @@ async function main(): Promise<void> {
   const info = bridge.windowInfo();
   document.documentElement.dataset.kind = info.kind;
   await store.init();
+  initAppearance();
   // Quiet while a game runs: no animations, samplers slowed or stopped.
   setQuiet(!!store.state.game);
   store.on('game', () => setQuiet(!!store.state.game));
@@ -47,6 +50,7 @@ async function main(): Promise<void> {
       renderPreview(root);
   }
   bridge.send('shell.ready', { kind: info.kind, id: info.id, popup: info.popup });
+  if (!['toast', 'panel'].includes(info.kind)) installController();
 }
 
 main().catch((e) => {

@@ -164,7 +164,7 @@ fn rule_assessment(s: &mut UpdateStatus, last_update_time: u64) {
 /// Ask the model for a short assessment. Only the JSON it returns is used;
 /// on any failure the rule assessment stands.
 async fn model_assessment(d: &Daemon, s: &mut UpdateStatus) {
-    if !d.is_ready() || s.packages.is_empty() {
+    if !d.is_ready() || d.is_sleeping() || game_running() || s.packages.is_empty() {
         return;
     }
     let pkgs: Vec<String> = s.packages.iter().take(120).map(|p| format!("{} {} -> {}{}", p.name, p.from, p.to, if p.tag.is_empty() { String::new() } else { format!(" [{}]", p.tag) })).collect();
@@ -248,7 +248,7 @@ fn post_notice(d: &Daemon, s: &UpdateStatus) {
     d.notices.post(Notice { id: "updates:available".into(), level: level.into(), title, body, source: "updates".into(), time: 0, actions });
 }
 
-fn game_running() -> bool {
+pub fn game_running() -> bool {
     std::fs::read_to_string("/run/mindos/perf/game").map(|s| s.trim() != "0" && !s.trim().is_empty()).unwrap_or(false)
 }
 
@@ -379,6 +379,11 @@ pub async fn watch(d: std::sync::Arc<Daemon>) {
     }
     tokio::time::sleep(Duration::from_secs(20)).await;
     loop {
+        // Defer repository downloads and automatic inference while gaming.
+        // Explicit checks still call check() directly from the request handler.
+        while game_running() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
         let s = check(&d, true).await;
         if d.auto_update() && !s.packages.is_empty() && s.risk == "low" && !s.manual_intervention && s.error.is_empty() && !game_running() {
             eprintln!("mindd: auto-update: {} low-risk packages", s.packages.len());

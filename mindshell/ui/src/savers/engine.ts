@@ -29,7 +29,7 @@ export const C = {
 };
 
 /**
- * Run `frame` on every display refresh until the returned function is called.
+ * Run `frame` at up to 24 fps until the returned function is called.
  * `reset` is called once at the start and again whenever the window changes
  * size, so a saver can lay itself out for the space it has.
  */
@@ -40,8 +40,12 @@ export function run(canvas: HTMLCanvasElement, frame: (f: Frame) => void, reset?
   let h = 0;
   let t = 0;
   let last = performance.now();
+  let due = last;
   let raf = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
+  const interval = 1000 / 24;
+  const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   const size = (): void => {
     const box = canvas.getBoundingClientRect();
@@ -50,35 +54,62 @@ export function run(canvas: HTMLCanvasElement, frame: (f: Frame) => void, reset?
     if (nw === w && nh === h) return;
     w = nw;
     h = nh;
-    // Real pixels for a crisp line, capped so a 4K display does not cost four
-    // times the work for a picture nobody is looking at closely.
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.round(w * ratio);
-    canvas.height = Math.round(h * ratio);
+    // A saver should not spend a game's GPU budget. Bound the actual backing
+    // store, including displays whose CSS size is already 4K at scale 1.
+    const ratio = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(1920 * 1080 / (w * h)));
+    canvas.width = Math.max(1, Math.floor(w * ratio));
+    canvas.height = Math.max(1, Math.floor(h * ratio));
     g.setTransform(ratio, 0, 0, ratio, 0, 0);
     g.fillStyle = C.void;
     g.fillRect(0, 0, w, h);
     reset?.(w, h);
   };
 
-  const observer = new ResizeObserver(() => size());
+  const observer = new ResizeObserver(() => { size(); resume(); });
   observer.observe(canvas);
   size();
 
   const tick = (now: number): void => {
     if (stopped) return;
-    raf = requestAnimationFrame(tick);
+    raf = 0;
+    if (document.hidden) return;
+    if (now + 0.1 < due) { schedule(); return; }
     const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
     last = now;
+    due = now + interval - Math.max(0, now - due) % interval;
     t += dt;
     frame({ g, w, h, dt, t });
+    schedule();
   };
-  raf = requestAnimationFrame(tick);
+  function schedule(): void {
+    if (motion.matches) return;
+    // Leaving rAF armed on skipped frames still makes WebKit composite at
+    // the display rate. Sleep until a frame is due, then align it to vblank.
+    timer = setTimeout(() => {
+      timer = undefined;
+      raf = requestAnimationFrame(tick);
+    }, Math.max(0, due - performance.now() - 1));
+  }
+  function resume(): void {
+    cancelAnimationFrame(raf);
+    clearTimeout(timer);
+    timer = undefined;
+    raf = 0;
+    last = performance.now();
+    due = last;
+    if (!stopped && !document.hidden) raf = requestAnimationFrame(tick);
+  }
+  document.addEventListener('visibilitychange', resume);
+  motion.addEventListener('change', resume);
+  resume();
 
   return () => {
     stopped = true;
     cancelAnimationFrame(raf);
+    clearTimeout(timer);
     observer.disconnect();
+    document.removeEventListener('visibilitychange', resume);
+    motion.removeEventListener('change', resume);
   };
 }
 

@@ -1,0 +1,113 @@
+#!/usr/bin/python3
+"""Graphical Windows file handler; Wine and per-app prefixes stay behind the UI."""
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+
+def dialog(*args):
+    return subprocess.run(['zenity', '--title=Windows apps', *args], text=True, capture_output=True)
+
+
+def pick(start=None):
+    args = ['--file-selection', '--file-filter=Windows programs | *.exe *.EXE *.msi *.MSI']
+    if start:
+        args.append('--filename=' + str(start) + '/')
+    result = dialog(*args)
+    return Path(result.stdout.strip()).resolve() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def desktop_quote(value):
+    # Exec has two escaping layers: desktop-entry strings, then quoted args.
+    argument = '"' + ''.join('\\' + c if c in '\\"`$' else c for c in value) + '"'
+    return argument.replace('\\', '\\\\').replace('%', '%%')
+
+
+def shortcut(name, slug, program, data):
+    apps = data / 'applications'
+    apps.mkdir(parents=True, exist_ok=True)
+    entry = apps / f'mindos-win-{slug}.desktop'
+    args = ['mindos-win', 'run', slug, str(program)]
+    text = ('[Desktop Entry]\nType=Application\n'
+            f'Name={name.replace(chr(10), " ").replace(chr(13), " ")}\n'
+            'Comment=Windows application\nIcon=wine\nTerminal=false\n'
+            'Categories=Game;\n'
+            f'StartupWMClass={program.name}\n'
+            'Exec=' + ' '.join(desktop_quote(a) for a in args) + '\n')
+    with tempfile.NamedTemporaryFile(mode='w', dir=apps, delete=False) as output:
+        output.write(text)
+        temporary = Path(output.name)
+    temporary.replace(entry)
+    return entry
+
+
+def main():
+    if os.geteuid() == 0:
+        raise ValueError('Open Windows apps from your desktop account.')
+    program = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else pick()
+    if program is None:
+        return
+    if not program.is_file() or program.suffix.lower() not in ('.exe', '.msi'):
+        raise ValueError('Choose a Windows .exe or .msi file.')
+    if any(c in str(program) for c in '\n\r'):
+        raise ValueError('Rename this file to remove line breaks from its path.')
+    choice = dialog('--list', '--radiolist', '--width=540', '--height=270', '--print-column=2',
+                    '--text=How would you like to open this Windows program?',
+                    '--column=Select', '--column=Action', '--column=Description',
+                    'TRUE', 'Install', 'Run a setup program and add its shortcuts',
+                    'FALSE', 'Run app', 'Add a portable app and open it')
+    if choice.returncode:
+        return
+    action = choice.stdout.strip()
+    if action == 'Run app' and program.suffix.lower() == '.msi':
+        raise ValueError('MSI files are installers. Choose Install.')
+    name = program.stem
+    slug = re.sub(r'[^a-z0-9]+', '-', name.lower().replace('+', '-plus')).strip('-') or 'windows-app'
+    data = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share')))
+    root = Path(os.environ.get('MINDOS_WIN_ROOT', str(data / 'mindos/win')))
+    prefix = root / slug
+    # A portable program must not unexpectedly share another program's prefix.
+    if prefix.exists():
+        confirm = dialog('--question', '--text=An app with this name is already set up. Use its existing settings?', '--default-cancel')
+        if confirm.returncode:
+            return
+    state = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'mindos'
+    state.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', prefix='windows-', suffix='.log', dir=state, delete=False) as log:
+        log_path = Path(log.name)
+        progress = subprocess.Popen(['zenity', '--progress', '--pulsate', '--no-cancel', '--auto-close',
+            '--title=Windows apps', '--text=Setting up your app. Follow the Windows installer if it opens.'],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            args = ['mindos-win', 'install', str(program), '--name', name] if action == 'Install' else ['mindos-win', 'create', name]
+            result = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT)
+        finally:
+            progress.communicate('100\n'.encode())
+    if result.returncode:
+        raise ValueError(f'The Windows program could not be set up. Details are saved in {log_path}')
+    if action == 'Run app':
+        entry = shortcut(name, slug, program, data)
+        subprocess.Popen(['gio', 'launch', str(entry)], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    # Wine may not create Start Menu shortcuts (some installers are portable).
+    entries = list((data / 'applications/wine').rglob('*.desktop'))
+    if not any(str(prefix) in p.read_text(errors='replace') for p in entries):
+        answer = dialog('--question', '--text=Setup finished without adding an app shortcut. Choose the installed program to add it to Mind?', '--default-cancel')
+        if answer.returncode == 0:
+            target = pick(prefix / 'drive_c')
+            if target and target.is_file() and target.suffix.lower() == '.exe':
+                shortcut(name, slug, target, data)
+    dialog('--info', '--text=Setup finished. Open Mind to find your Windows app. Apps with Start Menu shortcuts appear automatically.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        dialog('--error', '--no-markup', '--text=' + str(error))
+        sys.exit(1)

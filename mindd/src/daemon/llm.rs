@@ -4,6 +4,7 @@ use crate::config::ModelConfig;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -110,26 +111,23 @@ impl Llm {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = json!("auto");
         }
-        let mut resp = self
+        let request = self
             .http
             .post(format!("{}/v1/chat/completions", self.base))
             .json(&body)
-            .send()
-            .await
+            .send();
+        let mut resp = cancellable(request, &mut cancelled).await?
             .context("sending request to the model server")?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = cancellable(resp.text(), &mut cancelled).await?.unwrap_or_default();
             return Err(anyhow!("model server returned {}: {}", status, text.chars().take(500).collect::<String>()));
         }
         let mut text = String::new();
         let mut calls: Vec<(String, String, String)> = Vec::new(); // (id, name, args) by index
         let mut buf: Vec<u8> = Vec::new();
-        loop {
-            if cancelled() {
-                return Err(anyhow!("cancelled"));
-            }
-            let chunk = match resp.chunk().await? {
+        'stream: loop {
+            let chunk = match cancellable(resp.chunk(), &mut cancelled).await?? {
                 Some(c) => c,
                 None => break,
             };
@@ -142,7 +140,7 @@ impl Llm {
                     let Some(data) = line.strip_prefix("data:") else { continue };
                     let data = data.trim();
                     if data == "[DONE]" {
-                        continue;
+                        break 'stream;
                     }
                     let v: Value = match serde_json::from_str(data) {
                         Ok(v) => v,
@@ -195,6 +193,23 @@ impl Llm {
             })
             .collect();
         Ok((text, calls))
+    }
+}
+
+/// Keep cancellation responsive while waiting for headers or the next token.
+/// The future is pinned once: polling the flag must not resend a request or
+/// discard an in-progress body read. Dropping it on cancellation closes the stream.
+async fn cancellable<F: Future>(future: F, cancelled: &mut impl FnMut() -> bool) -> Result<F::Output> {
+    tokio::pin!(future);
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        if cancelled() {
+            return Err(anyhow!("cancelled"));
+        }
+        tokio::select! {
+            result = &mut future => return Ok(result),
+            _ = tick.tick() => {},
+        }
     }
 }
 
@@ -309,4 +324,85 @@ pub fn spawn_server(cfg: &ModelConfig, model: &Path, gpu: bool, thinking: bool) 
     cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::inherit()).kill_on_drop(true);
     let child = cmd.spawn().with_context(|| format!("starting {}", cfg.llama_server.display()))?;
     Ok(ServerProcess { child, gpu })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // A real HTTP peer which can stall before headers or between SSE events.
+    // Keep the socket open until the client disconnects, even after [DONE].
+    async fn peer(response: &'static [u8]) -> (Llm, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let llm = Llm::new(format!("http://{}", listener.local_addr().unwrap()), &ModelConfig::default());
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
+            let headers = String::from_utf8(request).unwrap();
+            let length: usize = headers.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+            }).unwrap();
+            let mut body = vec![0; length];
+            socket.read_exact(&mut body).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["stream"], true);
+            socket.write_all(response).await.unwrap();
+            let mut buf = [0; 1024];
+            while socket.read(&mut buf).await.unwrap_or(0) != 0 {}
+        });
+        (llm, task)
+    }
+
+    async fn assert_cancelled(response: &'static [u8]) {
+        let (llm, peer) = peer(response).await;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let trigger = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let result = tokio::time::timeout(Duration::from_secs(2), llm.chat(
+            &[Message::user("hello")], &[], |_| {}, || cancel.load(Ordering::Relaxed),
+        )).await.expect("cancellation must not wait for network activity");
+        assert_eq!(result.unwrap_err().to_string(), "cancelled");
+        trigger.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), peer).await.expect("stream must close").unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_while_waiting_for_headers() {
+        assert_cancelled(b"").await;
+    }
+
+    #[tokio::test]
+    async fn cancel_while_waiting_for_next_event() {
+        assert_cancelled(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n").await;
+    }
+
+    #[tokio::test]
+    async fn cancel_while_waiting_for_error_body() {
+        assert_cancelled(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\nConnection: close\r\n\r\n").await;
+    }
+
+    #[tokio::test]
+    async fn done_finishes_without_waiting_for_socket_close() {
+        let (llm, peer) = peer(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ready\"}}]}\n\ndata: [DONE]\n\n").await;
+        let mut deltas = Vec::new();
+        let (text, calls) = tokio::time::timeout(Duration::from_secs(2), llm.chat(
+            &[Message::user("hello")], &[], |delta| deltas.push(delta), || false,
+        )).await.expect("DONE must finish the response").unwrap();
+        assert_eq!(text, "ready");
+        assert!(calls.is_empty());
+        assert!(matches!(&deltas[..], [Delta::Text(text)] if text == "ready"));
+        tokio::time::timeout(Duration::from_secs(2), peer).await.expect("stream must close").unwrap();
+    }
 }

@@ -10,6 +10,7 @@
 //! is the login screen: a full-screen overlay per output, started by greetd
 //! (see `mindos-greeter` in mindos-session).
 
+mod workspace;
 mod app;
 mod apps;
 mod auth;
@@ -21,6 +22,8 @@ mod icons;
 mod ipc;
 mod layout;
 mod mind;
+mod media;
+mod gaming;
 mod mindwatch;
 mod notify;
 mod pointer;
@@ -52,8 +55,11 @@ pub enum HostEvent {
     LayoutFile,
     /// Something in the Desktop folder changed (the desktop icons re-list).
     DesktopDir,
+    DesktopOpen(Value),
     /// A game started or ended (the GameMode counter in /run/mindos/perf).
     Game,
+    /// logind completed a sleep cycle; rebuild shell render content.
+    Resumed,
     /// An application's notification (`org.freedesktop.Notifications.Notify`).
     Notify(Value),
     /// `CloseNotification(id)`; the second field is the close reason.
@@ -77,11 +83,11 @@ extern "C" fn on_signal(_: libc::c_int) {
 }
 
 /// The apps `--app` accepts (each is a page set in the UI bundle).
-pub const APPS: &[&str] = &["settings", "greeter"];
+pub const APPS: &[&str] = &["settings", "library", "gaming", "companion", "greeter"];
 
 fn usage() {
     println!(
-        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, updates, performance, games, developer, wallpaper, displays, screen, shell, about)\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
+        "mindshell {}\n\nUsage: mindshell [--devtools] [--ui-dir DIR]\n       mindshell --app NAME [--page PAGE] [PATH]\n\n  --app NAME     open an app window instead of the shell: {}\n  --page PAGE    the page the app opens on (settings: mind, updates, performance, games, software, wallpaper, displays, screen, shell, about)\n  --devtools     enable the WebKit inspector (F12, context menu); also MINDSHELL_DEVTOOLS=1\n  --ui-dir DIR   serve the UI bundle from DIR instead of {} (also MINDSHELL_UI_DIR)\n  --version      print the version\n  --help         this text\n\nConfig: /etc/mindos/shell.toml, ~/.config/mindos/shell.toml\nLayout: /usr/share/mindos/shell/layout.json, ~/.config/mindos/shell/layout.json\nLogs:   journalctl --user -u mindos-shell (RUST_LOG=debug for more)",
         env!("CARGO_PKG_VERSION"),
         APPS.join(", "),
         app::DEFAULT_UI_DIR
@@ -145,6 +151,10 @@ fn main() {
                 }
             }
         }
+    }
+    if matches!(opts.app.as_deref(), Some("settings" | "gaming" | "library")) {
+        let request = serde_json::json!({"name": opts.app, "page": opts.page, "arg": opts.arg});
+        if workspace::forward(&request) { return; }
     }
     if let Some(name) = &opts.app {
         if !APPS.contains(&name.as_str()) {

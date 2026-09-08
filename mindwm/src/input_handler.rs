@@ -9,7 +9,7 @@ use smithay::backend::renderer::DebugFlags;
 
 use smithay::{
     backend::input::{
-        self, Axis, AxisSource, Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
+        self, Axis, AxisSource, Device, Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
         PointerAxisEvent, PointerButtonEvent,
     },
     desktop::{layer_map_for_output, WindowSurfaceType},
@@ -25,6 +25,7 @@ use smithay::{
     utils::{Logical, Point, Serial, Transform, SERIAL_COUNTER as SCOUNTER},
     wayland::{
         compositor::with_states,
+        seat::WaylandFocus,
         input_method::InputMethodSeat,
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
         shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLayer, LayerSurfaceCachedState},
@@ -43,7 +44,7 @@ use crate::state::Backend;
 use smithay::{
     backend::{
         input::{
-            Device, DeviceCapability, GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _,
+            DeviceCapability, GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _,
             GestureSwipeUpdateEvent as _, PointerMotionEvent, ProximityState, TabletToolButtonEvent,
             TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState, TouchEvent,
         },
@@ -53,14 +54,11 @@ use smithay::{
         pointer::{
             GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
             GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
-            RelativeMotionEvent,
         },
         touch::{DownEvent, UpEvent},
     },
     reexports::wayland_server::DisplayHandle,
     wayland::{
-        pointer_constraints::{with_pointer_constraint, PointerConstraint},
-        seat::WaylandFocus,
         tablet_manager::{TabletDescriptor, TabletSeatTrait},
     },
 };
@@ -71,6 +69,33 @@ fn is_activity<B: InputBackend>(event: &InputEvent<B>) -> bool {
         event,
         InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } | InputEvent::Special(_)
     )
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn familiar_shortcuts_and_reverse_switching() {
+        let alt = ModifiersState { alt: true, ..Default::default() };
+        assert!(matches!(process_keyboard_shortcut(alt, Keysym::F4), Some(KeyAction::CloseWindow)));
+        assert!(process_keyboard_shortcut(ModifiersState { ctrl: true, ..alt }, Keysym::F4).is_none());
+        assert!(matches!(process_keyboard_shortcut(alt, Keysym::Tab),
+            Some(KeyAction::CycleWindow { reverse: false, .. })));
+        assert!(matches!(process_keyboard_shortcut(ModifiersState { shift: true, ..alt }, Keysym::ISO_Left_Tab),
+            Some(KeyAction::CycleWindow { reverse: true, .. })));
+        assert!(process_keyboard_shortcut(ModifiersState { ctrl: true, ..alt }, Keysym::Tab).is_none());
+    }
+
+    #[test]
+    fn caps_lock_does_not_disable_or_invert_super_shortcuts() {
+        let logo = ModifiersState { logo: true, ..Default::default() };
+        assert!(matches!(process_keyboard_shortcut(logo, Keysym::Q), Some(KeyAction::CloseWindow)));
+        assert!(matches!(process_keyboard_shortcut(logo, Keysym::F), Some(KeyAction::ToggleFullscreen)));
+        assert!(matches!(process_keyboard_shortcut(ModifiersState { shift: true, ..logo }, Keysym::f),
+            Some(KeyAction::ToggleFloating)));
+        assert!(process_keyboard_shortcut(ModifiersState::default(), Keysym::q).is_none());
+    }
 }
 
 impl<BackendData: Backend> AnvilState<BackendData> {
@@ -120,10 +145,17 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 self.show_window_preview = !self.show_window_preview;
             }
 
-            KeyAction::ToggleMindBar => self.mindbar.toggle(),
-            KeyAction::Launcher => self.launcher_shortcut(),
+            KeyAction::ToggleMindBar => {
+                self.target_mindbar();
+                self.mindbar.toggle();
+            }
             KeyAction::Overview => self.overview_shortcut(),
             KeyAction::Terminal => self.spawn_terminal(),
+            KeyAction::Screenshot { screen } => self.spawn_shell(if screen {
+                "mindos-screenshot screen"
+            } else {
+                "mindos-screenshot area"
+            }),
             KeyAction::CloseWindow => {
                 if let Some(window) = self.focused_window() {
                     window.close();
@@ -132,7 +164,14 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             KeyAction::LockScreen => self.set_locked(true),
             KeyAction::ToggleFullscreen => self.toggle_fullscreen_focused(),
             KeyAction::ToggleMaximize => self.toggle_maximize_focused(),
-            KeyAction::CycleWindow => self.cycle_windows(),
+            KeyAction::CycleWindow { reverse, modifier } => self.cycle_windows(reverse, modifier),
+            KeyAction::CancelWindowCycle => self.cancel_window_cycle(),
+            KeyAction::Media(action, key) => {
+                let output = self.focused_window().and_then(|w| self.window_home(&w))
+                    .or_else(|| self.space.output_under(self.pointer.current_location()).next().cloned())
+                    .map(|o| o.name());
+                self.media_keys.press(key, action, output);
+            }
             KeyAction::CycleLayout => self.cycle_layout_mode(),
             KeyAction::ToggleFloating => self.toggle_floating_focused(),
             KeyAction::FocusDir(dir) => self.focus_direction(dir),
@@ -177,10 +216,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     fn keyboard_key_to_action<B: InputBackend>(&mut self, evt: B::KeyboardKeyEvent) -> KeyAction {
         let keycode = evt.key_code();
         let state = evt.state();
+        if state == KeyState::Released { self.media_keys.release(keycode.raw()); }
         debug!(?keycode, ?state, "key");
         let serial = SCOUNTER.next_serial();
         let time = Event::time_msec(&evt);
-        let mut suppressed_keys = self.suppressed_keys.clone();
         let keyboard = self.seat.get_keyboard().unwrap();
 
         for layer in self.layer_shell_state.layer_surfaces().rev() {
@@ -201,36 +240,27 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                         continue;
                     }
                     keyboard.set_focus(self, Some(surface.into()), serial);
-                    keyboard.input::<(), _>(self, keycode, state, serial, time, |data, _, handle| {
-                        // Everything is forwarded to the exclusive layer, but a Super
-                        // tap still reaches the shell (so it can close its launcher).
-                        if data.track_super_tap(handle.modified_sym(), state) {
-                            data.super_tap_fired = true;
-                        }
-                        FilterResult::Forward
+                    keyboard.input::<(), _>(self, keycode, state, serial, time, |data, modifiers, _| {
+                        data.window_cycle.release(modifiers.alt, modifiers.logo);
+                        if state == KeyState::Released && data.suppressed_keys.contains(&keycode.raw()) {
+                            data.suppressed_keys.retain(|key| *key != keycode.raw());
+                            FilterResult::Intercept(())
+                        } else { FilterResult::Forward }
                     });
-                    return if std::mem::take(&mut self.super_tap_fired) {
-                        KeyAction::Launcher
-                    } else {
-                        KeyAction::None
-                    };
+                    return KeyAction::None;
                 };
             }
         }
 
-        let inhibited = self
-            .space
-            .element_under(self.pointer.current_location())
-            .and_then(|(window, _)| {
-                let surface = window.wl_surface()?;
-                self.seat.keyboard_shortcuts_inhibitor_for_surface(&surface)
-            })
-            .map(|inhibitor| inhibitor.is_active())
-            .unwrap_or(false);
+        let inhibited = keyboard.current_focus()
+            .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
+            .and_then(|surface| self.seat.keyboard_shortcuts_inhibitor_for_surface(&surface))
+            .is_some_and(|inhibitor| inhibitor.is_active());
 
         let action = keyboard
             .input(self, keycode, state, serial, time, |data, modifiers, handle| {
                 let keysym = handle.modified_sym();
+                data.window_cycle.release(modifiers.alt, modifiers.logo);
 
                 debug!(
                     ?state,
@@ -239,29 +269,29 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     "keysym"
                 );
 
-                if data.track_super_tap(keysym, state) {
-                    // Super pressed and released on its own: forward the release
-                    // (the press already went out) and open the launcher.
-                    data.super_tap_fired = true;
-                }
-
                 // If the key is pressed and triggered a action
                 // we will not forward the key to the client.
                 // Additionally add the key to the suppressed keys
                 // so that we can decide on a release if the key
                 // should be forwarded to the client or not.
                 if let KeyState::Pressed = state {
-                    if data.mindbar.open && !(modifiers.logo || (modifiers.ctrl && modifiers.alt)) {
+                    if data.window_cycle.active() && keysym == Keysym::Escape && !inhibited {
+                        data.suppressed_keys.push(keycode.raw());
+                        FilterResult::Intercept(KeyAction::CancelWindowCycle)
+                    } else if data.mindbar.open && !(modifiers.logo || (modifiers.ctrl && modifiers.alt)) {
                         // The Mind bar owns the keyboard while it is open.
                         let utf8 = ::xkbcommon::xkb::keysym_to_utf8(keysym);
                         let bar_action = data.mindbar.handle_key(keysym, &utf8, *modifiers);
-                        suppressed_keys.push(keysym);
+                        data.suppressed_keys.push(keycode.raw());
                         FilterResult::Intercept(KeyAction::Bar(bar_action))
                     } else if !inhibited {
-                        let action = process_keyboard_shortcut(*modifiers, keysym);
+                        let action = process_keyboard_shortcut(*modifiers, keysym).map(|action| match action {
+                            KeyAction::Media(action, _) => KeyAction::Media(action, keycode.raw()),
+                            other => other,
+                        });
 
                         if action.is_some() {
-                            suppressed_keys.push(keysym);
+                            data.suppressed_keys.push(keycode.raw());
                         }
 
                         action
@@ -271,9 +301,9 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                         FilterResult::Forward
                     }
                 } else {
-                    let suppressed = suppressed_keys.contains(&keysym);
+                    let suppressed = data.suppressed_keys.contains(&keycode.raw());
                     if suppressed {
-                        suppressed_keys.retain(|k| *k != keysym);
+                        data.suppressed_keys.retain(|key| *key != keycode.raw());
                         FilterResult::Intercept(KeyAction::None)
                     } else {
                         FilterResult::Forward
@@ -282,43 +312,29 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             })
             .unwrap_or(KeyAction::None);
 
-        self.suppressed_keys = suppressed_keys;
-        if std::mem::take(&mut self.super_tap_fired) {
-            return KeyAction::Launcher;
-        }
         action
-    }
-
-    /// Track "Super pressed and released with nothing in between". Returns
-    /// `true` on the release that completes such a tap.
-    pub fn track_super_tap(&mut self, keysym: Keysym, state: KeyState) -> bool {
-        let is_super = matches!(
-            keysym,
-            Keysym::Super_L | Keysym::Super_R | Keysym::Meta_L | Keysym::Meta_R
-        );
-        match state {
-            KeyState::Pressed => {
-                self.super_tap_armed = is_super;
-                false
-            }
-            KeyState::Released => {
-                let tapped = is_super && self.super_tap_armed;
-                self.super_tap_armed = false;
-                tapped
-            }
-        }
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, evt: B::PointerButtonEvent) {
         let serial = SCOUNTER.next_serial();
-        if evt.state() == smithay::backend::input::ButtonState::Pressed {
-            // A click anywhere dismisses the Mind bar, and Super+click is not a tap.
-            if self.mindbar.open {
-                self.mindbar.close();
-            }
-            self.super_tap_armed = false;
-        }
         let button = evt.button_code();
+        if evt.state() == smithay::backend::input::ButtonState::Released && self.mindbar.release_button(button) {
+            return;
+        }
+        if evt.state() == smithay::backend::input::ButtonState::Pressed && self.mindbar.open {
+            self.mindbar.swallow_button(button);
+            let position = self.pointer.current_location();
+            let output = self.space.output_under(position).next().cloned();
+            if let Some(output) = output {
+                if let Some(geometry) = self.space.output_geometry(&output) {
+                    let action = if button == 0x110 {
+                        self.mindbar.click(&output.name(), position - geometry.loc.to_f64(), geometry.size)
+                    } else { crate::mindbar::BarAction::None };
+                    self.handle_bar_action(action);
+                }
+            }
+            return;
+        }
 
         let state = wl_pointer::ButtonState::from(evt.state());
         tracing::debug!(
@@ -405,12 +421,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             }
 
             if let Some((window, _)) = self.space.element_under(location).map(|(w, p)| (w.clone(), p)) {
-                self.space.raise_element(&window, true);
-                #[cfg(feature = "xwayland")]
-                if let Some(surface) = window.0.x11_surface() {
-                    self.xwm.as_mut().unwrap().raise_window(surface).unwrap();
-                }
-                keyboard.set_focus(self, Some(window.into()), serial);
+                self.activate_window(&window);
                 return;
             }
 
@@ -442,7 +453,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     ) -> Option<(PointerFocusTarget, Point<f64, Logical>)> {
         let output = self.space.outputs().find(|o| {
             let geometry = self.space.output_geometry(o).unwrap();
-            geometry.contains(pos.to_i32_round())
+            geometry.contains(pos.to_i32_floor())
         })?;
         let output_geo = self.space.output_geometry(output).unwrap();
         let layers = layer_map_for_output(output);
@@ -534,6 +545,39 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             .unwrap_or_else(|| evt.amount_v120(input::Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
         let horizontal_amount_discrete = evt.amount_v120(input::Axis::Horizontal);
         let vertical_amount_discrete = evt.amount_v120(input::Axis::Vertical);
+
+        // Super + the wheel steps through the windows instead of scrolling
+        // whatever is under the pointer. Only the tiling modes have an order
+        // to step through; floating passes the scroll on like any other.
+        let logo = self
+            .seat
+            .get_keyboard()
+            .map(|k| k.modifier_state().logo)
+            .unwrap_or(false);
+        if logo && !self.mindbar.open && !self.idle.locked && self.layout.mode.is_tiling() {
+            // One wheel notch is 120 in v120 units, or ~15 in the fallback
+            // amount; a touchpad sends small continuous values, which add up
+            // to a step the same way.
+            let notches = match (vertical_amount_discrete, horizontal_amount_discrete) {
+                (Some(v), _) if v != 0.0 => v / 120.0,
+                (_, Some(h)) if h != 0.0 => h / 120.0,
+                _ => (vertical_amount + horizontal_amount) / 15.0,
+            };
+            if notches != 0.0 {
+                if self.super_scroll != 0.0 && self.super_scroll.signum() != notches.signum() {
+                    // Turning the other way starts counting again.
+                    self.super_scroll = 0.0;
+                }
+                self.super_scroll += notches;
+                while self.super_scroll.abs() >= 1.0 {
+                    let forward = self.super_scroll > 0.0;
+                    self.super_scroll -= if forward { 1.0 } else { -1.0 };
+                    self.focus_step(forward);
+                }
+            }
+            return;
+        }
+        self.super_scroll = 0.0;
 
         {
             let mut frame = AxisFrame::new(evt.time_msec()).source(evt.source());
@@ -654,23 +698,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         evt: B::PointerMotionAbsoluteEvent,
         output: &Output,
     ) {
-        let output_geo = self.space.output_geometry(output).unwrap();
-
-        let pos = evt.position_transformed(output_geo.size) + output_geo.loc.to_f64();
-        let serial = SCOUNTER.next_serial();
-
-        let pointer = self.pointer.clone();
-        let under = self.surface_under(pos);
-        pointer.motion(
-            self,
-            under,
-            &MotionEvent {
-                location: pos,
-                serial,
-                time: evt.time_msec(),
-            },
-        );
-        pointer.frame(self);
+        let Some(output_geo) = self.space.output_geometry(output) else { return; };
+        if let Some(pos) = crate::pointer::absolute_position(evt.x_transformed(1), evt.y_transformed(1), &[output_geo]) {
+            self.handle_absolute_pointer(evt.device().id(), pos, evt.time());
+        }
     }
 
     pub fn release_all_keys(&mut self) {
@@ -877,6 +908,7 @@ impl AnvilState<UdevData> {
                 }
             }
             InputEvent::DeviceRemoved { device } => {
+                self.absolute_pointer_positions.remove(&device.id());
                 if device.has_capability(DeviceCapability::TabletTool) {
                     let tablet_seat = self.seat.tablet_seat();
 
@@ -895,147 +927,14 @@ impl AnvilState<UdevData> {
     }
 
     fn on_pointer_move<B: InputBackend>(&mut self, _dh: &DisplayHandle, evt: B::PointerMotionEvent) {
-        let mut pointer_location = self.pointer.current_location();
-        let serial = SCOUNTER.next_serial();
-
-        let pointer = self.pointer.clone();
-        let under = self.surface_under(pointer_location);
-
-        let mut pointer_locked = false;
-        let mut pointer_confined = false;
-        let mut confine_region = None;
-        if let Some((surface, surface_loc)) = under
-            .as_ref()
-            .and_then(|(target, l)| Some((target.wl_surface()?, l)))
-        {
-            with_pointer_constraint(&surface, &pointer, |constraint| match constraint {
-                Some(constraint) if constraint.is_active() => {
-                    // Constraint does not apply if not within region
-                    if !constraint.region().map_or(true, |x| {
-                        x.contains((pointer_location - *surface_loc).to_i32_round())
-                    }) {
-                        return;
-                    }
-                    match &*constraint {
-                        PointerConstraint::Locked(_locked) => {
-                            pointer_locked = true;
-                        }
-                        PointerConstraint::Confined(confine) => {
-                            pointer_confined = true;
-                            confine_region = confine.region().cloned();
-                        }
-                    }
-                }
-                _ => {}
-            });
-        }
-
-        pointer.relative_motion(
-            self,
-            under.clone(),
-            &RelativeMotionEvent {
-                delta: evt.delta(),
-                delta_unaccel: evt.delta_unaccel(),
-                utime: evt.time(),
-            },
-        );
-
-        // If pointer is locked, only emit relative motion
-        if pointer_locked {
-            pointer.frame(self);
-            return;
-        }
-
-        pointer_location += evt.delta();
-
-        // clamp to screen limits
-        // this event is never generated by winit
-        pointer_location = self.clamp_coords(pointer_location);
-
-        let new_under = self.surface_under(pointer_location);
-
-        // If confined, don't move pointer if it would go outside surface or region
-        if pointer_confined {
-            if let Some((surface, surface_loc)) = &under {
-                if new_under.as_ref().and_then(|(under, _)| under.wl_surface()) != surface.wl_surface() {
-                    pointer.frame(self);
-                    return;
-                }
-                if let Some(region) = confine_region {
-                    if !region.contains((pointer_location - *surface_loc).to_i32_round()) {
-                        pointer.frame(self);
-                        return;
-                    }
-                }
-            }
-        }
-
-        pointer.motion(
-            self,
-            under,
-            &MotionEvent {
-                location: pointer_location,
-                serial,
-                time: evt.time_msec(),
-            },
-        );
-        pointer.frame(self);
-
-        // If pointer is now in a constraint region, activate it
-        // TODO Anywhere else pointer is moved needs to do this
-        if let Some((under, surface_location)) =
-            new_under.and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), loc)))
-        {
-            with_pointer_constraint(&under, &pointer, |constraint| match constraint {
-                Some(constraint) if !constraint.is_active() => {
-                    let point = (pointer_location - surface_location).to_i32_round();
-                    if constraint.region().map_or(true, |region| region.contains(point)) {
-                        constraint.activate();
-                    }
-                }
-                _ => {}
-            });
-        }
+        self.handle_pointer_motion(self.pointer.current_location() + evt.delta(), evt.delta(), evt.delta_unaccel(), evt.time());
     }
 
-    fn on_pointer_move_absolute<B: InputBackend>(
-        &mut self,
-        _dh: &DisplayHandle,
-        evt: B::PointerMotionAbsoluteEvent,
-    ) {
-        let serial = SCOUNTER.next_serial();
-
-        let max_x = self
-            .space
-            .outputs()
-            .fold(0, |acc, o| acc + self.space.output_geometry(o).unwrap().size.w);
-
-        let max_h_output = self
-            .space
-            .outputs()
-            .max_by_key(|o| self.space.output_geometry(o).unwrap().size.h)
-            .unwrap();
-
-        let max_y = self.space.output_geometry(max_h_output).unwrap().size.h;
-
-        let mut pointer_location = (evt.x_transformed(max_x), evt.y_transformed(max_y)).into();
-
-        // clamp to screen limits
-        pointer_location = self.clamp_coords(pointer_location);
-
-        let pointer = self.pointer.clone();
-        let under = self.surface_under(pointer_location);
-
-        pointer.motion(
-            self,
-            under,
-            &MotionEvent {
-                location: pointer_location,
-                serial,
-                time: evt.time_msec(),
-            },
-        );
-        pointer.frame(self);
+    fn on_pointer_move_absolute<B: InputBackend>(&mut self, _dh: &DisplayHandle, evt: B::PointerMotionAbsoluteEvent) {
+        let outputs: Vec<_> = self.space.outputs().filter_map(|o| self.space.output_geometry(o)).collect();
+        if let Some(pos) = crate::pointer::absolute_position(evt.x_transformed(1), evt.y_transformed(1), &outputs) {
+            self.handle_absolute_pointer(evt.device().id(), pos, evt.time());
+        }
     }
 
     fn on_tablet_tool_axis<B: InputBackend>(&mut self, evt: B::TabletToolAxisEvent) {
@@ -1361,33 +1260,7 @@ impl AnvilState<UdevData> {
         handle.cancel(self);
     }
 
-    fn clamp_coords(&self, pos: Point<f64, Logical>) -> Point<f64, Logical> {
-        if self.space.outputs().next().is_none() {
-            return pos;
-        }
 
-        let (pos_x, pos_y) = pos.into();
-        let max_x = self
-            .space
-            .outputs()
-            .fold(0, |acc, o| acc + self.space.output_geometry(o).unwrap().size.w);
-        let clamped_x = pos_x.clamp(0.0, max_x as f64);
-        let max_y = self
-            .space
-            .outputs()
-            .find(|o| {
-                let geo = self.space.output_geometry(o).unwrap();
-                geo.contains((clamped_x as i32, 0))
-            })
-            .map(|o| self.space.output_geometry(o).unwrap().size.h);
-
-        if let Some(max_y) = max_y {
-            let clamped_y = pos_y.clamp(0.0, max_y as f64);
-            (clamped_x, clamped_y).into()
-        } else {
-            (clamped_x, pos_y).into()
-        }
-    }
 }
 
 /// Possible results of a keyboard action
@@ -1410,18 +1283,19 @@ enum KeyAction {
     ToggleDecorations,
     /// Open/close the Mind bar (launcher + conversation)
     ToggleMindBar,
-    /// A tap on Super alone: the shell's launcher (or the Mind bar without a shell)
-    Launcher,
     /// Super+W: the shell's overview (or the built-in window preview)
     Overview,
     /// Open the configured terminal
     Terminal,
+    Screenshot { screen: bool },
     CloseWindow,
     /// Lock the session now (Super+L).
     LockScreen,
     ToggleFullscreen,
     ToggleMaximize,
-    CycleWindow,
+    CycleWindow { reverse: bool, modifier: crate::window_cycle::CycleModifier },
+    CancelWindowCycle,
+    Media(crate::media::Action, u32),
     /// Super+T: floating -> tiles -> columns
     CycleLayout,
     /// Super+Shift+F: take the focused window out of the tiling, or put it back
@@ -1445,7 +1319,36 @@ pub fn next_serial() -> Serial {
 /// MindOS keybindings. Super is the compositor modifier; everything else
 /// goes to the focused application (games see unmodified keys).
 fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Option<KeyAction> {
-    if (modifiers.ctrl && modifiers.alt && keysym == Keysym::BackSpace)
+    if !modifiers.ctrl && !modifiers.alt && !modifiers.logo && !modifiers.shift {
+        use crate::media::Action;
+        let action = match keysym {
+            Keysym::XF86_AudioRaiseVolume => Some(Action::VolumeUp),
+            Keysym::XF86_AudioLowerVolume => Some(Action::VolumeDown),
+            Keysym::XF86_AudioMute => Some(Action::Mute),
+            Keysym::XF86_AudioMicMute => Some(Action::MicMute),
+            Keysym::XF86_MonBrightnessUp => Some(Action::BrightnessUp),
+            Keysym::XF86_MonBrightnessDown => Some(Action::BrightnessDown),
+            Keysym::XF86_AudioPlay => Some(Action::PlayPause),
+            Keysym::XF86_AudioPause => Some(Action::Pause),
+            Keysym::XF86_AudioStop => Some(Action::Stop),
+            Keysym::XF86_AudioNext => Some(Action::Next),
+            Keysym::XF86_AudioPrev => Some(Action::Previous),
+            _ => None,
+        };
+        if let Some(action) = action { return Some(KeyAction::Media(action, 0)); }
+    }
+    // Caps Lock changes letters, not the meaning of desktop shortcuts.
+    let keysym = if (xkb::KEY_A..=xkb::KEY_Z).contains(&keysym.raw()) && !modifiers.shift {
+        Keysym::new(keysym.raw() + xkb::KEY_a - xkb::KEY_A)
+    } else if (xkb::KEY_a..=xkb::KEY_z).contains(&keysym.raw()) && modifiers.shift {
+        Keysym::new(keysym.raw() + xkb::KEY_A - xkb::KEY_a)
+    } else { keysym };
+    if keysym == Keysym::Print && !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
+        Some(KeyAction::Screenshot { screen: modifiers.shift })
+    } else if modifiers.logo && modifiers.shift && !modifiers.ctrl && !modifiers.alt
+        && matches!(keysym, Keysym::S | Keysym::s) {
+        Some(KeyAction::Screenshot { screen: false })
+    } else if (modifiers.ctrl && modifiers.alt && keysym == Keysym::BackSpace)
         || (modifiers.logo && modifiers.shift && (keysym == Keysym::E || keysym == Keysym::e))
     {
         // ctrl+alt+backspace / super+shift+e = quit
@@ -1459,7 +1362,8 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
         Some(KeyAction::Terminal)
     } else if modifiers.logo && keysym == Keysym::space {
         Some(KeyAction::ToggleMindBar)
-    } else if modifiers.logo && !modifiers.shift && keysym == Keysym::q {
+    } else if (modifiers.logo && !modifiers.shift && keysym == Keysym::q)
+        || (modifiers.alt && !modifiers.ctrl && !modifiers.logo && !modifiers.shift && keysym == Keysym::F4) {
         Some(KeyAction::CloseWindow)
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::f {
         Some(KeyAction::ToggleFullscreen)
@@ -1469,8 +1373,13 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
         Some(KeyAction::ToggleMaximize)
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::w {
         Some(KeyAction::Overview)
-    } else if (modifiers.logo || modifiers.alt) && (keysym == Keysym::Tab || keysym == Keysym::ISO_Left_Tab) {
-        Some(KeyAction::CycleWindow)
+    } else if (modifiers.logo ^ modifiers.alt) && !modifiers.ctrl
+        && (keysym == Keysym::Tab || keysym == Keysym::ISO_Left_Tab) {
+        Some(KeyAction::CycleWindow {
+            reverse: modifiers.shift || keysym == Keysym::ISO_Left_Tab,
+            modifier: if modifiers.logo { crate::window_cycle::CycleModifier::Super }
+                      else { crate::window_cycle::CycleModifier::Alt },
+        })
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::t {
         Some(KeyAction::CycleLayout)
     } else if modifiers.logo && modifiers.shift && keysym == Keysym::F {

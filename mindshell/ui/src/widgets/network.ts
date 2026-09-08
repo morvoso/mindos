@@ -4,6 +4,7 @@ import { icon } from '../icons';
 import { registerWidget } from './registry';
 import { panelItem } from './common';
 import type { NetworkState } from '../types';
+import { openApp } from '../apps/shared';
 
 registerWidget({
   type: 'network',
@@ -51,6 +52,7 @@ registerWidget({
       render();
     });
     every(el, 30000, poll);
+    el.addEventListener('click', () => openApp('settings', 'connections'));
     return {
       el,
       update(c) {

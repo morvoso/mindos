@@ -15,12 +15,12 @@
 set -euo pipefail
 : "${MINDOS_DISK:=/dev/vda}" "${MINDOS_HOSTNAME:=mindos-dev}" "${MINDOS_USER:=morvoso}"
 : "${MINDOS_PASSWORD:=mindos}" "${MINDOS_TZ:=America/New_York}"
-: "${MINDOS_INSTALL_GAMING:=0}" "${MINDOS_INSTALL_DEV:=1}" "${MINDOS_SHARE_TAG:=mindos}"
+: "${MINDOS_INSTALL_GAMING:=0}" "${MINDOS_SHARE_TAG:=mindos}"
 # The dev VM logs in by itself so the tooling lands on a desktop; the login
 # screen is still there after a logout (or `systemctl restart greetd`).
 : "${MINDOS_AUTOLOGIN:=1}"
 export MINDOS_AUTO=1 MINDOS_DISK MINDOS_HOSTNAME MINDOS_USER MINDOS_PASSWORD MINDOS_TZ \
-       MINDOS_INSTALL_GAMING MINDOS_INSTALL_DEV MINDOS_AUTOLOGIN
+       MINDOS_INSTALL_GAMING MINDOS_AUTOLOGIN
 T=/mnt
 
 echo "== network"
@@ -28,7 +28,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do getent hosts archlinux.org >/dev/null 2>&1 && 
 getent hosts archlinux.org >/dev/null || { echo "guest-install: no network/DNS in the VM"; exit 1; }
 ip -4 -brief address | grep -v '^lo'
 
-echo "== mindos-install ($MINDOS_DISK, user $MINDOS_USER, gaming=$MINDOS_INSTALL_GAMING dev=$MINDOS_INSTALL_DEV)"
+echo "== mindos-install ($MINDOS_DISK, user $MINDOS_USER, gaming=$MINDOS_INSTALL_GAMING)"
 mindos-install
 
 echo "== dev VM extras"

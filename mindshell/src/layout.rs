@@ -25,7 +25,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Layout {
-            version: 3,
+            version: 4,
             panels: Vec::new(),
             desktop: Desktop::default(),
             extra: Map::new(),
@@ -200,6 +200,16 @@ impl Layout {
         if self.version < 3 {
             self.migrate_v3();
         }
+        if self.version < 4 {
+            // NetworkManager already owns the network/password/VPN menu in
+            // the system tray. Migrate existing bars, not just fresh installs.
+            for panel in &mut self.panels {
+                if panel.widgets.iter().any(|w| w.kind == "tray") {
+                    panel.widgets.retain(|w| w.kind != "network" && w.kind != "vpn");
+                }
+            }
+            self.version = 4;
+        }
         let mut seen = std::collections::HashSet::new();
         let mut n = 0;
         for panel in &mut self.panels {
@@ -303,14 +313,14 @@ mod tests {
     #[test]
     fn builtin_layout_parses() {
         let layout: Layout = serde_json::from_str(BUILTIN_LAYOUT).unwrap();
-        // One Windows-style bar along the bottom: the task bar centred
+        // One floating shelf along the bottom: the task bar centred
         // between two expanding spacers, then the tray, performance mode,
         // Mind, the updates indicator, the bell and the clock.
         assert_eq!(layout.panels.len(), 1);
         let bar = &layout.panels[0];
         assert_eq!(bar.edge, "bottom");
         assert_eq!(bar.length, 100, "the bar spans the edge");
-        assert_eq!(bar.extra.get("float"), Some(&Value::Bool(false)), "flush with the edge");
+        assert_eq!(bar.extra.get("float"), Some(&Value::Bool(true)), "floating shelf");
         let names: Vec<&str> = bar.widgets.iter().map(|w| w.kind.as_str()).collect();
         assert!(names.contains(&"taskbar"));
         assert!(names.contains(&"mind"));
@@ -327,6 +337,32 @@ mod tests {
     }
 
     #[test]
+    fn gaming_preferences_survive_normalization() {
+        let mut value: Value = serde_json::from_str(BUILTIN_LAYOUT).unwrap();
+        value["desktop"]["appearance"] = serde_json::json!({ "theme": "light", "live": false });
+        value["desktop"]["library"] = serde_json::json!({ "favorites": ["steam:42"], "launched": { "steam:42": 1234 } });
+        let layout: Layout = serde_json::from_value(value.clone()).unwrap();
+        let normalized = layout.sanitized().to_value();
+        assert_eq!(normalized["desktop"]["appearance"], value["desktop"]["appearance"]);
+        assert_eq!(normalized["desktop"]["library"], value["desktop"]["library"]);
+    }
+
+    #[test]
+    fn network_migration_keeps_one_control_and_preserves_custom_layouts() {
+        let layout = Layout::from_value(serde_json::json!({"version": 3, "panels": [
+            {"id": "bar", "widgets": [{"type": "tray"}, {"type": "network"}, {"type": "vpn"}, {"type": "audio"}]},
+            {"id": "custom", "widgets": [{"type": "network"}]}
+        ]})).unwrap();
+        assert_eq!(layout.panels[0].widgets.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(), ["tray", "audio"]);
+        assert_eq!(layout.panels[1].widgets[0].kind, "network");
+        assert_eq!(Layout::from_value(layout.to_value()).unwrap(), layout);
+        let custom = Layout::from_value(serde_json::json!({"version": 4, "panels": [
+            {"id": "bar", "widgets": [{"type": "tray"}, {"type": "network"}]}
+        ]})).unwrap();
+        assert_eq!(custom.panels[0].widgets.len(), 2);
+    }
+
+    #[test]
     fn old_layout_gains_perf_bell_and_updates() {
         let v = serde_json::json!({
             "version": 1,
@@ -335,7 +371,7 @@ mod tests {
             ]}]
         });
         let layout = Layout::from_value(v).unwrap();
-        assert_eq!(layout.version, 3);
+        assert_eq!(layout.version, 4);
         let names: Vec<&str> = layout.panels[0].widgets.iter().map(|w| w.kind.as_str()).collect();
         assert_eq!(names, ["tray", "perf", "mind", "updates", "notifications", "clock"]);
         let again = Layout::from_value(layout.to_value()).unwrap();

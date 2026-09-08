@@ -17,7 +17,7 @@ use smithay::{
     },
     utils::{Logical, Point, Rectangle, Serial, Size},
     wayland::{
-        compositor::{self, with_states},
+        compositor::with_states,
         seat::WaylandFocus,
         shell::xdg::{
             Configure, PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -34,7 +34,7 @@ use crate::{
 };
 
 use super::{
-    fullscreen_output_geometry, place_new_window, FullscreenSurface, PointerMoveSurfaceGrab,
+    fullscreen_output, place_new_window, FullscreenSurface, PointerMoveSurfaceGrab,
     PointerResizeSurfaceGrab, ResizeData, ResizeEdge, ResizeState, SurfaceData, WindowElement,
 };
 
@@ -54,11 +54,9 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         // layout puts it next to the window that had the focus.
         let previous = self.focused_window();
         self.focus_window(&window);
+        *window.tile().output.borrow_mut() = self.space.output_under(self.pointer.current_location()).next().map(|o| o.name());
         self.layout.window_opened(&window, previous);
 
-        compositor::add_post_commit_hook(surface.wl_surface(), |state: &mut Self, _, surface| {
-            handle_toplevel_commit(&mut state.space, surface);
-        });
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -282,25 +280,28 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
             // independently from its buffer size
             let wl_surface = surface.wl_surface();
 
-            let output_geometry = fullscreen_output_geometry(wl_surface, wl_output.as_ref(), &mut self.space);
+            let target = fullscreen_output(wl_surface, wl_output.as_ref(), &self.space)
+                .and_then(|output| self.space.output_geometry(&output).map(|geometry| (output, geometry)));
 
-            if let Some(geometry) = output_geometry {
-                let output = wl_output
-                    .as_ref()
-                    .and_then(Output::from_resource)
-                    .unwrap_or_else(|| self.space.outputs().next().unwrap().clone());
+            if let Some((output, geometry)) = target {
                 let client = match self.display_handle.get_client(wl_surface.id()) {
                     Ok(client) => client,
                     Err(_) => return,
                 };
+                wl_output = None;
                 for output in output.client_outputs(&client) {
                     wl_output = Some(output);
                 }
-                let window = self
-                    .space
-                    .elements()
-                    .find(|window| window.wl_surface().map(|s| &*s == wl_surface).unwrap_or(false))
-                    .unwrap();
+                let Some(window) = self.window_for_surface(wl_surface) else { return; };
+                // Moving an already-fullscreen client must release its old output.
+                for old_output in self.space.outputs().filter(|o| *o != &output) {
+                    if let Some(fullscreen) = old_output.user_data().get::<FullscreenSurface>() {
+                        if fullscreen.get().as_ref() == Some(&window) {
+                            fullscreen.clear();
+                            self.backend_data.reset_buffers(old_output);
+                        }
+                    }
+                }
 
                 surface.with_pending_state(|state| {
                     state.states.set(xdg_toplevel::State::Fullscreen);
@@ -502,7 +503,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 if current_state.states.contains(xdg_toplevel::State::Maximized) {
                     initial_window_location = self.unmaximize_for_drag(surface, &window, start_data.location);
                 }
-                if self.layout.is_tiled(&window) {
+                if self.layout.is_tiled(&window) || window.tile().snap.borrow().is_some() {
                     self.layout.dragging = Some(window.clone());
                 }
 
@@ -551,7 +552,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         if current_state.states.contains(xdg_toplevel::State::Maximized) {
             initial_window_location = self.unmaximize_for_drag(surface, &window, pointer.current_location());
         }
-        if self.layout.is_tiled(&window) {
+        if self.layout.is_tiled(&window) || window.tile().snap.borrow().is_some() {
             self.layout.dragging = Some(window.clone());
         }
 
@@ -624,7 +625,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 }
 
 /// Should be called on `WlSurface::commit` of xdg toplevel
-fn handle_toplevel_commit(space: &mut Space<WindowElement>, surface: &WlSurface) -> Option<()> {
+pub(super) fn handle_toplevel_commit(space: &mut Space<WindowElement>, surface: &WlSurface) -> Option<()> {
     let window = space
         .elements()
         .find(|w| w.wl_surface().as_deref() == Some(surface))

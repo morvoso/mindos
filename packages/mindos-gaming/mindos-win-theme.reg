@@ -6,6 +6,10 @@ REGEDIT4
 ; system UI fonts replaced by Inter, grayscale font smoothing like the rest
 ; of the desktop. Applied by mindos-win to every prefix it creates.
 
+; Use MindOS's XEmbed tray host through XWayland for predictable tray menus.
+[HKEY_CURRENT_USER\Software\Wine\Drivers]
+"Graphics"="x11"
+
 [HKEY_CURRENT_USER\Control Panel\Colors]
 "ActiveBorder"="16 21 28"
 "ActiveTitle"="16 21 28"

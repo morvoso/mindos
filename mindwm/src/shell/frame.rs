@@ -41,6 +41,7 @@ pub const TILE_SHADOW: i32 = 12;
 
 const BLACK: [f32; 4] = hex(0x000000);
 const WHITE: [f32; 4] = hex(0xffffff);
+const GREEN: [f32; 4] = hex(0x3ddc97);
 
 /// What the frame looks like. Every distinct value is one cached reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -116,10 +117,13 @@ impl Reference {
             c.shadow_rounded_rect(wx, wy + dy * s, ww, wh, r * s, corners, m * s, alpha(BLACK, a));
             let tight = (m / 4).max(2);
             c.shadow_rounded_rect(wx, wy + (dy / 3) * s, ww, wh, r * s, corners, tight * s, alpha(BLACK, a * 0.8));
+            if style.focused {
+                c.shadow_rounded_rect(wx, wy, ww, wh, r * s, corners, (m / 2).max(4) * s, alpha(GREEN, 0.28));
+            }
         }
         // the ring: one pixel just outside the window
         for i in 0..s {
-            c.stroke_rounded_rect(wx - s + i, wy - s + i, ww + 2 * s - 2 * i, wh + 2 * s - 2 * i, (r + 1) * s - i, corners, alpha(WHITE, style.ring_alpha()));
+            c.stroke_rounded_rect(wx - s + i, wy - s + i, ww + 2 * s - 2 * i, wh + 2 * s - 2 * i, (r + 1) * s - i, corners, alpha(if style.focused { GREEN } else { WHITE }, style.ring_alpha()));
         }
         c.cut_rounded_rect(wx, wy, ww, wh, r * s, corners);
 

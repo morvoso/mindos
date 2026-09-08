@@ -9,19 +9,26 @@ import { MODES } from '../widgets/layout-mode';
 import { card, notice, pageHeader, row, selectBox } from './shared';
 
 const SHORTCUTS: [string, string][] = [
-  ['Super', 'Open the Mind bar (tap)'],
+  ['Volume / mute keys', 'Adjust output in 5% steps; hold to repeat (up to 100%)'],
+  ['Microphone mute', 'Mute or unmute the default microphone'],
+  ['Brightness keys', 'Adjust the built-in display in 5% steps; hold to repeat'],
+  ['Media keys', 'Play / pause, stop, next or previous track'],
   ['Super + Space', 'Open the Mind bar'],
   ['Super + Return', 'Terminal'],
-  ['Super + Q', 'Close the window'],
+  ['Print / Super + Shift + S', 'Select an area to save and copy'],
+  ['Shift + Print', 'Save and copy all displays'],
+  ['Alt + F4 / Super + Q', 'Close the window'],
   ['Super + F', 'Full screen'],
   ['Super + M', 'Maximise'],
   ['Super + W', 'Overview of all windows'],
-  ['Super + Tab / Alt + Tab', 'Switch windows'],
+  ['Alt + Tab / Super + Tab', 'Switch recent windows; hold Alt or Super to keep cycling'],
+  ['Alt + Shift + Tab / Super + Shift + Tab', 'Switch backward; Escape returns to the original window'],
   ['Super + T', 'Next window layout (floating → tiles → columns)'],
   ['Super + Shift + F', 'Float / tile the window'],
   ['Super + ← ↑ → ↓', 'Focus the window in that direction'],
   ['Super + Shift + ← ↑ → ↓', 'Move the window'],
   ['Super + R', 'Cycle the column width (columns layout)'],
+  ['Super + mouse wheel', 'Step through the windows (tiles and columns)'],
   ['Super + 1 … 9', 'Focus display 1 … 9'],
   ['Super + Shift + E', 'Log out of the desktop'],
 ];
@@ -119,7 +126,7 @@ export function shellPage(el: HTMLElement): () => void {
     card(
       'Shell',
       row('Icon theme', 'The icon theme in use. Set icon_theme in ~/.config/mindos/shell.toml to choose another.', themeName),
-      row('Terminal', null, h('span', { class: 'mono' }, cfg.terminal ?? 'foot')),
+      row('Terminal', null, h('span', { class: 'mono' }, cfg.terminal ?? 'kitty')),
       row('Hardware acceleration', null, h('span', { class: 'mono' }, cfg.hardware_acceleration ?? 'auto')),
     ),
   );
@@ -134,7 +141,7 @@ export function aboutPage(el: HTMLElement): () => void {
     pageHeader('About'),
     card(
       null,
-      h('div', { class: 'about-brand' }, h('span', { class: 'about-mark' }, icon('mind', 34)), h('div', {}, h('div', { class: 'about-name' }, 'MINDOS'), h('div', { class: 'about-sub' }, 'GAMING · DEV · AN ARCH-BASED DESKTOP WITH A MIND OF ITS OWN'))),
+      h('div', { class: 'about-brand' }, h('span', { class: 'about-mark' }, icon('mind', 34)), h('div', {}, h('div', { class: 'about-name' }, 'MINDOS'), h('div', { class: 'about-sub' }, 'GAMING · AN ARCH-BASED DESKTOP WITH A MIND OF ITS OWN'))),
       row('Shell', null, h('span', { class: 'mono' }, `mindshell ${s.version ?? ''}`.trim())),
       row('Compositor', null, h('span', { class: 'mono' }, 'mindwm')),
       row('Assistant', null, h('span', { class: 'mono' }, s.mind?.model ? `Mind · ${s.mind.model}` : 'Mind')),

@@ -1,232 +1,70 @@
-# MindOS Plymouth theme: the dark void with one cyan accent (docs/THEME.md).
-# Sprites come from gen-assets.py, drawn at 2x and scaled here to the screen.
-# Only the Plymouth script constructs used by the upstream "script" theme are
-# used (Image.Scale/Text, Sprite.SetImage/SetPosition/SetOpacity/SetX, Math.Int/Sin).
-
-Window.SetBackgroundTopColor(0.020, 0.027, 0.039);     # #05070a
-Window.SetBackgroundBottomColor(0.039, 0.059, 0.086);  # #0a0f16
-
-screen.x = Window.GetX();
-screen.y = Window.GetY();
-screen.w = Window.GetWidth();
-screen.h = Window.GetHeight();
-screen.cx = screen.x + screen.w / 2;
-screen.cy = screen.y + screen.h / 2;
-
-# Everything is laid out in 1080p units times this factor.
-layout.s = screen.h / 1080;
-if (layout.s < 0.5) layout.s = 0.5;
-if (layout.s > 2.5) layout.s = 2.5;
-
-fun scaled(image, factor)
+# MindOS: a quiet, modernist boot trace. Times and progress come from Plymouth.
+Window.SetBackgroundTopColor(0.94, 0.93, 0.90);
+Window.SetBackgroundBottomColor(0.94, 0.93, 0.90);
+screen.x = Window.GetX(); screen.y = Window.GetY();
+screen.w = Window.GetWidth(); screen.h = Window.GetHeight();
+s = screen.h / 900;
+if (s < 0.5) s = 0.5;
+left = screen.x + 65*s;
+right = screen.x + screen.w*0.72;
+fun label(text, x, y, size, red)
 {
-  w = Math.Int(image.GetWidth() * factor);
-  h = Math.Int(image.GetHeight() * factor);
-  if (w < 1) w = 1;
-  if (h < 1) h = 1;
-  return image.Scale(w, h);
+  if (red) image = Image.Text(text, 0.93, 0.17, 0.07, 1, "Sans Bold " + size);
+  else if (size > 50) image = Image.Text(text, 0.12, 0.12, 0.12, 1, "Sans Bold " + size);
+  else image = Image.Text(text, 0.12, 0.12, 0.12, 1, "Monospace " + size);
+  sprite = Sprite(image); sprite.SetPosition(x, y, 10); return sprite;
 }
-
-#----------------------------------------- Wordmark and halo --------------------------------
-
-logo.image = scaled(Image("logo.png"), layout.s / 2);
-logo.sprite = Sprite(logo.image);
-logo.x = screen.cx - logo.image.GetWidth() / 2;
-logo.y = screen.cy - 30 * layout.s - logo.image.GetHeight() / 2;
-logo.sprite.SetPosition(logo.x, logo.y, 10);
-
-halo.image = scaled(Image("logo-glow.png"), layout.s);
-halo.sprite = Sprite(halo.image);
-halo.sprite.SetPosition(screen.cx - halo.image.GetWidth() / 2,
-                        logo.y + logo.image.GetHeight() / 2 - halo.image.GetHeight() / 2, 5);
-halo.sprite.SetOpacity(0.5);
-
-#----------------------------------------- Progress line --------------------------------
-
-bar.w = Math.Int(360 * layout.s);
-bar.h = Math.Int(3 * layout.s);
-if (bar.h < 2) bar.h = 2;
-bar.x = Math.Int(screen.cx - bar.w / 2);
-bar.y = Math.Int(logo.y + logo.image.GetHeight() + 34 * layout.s);
-
-bar.track = Sprite(Image("px-track.png").Scale(bar.w, bar.h));
-bar.track.SetPosition(bar.x, bar.y, 20);
-
-bar.fill_image = Image("px-fill.png");
-bar.fill = Sprite();
-bar.fill.SetPosition(bar.x, bar.y, 21);
-
-bar.head_image = scaled(Image("bar-head.png"), layout.s / 2);
-bar.head = Sprite(bar.head_image);
-bar.head.SetPosition(bar.x, bar.y + bar.h / 2 - bar.head_image.GetHeight() / 2, 22);
-bar.head.SetOpacity(0);
-
-bar.progress = 0;
-bar.width = 0;
-
-fun set_progress(progress)
-{
-  w = Math.Int(bar.w * progress);
-  if (w != bar.width)
-  {
-    bar.width = w;
-    if (w < 1)
-    {
-      bar.fill.SetOpacity(0);
-      bar.head.SetOpacity(0);
-    }
-    else
-    {
-      bar.fill.SetImage(bar.fill_image.Scale(w, bar.h));
-      bar.fill.SetOpacity(1);
-      bar.head.SetX(bar.x + w - bar.head_image.GetWidth() / 2);
-      bar.head.SetOpacity(1);
-    }
-  }
-}
-
+brand = label("MIND\nOS", left, screen.y + screen.h*0.40, Math.Int(110*s), 0);
+edition = label("MINDOS / BUILT FOR PLAY", left, screen.y+70*s, Math.Int(12*s), 0);
+trace.title = label("BOOT TRACE", right+26*s, screen.y+70*s, Math.Int(11*s), 0);
+# Scale a text glyph into a solid rule; no screen-sized bitmap or animation.
+rule.image = Image.Text("█", 0.65, 0.64, 0.62);
+accent.image = Image.Text("█", 0.93, 0.17, 0.07);
+rule = Sprite(rule.image.Scale(1, screen.h-100*s)); rule.SetPosition(right, screen.y+50*s, 2);
+bar.x = left; bar.y = screen.y + screen.h-100*s;
+bar.w = Math.Int(right-left-45*s); bar.h = Math.Int(5*s);
+bar.track = Sprite(rule.image.Scale(bar.w, bar.h)); bar.track.SetPosition(bar.x,bar.y,5);
+bar.fill = Sprite(); bar.fill.SetPosition(bar.x,bar.y,6);
+bar.progress = 0; elapsed = 0;
+time.sprite = label("STARTING", left,bar.y-40*s,Math.Int(18*s),1);
+trace.count = 0;
 fun progress_callback(duration, progress)
 {
-  # progress only ever moves forward; the daemon may report small dips
+  global.elapsed = duration;
   if (progress > bar.progress) bar.progress = progress;
-  set_progress(bar.progress);
+  w = Math.Int(bar.w*bar.progress); if (w < 1) w = 1;
+  bar.fill.SetImage(accent.image.Scale(w,bar.h));
+  global.time.sprite = label("BOOT / " + Math.Int(duration*10)/10 + " s", left,bar.y-40*s,Math.Int(18*s),1);
 }
 Plymouth.SetBootProgressFunction(progress_callback);
-
-#----------------------------------------- Caption --------------------------------
-
-caption.image = scaled(Image("caption-boot.png"), layout.s / 2);
-mode = Plymouth.GetMode();
-if (mode == "shutdown" || mode == "reboot")
-  caption.image = scaled(Image("caption-halt.png"), layout.s / 2);
-caption.sprite = Sprite(caption.image);
-caption.y = bar.y + bar.h + 24 * layout.s;
-caption.sprite.SetPosition(screen.cx - caption.image.GetWidth() / 2, caption.y, 20);
-
-#----------------------------------------- Scan line --------------------------------
-
-scan.w = Math.Int(screen.w * 0.56);
-scan.h = Math.Int(layout.s);
-if (scan.h < 1) scan.h = 1;
-scan.x = Math.Int(screen.cx - scan.w / 2);
-scan.y = Math.Int(screen.y + screen.h * 0.84);
-scan.line = Sprite(Image("px-line.png").Scale(scan.w, scan.h));
-scan.line.SetPosition(scan.x, scan.y, 15);
-scan.line.SetOpacity(0.9);
-
-scan.streak_image = scaled(Image("scan.png"), layout.s / 2);
-scan.streak = Sprite(scan.streak_image);
-scan.travel = scan.w + scan.streak_image.GetWidth();
-scan.streak.SetPosition(scan.x - scan.streak_image.GetWidth(),
-                        scan.y + scan.h / 2 - scan.streak_image.GetHeight() / 2, 16);
-scan.streak.SetOpacity(0.9);
-scan.period = 130;   # refresh ticks (50/s) per sweep
-
-#----------------------------------------- HUD corners --------------------------------
-
-corners.inset = 32 * layout.s;
-corners.tl.image = scaled(Image("corner-tl.png"), layout.s / 2);
-corners.tl.sprite = Sprite(corners.tl.image);
-corners.tl.sprite.SetPosition(screen.x + corners.inset, screen.y + corners.inset, 12);
-corners.tl.sprite.SetOpacity(0.7);
-corners.tr.image = scaled(Image("corner-tr.png"), layout.s / 2);
-corners.tr.sprite = Sprite(corners.tr.image);
-corners.tr.sprite.SetPosition(screen.x + screen.w - corners.inset - corners.tr.image.GetWidth(),
-                              screen.y + corners.inset, 12);
-corners.tr.sprite.SetOpacity(0.7);
-corners.bl.image = scaled(Image("corner-bl.png"), layout.s / 2);
-corners.bl.sprite = Sprite(corners.bl.image);
-corners.bl.sprite.SetPosition(screen.x + corners.inset,
-                              screen.y + screen.h - corners.inset - corners.bl.image.GetHeight(), 12);
-corners.bl.sprite.SetOpacity(0.7);
-corners.br.image = scaled(Image("corner-br.png"), layout.s / 2);
-corners.br.sprite = Sprite(corners.br.image);
-corners.br.sprite.SetPosition(screen.x + screen.w - corners.inset - corners.br.image.GetWidth(),
-                              screen.y + screen.h - corners.inset - corners.br.image.GetHeight(), 12);
-corners.br.sprite.SetOpacity(0.7);
-
-#----------------------------------------- Animation --------------------------------
-
-anim.frame = 0;
-
-fun refresh_callback()
+fun status_callback(status)
 {
-  anim.frame = anim.frame + 1;
-
-  # the halo breathes with a 3 s period
-  pulse = 0.25 + 0.25 * (1 + Math.Sin(anim.frame / 150 * 6.2832));
-  halo.sprite.SetOpacity(pulse);
-
-  # the streak sweeps along the hairline every 2.6 s
-  phase = anim.frame / scan.period;
-  phase = phase - Math.Int(phase);
-  scan.streak.SetX(scan.x - scan.streak_image.GetWidth() + scan.travel * phase);
+  # A rolling list of actual status updates, not a scripted hardware checklist.
+  line = Math.Int(trace.count % 14);
+  trace.lines[line] = label(Math.Int(elapsed*10)/10 + " / " + status, right+26*s,screen.y+(110+line*27)*s,Math.Int(10*s),0);
+  trace.count++;
 }
-Plymouth.SetRefreshFunction(refresh_callback);
-
-#----------------------------------------- Status messages --------------------------------
-
-message.sprite = Sprite();
-
-fun display_message_callback(text)
+Plymouth.SetUpdateStatusFunction(status_callback);
+message = Sprite();
+fun display_message(text) { global.message = label(text,left,screen.y+screen.h-48*s,Math.Int(12*s),0); }
+fun hide_message(text) { global.message = Sprite(); }
+Plymouth.SetDisplayMessageFunction(display_message);
+Plymouth.SetHideMessageFunction(hide_message);
+prompt = Sprite(); bullets = Sprite();
+fun display_password(text, count)
 {
-  image = Image.Text(text, 0.545, 0.608, 0.690);
-  message.sprite = Sprite(image);
-  message.sprite.SetPosition(screen.x + 32 * layout.s,
-                             screen.y + screen.h - 32 * layout.s - image.GetHeight(), 30);
+  global.prompt = label(text,left,screen.y+screen.h*0.27,Math.Int(15*s),0);
+  value = ""; for (i=0;i<count;i++) value = value + "● ";
+  global.bullets = label(value,left,screen.y+screen.h*0.33,Math.Int(18*s),1);
 }
-
-fun hide_message_callback(text)
+fun display_question(text, entry)
 {
-  message.sprite = Sprite();
+  global.prompt = label(text,left,screen.y+screen.h*0.27,Math.Int(15*s),0);
+  global.bullets = label(entry,left,screen.y+screen.h*0.33,Math.Int(18*s),0);
 }
-Plymouth.SetDisplayMessageFunction(display_message_callback);
-Plymouth.SetHideMessageFunction(hide_message_callback);
-
-#----------------------------------------- Password prompt --------------------------------
-
-prompt.sprite = Sprite();
-bullets.image = scaled(Image("bullet.png"), layout.s / 2);
-
-fun display_password_callback(prompt_text, bullet_count)
-{
-  global.status = "password";
-  caption.sprite.SetOpacity(0);
-  image = Image.Text(prompt_text, 0.545, 0.608, 0.690);
-  prompt.sprite = Sprite(image);
-  prompt.sprite.SetPosition(screen.cx - image.GetWidth() / 2, caption.y, 30);
-
-  step = bullets.image.GetWidth() + 6 * layout.s;
-  total = bullet_count * step - 6 * layout.s;
-  y = caption.y + image.GetHeight() + 12 * layout.s;
-  for (index = 0; bullets.list[index] || index < bullet_count; index++)
-  {
-    if (!bullets.list[index])
-      bullets.list[index].sprite = Sprite(bullets.image);
-    bullets.list[index].sprite.SetPosition(screen.cx - total / 2 + index * step, y, 30);
-    if (index < bullet_count)
-      bullets.list[index].sprite.SetOpacity(1);
-    else
-      bullets.list[index].sprite.SetOpacity(0);
-  }
-}
-
-fun display_normal_callback()
-{
-  global.status = "normal";
-  caption.sprite.SetOpacity(1);
-  prompt.sprite = Sprite();
-  for (index = 0; bullets.list[index]; index++)
-    bullets.list[index].sprite.SetOpacity(0);
-}
-Plymouth.SetDisplayPasswordFunction(display_password_callback);
-Plymouth.SetDisplayNormalFunction(display_normal_callback);
-
-#----------------------------------------- Quit --------------------------------
-
-fun quit_callback()
-{
-  set_progress(1);
-  halo.sprite.SetOpacity(0.75);
-}
-Plymouth.SetQuitFunction(quit_callback);
+fun normal() { global.prompt = Sprite(); global.bullets = Sprite(); }
+Plymouth.SetDisplayPasswordFunction(display_password);
+Plymouth.SetDisplayQuestionFunction(display_question);
+Plymouth.SetDisplayNormalFunction(normal);
+fun quit() { bar.fill.SetImage(accent.image.Scale(bar.w,bar.h)); }
+Plymouth.SetQuitFunction(quit);

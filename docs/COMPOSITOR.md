@@ -7,6 +7,13 @@
 * **DRM/KMS session** via libseat/logind, libinput, GBM + EGL/GLES (NVIDIA
   and Mesa both work through the normal Linux driver stack), multi-GPU aware,
   direct scanout for fullscreen games. `--winit` runs it nested for development.
+* **Gaming pointer input:** relative mice, absolute tablets and the nested
+  backend share mouse-lock/confinement handling. Confinement follows the
+  surface input region, slides along edges and prevents jumps across holes.
+  Output bounds support negative, stacked and gapped monitor arrangements.
+  Session locking drops mouse grabs and focus; keyboard shortcut inhibition
+  follows the focused application. Startup fullscreen works before the first
+  buffer arrives, including output selection on multi-monitor layouts.
 * **XWayland** built in, so X11 games and launchers (Steam, Proton/Wine, Lutris)
   run unchanged.
 * **Three window layouts**, switched from the shell's top bar (the icon next
@@ -48,7 +55,8 @@
 Game mode means no clicking around: a window that maps (Wayland or X11) gets
 keyboard focus immediately, and when the focused window closes or crashes the
 top-most remaining window takes over. Clicking a window still focuses and
-raises it; `Super+Tab` cycles.
+raises it; `Super+Tab` cycles, and Super held with the mouse wheel walks the
+tiling order on the screen the pointer is on.
 
 Layer-shell surfaces (the shell's panels, popups, wallpaper) follow the
 usual rules: a `top`/`overlay` surface with *exclusive* keyboard
@@ -172,11 +180,12 @@ window.
 
 | Keys | Action |
 |------|--------|
-| `Super` (tap, nothing else pressed) | Open the Mind bar: Mind is the launcher |
-| `Super+Space` | Open/close the Mind bar |
+| `Super+Space` | Open/close the Mind bar: Mind is the launcher |
 | `Super+W` | The shell's overview (`shortcut overview`); the built-in window preview when no shell is connected |
-| `Super+Enter` | Terminal (`[apps].terminal`, default `foot`) |
-| `Super+Q` | Close the focused window |
+| `Super+Enter` | Terminal (`[apps].terminal`, default `kitty`) |
+| `Print` / `Super+Shift+S` | Select an area to save and copy; Escape cancels |
+| `Shift+Print` | Save and copy all displays |
+| `Alt+F4` / `Super+Q` | Close the focused window |
 | `Super+F` | Toggle fullscreen on the focused window |
 | `Super+M` | Toggle maximize on the focused window |
 | `Super+T` | Next window layout (floating → tiles → columns) |
@@ -184,7 +193,8 @@ window.
 | `Super+R` | Cycle the width of the focused column (columns mode) |
 | `Super+←↑↓→` | Focus the window in that direction |
 | `Super+Shift+←↑↓→` | Move (swap) the focused window in that direction |
-| `Super+Tab` / `Alt+Tab` | Cycle windows |
+| `Super+Tab` / `Alt+Tab` | Switch recent visible windows; hold the modifier to keep cycling |
+| `Super+Shift+Tab` / `Alt+Shift+Tab` | Cycle backward; Escape restores the original window |
 | `Super+1..9` | Move the pointer to output *n* |
 | `Super+Shift+D` | Toggle server/client-side decorations on the focused window |
 | `Super+L` | Lock the screen |
@@ -193,10 +203,73 @@ window.
 | `Super+Shift+P` / `Super+Shift+M` | Output scale up / down |
 | `Super+Shift+R` | Rotate the output under the pointer |
 | `Super+Shift+W` | Built-in window preview (all windows scaled side by side) |
+| `Super` + mouse wheel | Step through the windows in the layout order (tiles and columns; nothing in floating) |
 
-Only `Super` combinations are consumed by the compositor; games see every
-other key unmodified, and clients that use the keyboard-shortcuts-inhibit
-protocol get everything.
+Most shortcuts use `Super`; `Print` and `Shift+Print` capture screenshots.
+Window switching keeps a stable recent-use order while Alt/Super is held.
+Releasing the modifier confirms the selected window; a quick second Alt+Tab
+returns to the previously used window. Minimized windows remain in the dock.
+Switching away from a fullscreen game reveals the selected application while
+preserving the game's fullscreen state for the return trip. Caps Lock does
+not alter Super shortcuts, and consumed shortcut keys keep their releases
+even when Shift is released first.
+For `Super` shortcuts, Super on its own
+does nothing, so a tap on it goes to the focused application like any other
+key. Other keys reach the application, and clients that use the
+keyboard-shortcuts-inhibit protocol get everything.
+
+## Hardware media controls
+
+Unmodified volume, output mute, microphone mute, brightness and playback keys
+work without opening a panel. Volume changes in 5% steps, unmutes the output
+and caps keyboard adjustments at 100%. Microphone mute targets the default
+input independently. Volume and brightness repeat after 400 ms while held;
+release stops repetition. Brightness uses the first backlight device and keeps
+at least one hardware brightness unit; keyboard LEDs are excluded.
+
+A small dark feedback card appears on the focused window's display (or the
+pointer's display), including over fullscreen games. It reuses the bar's fonts
+and cached rendering, fades out after 1.8 seconds and never takes focus.
+Commands run on one sleeping background worker with bounded execution and
+output; unavailable devices or players show “Unavailable”. There is no idle
+media polling. Session lock clears feedback and cancels held repetition;
+shortcut-inhibited clients keep their keys. Controls are disabled in kiosk mode.
+
+WirePlumber's `wpctl` controls the default audio devices.
+[`brightnessctl`](https://github.com/Hummer12007/brightnessctl) handles backlights;
+[`playerctl`](https://github.com/altdesktop/playerctl) controls the first available
+MPRIS player. Both ship with `mindos-session`; no extra media daemon is needed.
+
+## Screenshots and screen sharing
+
+`Print` (or `Super+Shift+S`) selects an area; `Shift+Print` captures all displays.
+Images are saved privately in Pictures/Screenshots and copied as PNG to the
+clipboard. Escape cancels without creating a file. Settings → Desktop lists
+these shortcuts. Shortcut-inhibited clients keep their keys.
+
+Applications can request a monitor through the ScreenCast portal. The dark
+chooser names the available displays and requires Share display or Cancel.
+The session uses xdg-desktop-portal-wlr for Screenshot/ScreenCast and GTK for
+file dialogs and settings. Capture runs only on request and is refused while
+locked, blanked, in the greeter or from security-context-marked clients.
+
+The compositor currently provides wlr-screencopy v3 with shared-memory XRGB
+buffers. It caches offscreen targets and waits for damage between unchanged
+frames; unused targets expire after two seconds. Portal capture defaults to
+60 fps independently of the monitor refresh rate. To tune it, create
+`~/.config/xdg-desktop-portal-wlr/config`:
+
+```ini
+[screencast]
+max_fps=30
+chooser_type=dmenu
+chooser_cmd=mindos-share-chooser
+```
+
+Restart the user portal services or log out/in after changing portal settings.
+GPU-buffer capture and the newer ext-image-copy-capture protocol remain open
+work; hardware recording performance and individual OBS/Discord integrations
+are not established by the VM PipeWire test.
 
 ## The Mind bar
 
@@ -321,7 +394,7 @@ printf '{"id":1,"type":"subscribe"}\n{"id":2,"type":"terminal"}\n' | socat - UNI
 exec = ["/usr/lib/mindos/session-startup"]
 
 [apps]
-terminal = "foot"
+terminal = "kitty"
 
 [layout]
 mode = "floating"        # floating | dwindle | columns (the saved choice wins)
@@ -369,7 +442,7 @@ names one more file loaded last (the greeter uses
 | `src/shell/mod.rs` | New-window placement (`initial_state`, `centered`, `cascade`, `pointer_output_area`), usable-area relayout when layer-shell exclusive zones change |
 | `src/shell/ssd.rs` | Server-side decorations: the title bar renderer and its pointer handling |
 | `src/shell/xdg.rs`, `src/shell/x11.rs` | xdg-shell and XWayland window management |
-| `src/input_handler.rs` | Keybindings (`process_keyboard_shortcut`), the Super tap, layer focus rules and Mind bar key routing |
+| `src/input_handler.rs` | Keybindings (`process_keyboard_shortcut`), Super+wheel window stepping, layer focus rules and Mind bar key routing |
 | `src/cursor.rs` | The pointer the compositor draws for a named shape: XCursor lookup, animation frames, and `configure` (the session-wide `XCURSOR_THEME` / `XCURSOR_SIZE`) |
 | `src/render.rs` | Output element assembly: cursor, Mind bar overlay, windows, startup screen |
 | `src/udev.rs`, `src/winit.rs` | DRM/KMS and nested backends (from anvil) |

@@ -1,0 +1,3 @@
+#!/bin/sh
+export MINDOS_OPEN_LIBRARY=1
+exec mindos-session

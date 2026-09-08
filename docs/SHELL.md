@@ -1,5 +1,11 @@
 # mindshell — the MindOS desktop shell
 
+The [gaming desktop](GAMING-DESKTOP.md) adds the installed-game shelf, local
+Mind and system panels, light/dark appearance, and a togglable live circuit
+background. `mindshell --app library` opens the same library in an ordinary
+window. Desktop layer surfaces accept keyboard focus on interaction so search
+and keyboard navigation work without opening a separate application.
+
 `mindshell` is the MindOS desktop environment: the dock, the top bar
 (system tray, clock, layout switcher), desktop widgets, the Settings app and
 the login screen. It is one small Rust process (the *host*) that opens layer-shell
@@ -7,7 +13,7 @@ windows on the compositor and renders every window with WebKitGTK; the user
 interface itself is HTML/CSS/TypeScript (`mindshell/ui`). The host owns
 everything that needs the system (D-Bus, the compositor IPC, files,
 processes); the UI owns everything visual and is hot-reloadable. There is no
-launcher button: a tap on Super opens the compositor's Mind bar, which
+launcher button: `Super+Space` opens the compositor's Mind bar, which
 launches programs, runs commands and talks to the Mind.
 
 ```
@@ -41,7 +47,7 @@ data with a nicer UI.
 | host config | `/etc/mindos/shell.toml`, `~/.config/mindos/shell.toml` |
 | user service | `mindos-shell.service` (systemd --user, `Restart=on-failure`), started by `/etc/xdg/mindos/autostart/50-mindshell` |
 | log | `journalctl --user -u mindos-shell` |
-| app windows | `mindshell --app settings [--page mind\|wallpaper\|displays\|shell\|about]`: an ordinary toplevel (app id `mindos-settings`) with the compositor's title bar; desktop entries `mindos-settings`, `mindos-displays`, `mindos-wallpaper`. Files is Nautilus (`mindos-apps`), not a shell window |
+| app windows | `mindshell --app settings [--page home\|performance\|games\|software\|connections\|mind\|updates\|wallpaper\|displays\|screen\|shell\|about]`: an ordinary toplevel (app id `mindos-settings`) with the compositor's title bar; desktop entries `mindos-settings`, `mindos-displays`, `mindos-wallpaper`. Files is Nautilus (`mindos-apps`), not a shell window |
 
 Environment: `WAYLAND_DISPLAY` (from the compositor), `MINDWM_SOCKET` (the
 compositor IPC socket, exported by mindwm to everything it spawns and imported
@@ -55,7 +61,7 @@ WebKit inspector, `mindshell --devtools` does the same).
 [shell]
 # icon_theme = "breeze-dark"     # unset: follow the desktop's icon pack (see below)
 hardware_acceleration = "always" # always | never (WebKit compositing policy)
-terminal = "foot"
+terminal = "kitty"
 icon_size = 48                   # dock / taskbar icon size in logical pixels
 ```
 
@@ -68,9 +74,76 @@ org.gnome.desktop.interface icon-theme Papirus-Dark`) and the shell re-draws
 its icons with the applications', without a restart. `icon_theme` in
 `shell.toml` pins one theme instead and stops the shell following.
 
+## Applications at login
+
+Applications can use their normal **Start at login** option. Standard desktop
+entries in `~/.config/autostart/` run once per session through systemd's XDG
+autostart generator. The defaults in `/etc/mindos/xdg/autostart/` and
+`/etc/xdg/autostart/` follow; a user file with the same filename overrides them.
+To disable a default, copy its desktop entry into your autostart directory and
+set `Hidden=true`. `OnlyShowIn`, `NotShowIn` and `TryExec` are respected. Changes
+take effect at the next login. The network applet uses this path with its tray
+indicator enabled, avoiding a second custom launcher.
+
+Inspect startup apps with `systemctl --user list-units 'app-*@autostart.service'`
+and `journalctl --user -b`. Managed apps stop on logout. MindOS's existing
+executable hooks in `~/.config/mindos/autostart/` remain supported; use a desktop
+entry or a user service tied to `graphical-session.target` for a background
+process that needs automatic session cleanup.
+
+Advanced environment overrides for the generator belong in
+`~/.config/environment.d/90-local.conf` (`KEY=value`, without `export`), followed
+by a fresh login. The default `XDG_CONFIG_DIRS` is
+`/etc/mindos/xdg:/etc/xdg`. Session-specific application exports can still go in
+`~/.config/mindos/session-env`; these do not change the generator's search paths.
+
+## Keyboard and mouse
+
+Settings → **Keyboard & mouse** controls the session's keyboard layout, repeat
+rate/delay and mouse behavior. Choose a layout, apply it and try it in the typing
+area. **Discard edits** restores unsaved controls to the last saved values.
+**Choose defaults** stages a reset; **Apply input settings** makes it active.
+Repeat rate `0` disables repetition. These are desktop-session settings; the
+login screen uses its own system keyboard environment.
+
+Advanced options accept XKB layout, variant and option names. For example,
+custom layouts `us,de` with `grp:alt_shift_toggle` let Alt+Shift switch between
+them; `compose:ralt` makes Right Alt a Compose key. An unbuildable keymap is
+rejected while the current one stays active. A bad saved keymap falls back to
+the system layout at the next session start.
+
+Mouse controls include acceleration profile, speed, left-handed buttons and
+natural scrolling. The flat profile applies constant scaling; games receiving
+unaccelerated relative motion retain their own sensitivity. Controls apply to
+supported mice/pointing sticks, including devices connected later. Touchpad
+tapping and gestures retain libinput's defaults. The device list reports actual
+profile/speed and distinguishes absolute virtual pointers without acceleration.
+Reopen the page to refresh a changed device list.
+
+Preferences live in `~/.local/state/mindos/mindwm.json` under `input`. The
+`get_input` compositor request reports both saved settings and connected mouse
+state; `set_prefs` accepts a partial `input` object. The shell's `input.get`
+bridge uses that read-only request. No input polling runs while the page is idle.
+
+Hardware volume, mute, microphone mute, brightness and media keys work directly.
+A compact dark feedback card stays visible over fullscreen games without taking
+focus, then fades away. Hold volume or brightness to repeat 5% adjustments;
+keyboard volume stops at 100%. Missing backlights or players show “Unavailable”.
+Playback uses the first available MPRIS player. Settings → Desktop lists these
+controls alongside the window shortcuts.
+
+**Desktop** lists the window shortcuts. `Alt+F4` (or `Super+Q`) closes the
+focused app. `Alt+Tab` and `Super+Tab` switch recent visible windows: hold the
+modifier to keep cycling, add Shift to move backward, release to confirm, or
+press Escape to return to the original window. A quick second Alt+Tab returns
+to the previous app. Minimized apps remain available in the dock. Switching
+away from a fullscreen game reveals the chosen app without taking the game
+out of fullscreen. Caps Lock does not change Super shortcuts. Applications
+that inhibit desktop shortcuts retain their key events.
+
 ## Layout (`layout.json`)
 
-The default (`mindshell/data/layout.json`): one 48 px bar flush with the
+The default (`mindshell/data/layout.json`): one floating 64 px shelf along the
 bottom edge, Windows-style — the task bar centred on the screen; the tray,
 status widgets, Mind and the clock at the right; the Desktop folder as icons
 on the wallpaper and no desktop widgets. It is only a default: edit mode
@@ -79,27 +152,27 @@ adds widgets and re-orders them. `version` is the layout format: a saved
 layout from before version 2 gains the `perf` and `notifications` widgets
 beside its `mind` widget when it loads, and one from before version 3 gains
 the `updates` indicator in front of its bell (`Layout::sanitized` migrates,
-and the next save writes version 3).
+and the next save writes version 4).
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "panels": [
     {
       "id": "bar",
       "output": "*",
       "edge": "bottom",
-      "size": 48,
+      "size": 64,
       "length": 100,
       "align": "center",
-      "margin": 0,
+      "margin": 8,
       "layer": "top",
-      "opacity": 0.6,
-      "float": false,
+      "opacity": 0.9,
+      "float": true,
       "autohide": false,
       "widgets": [
         { "id": "sp-l", "type": "spacer", "config": { "expand": true } },
-        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "org.gnome.Nautilus.desktop", "foot.desktop", "steam.desktop", "mindos-settings.desktop"] } },
+        { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "org.gnome.Nautilus.desktop", "kitty.desktop", "steam.desktop", "mindos-settings.desktop"] } },
         { "id": "sp-r", "type": "spacer", "config": { "expand": true } },
         { "id": "tray", "type": "tray", "config": {} },
         { "id": "audio", "type": "audio", "config": {} },
@@ -368,7 +441,7 @@ What `mindshell` (the Rust host in `mindshell/`) does beyond the tables above:
   that request answered.
 * **`shortcut` events are forwarded only.** The host broadcasts the
   compositor's `shortcut` to every view and opens nothing itself. The
-  compositor keeps the Super tap for its own Mind bar (there is no launcher
+  compositor keeps `Super+Space` for its own Mind bar (there is no launcher
   popup) and only forwards `overview`.
 * **Extra methods.** `windows.unminimize`, `windows.toggleFullscreen`,
   `windows.toggleMaximize`, `mind.open`, `mind.close`, `outputs.list`.
@@ -447,7 +520,7 @@ Events (`{"event":"...", ...}`):
 |---|---|
 | `windows` | `windows: [{ id, title, app_id, focused, fullscreen, maximized, minimized, x11, wine, output }]`, `focused: id \| null`. `wine` is true when the window's process runs under Wine or Proton (a Windows program), judged from `/proc/<pid>/exe` and `WINELOADER` in its environment |
 | `outputs` | `outputs: [{ name, make, model, x, y, width, height, scale, refresh, transform, modes: [{ width, height, refresh (mHz), preferred, current }], enabled, vrr, vrr_supported, primary, mm_width, mm_height }]` (logical pixels; `refresh` in Hz, e.g. `240.0`) |
-| `shortcut` | `name`: `overview` (`Super+W`). Only sent while someone is subscribed; without a shell the compositor opens its own window preview instead. A tap on Super alone always opens the compositor's Mind bar |
+| `shortcut` | `name`: `overview` (`Super+W`). Only sent while someone is subscribed; without a shell the compositor opens its own window preview instead. `Super+Space` always opens the compositor's Mind bar |
 | `mindbar` | `open: bool` |
 | `layout_mode` | `mode`, `label`, `modes` (after `subscribe` and on every change) |
 | `prefs` | `prefs` (after `subscribe` and on every change) |
@@ -550,8 +623,7 @@ compositor's title bar and `app.close` ends the process. Settings pages:
 `desktop.wallpaper`), `displays` (basic: resolution / refresh rate / scale
 per output; advanced: position, rotation, VRR, primary, enable, through
 `wm.outputs` / `wm.setOutput`), `shell` (layout mode, panels, edit mode),
-`developer` (detected toolchains, containers, SSH, groups and kernel limits,
-git identity; every privileged action runs through `pkexec`),
+`software` (Octopi package management, Windows setup and graphics help),
 `about`.
 
 ## The authentication dialog (polkit)
@@ -611,8 +683,16 @@ compositor to unlock when it is the right one. A wrong password shakes the
 card and says what PAM said.
 
 The shell also holds a logind *delay* inhibitor (`src/sleepwatch.rs`): on
-`PrepareForSleep` it locks the session and only then lets go, so the machine
-never suspends with the desktop still on screen. And while a game is running
+`PrepareForSleep` it waits for the compositor to confirm the session lock
+and blanked displays before releasing the inhibitor. A dedicated asynchronous
+IPC connection keeps this independent of the GTK main loop. On resume it
+reconfirms the lock and wakes the displays; it never requests an unlock.
+The attempt is bounded to four seconds and failures are logged. Logind can
+enforce a shorter configured maximum delay, so a failed or unresponsive
+compositor cannot provide the same guarantee as a successful acknowledgement.
+Disabling *Lock when the computer sleeps* skips these lock and display changes.
+This follows [systemd's delay inhibitor lifecycle](https://github.com/systemd/systemd/blob/main/docs/INHIBITOR_LOCKS.md).
+And while a game is running
 it holds the session awake (`inhibit_idle`), as does any program that takes a
 `zwp_idle_inhibitor_v1` — a video player, say — while *Stay awake while
 something is playing* is set.
@@ -627,6 +707,11 @@ a character or a shape from a game anyone owns. `shuffle` picks a different
 one every four minutes; `blank` draws nothing at all. Each module exports
 `{ id, name, description, start(canvas) }` and returns the function that stops
 it; `savers/engine.ts` owns the frame loop, the palette and the score line.
+The shared loop caps rendering at 24 fps and 1920×1080 backing pixels, pauses
+when hidden, and paints a still frame when reduced motion is requested. The
+clock shifts position once per minute without continuous compositing.
+These limits apply to screensavers and their previews; desktop animations
+and games retain the display's refresh rate.
 
 ![Settings, the Screen page](img/settings-screen.png)
 
@@ -713,3 +798,27 @@ clock and a note on the desktop), `widget=TYPE` (which widget
 `popup=widget-settings` opens; `widget-menu` right-clicks the clock),
 `demo=1` (shows the hover chrome on the task bar and the first desktop
 widget for screenshots).
+
+## Settings navigation and accessibility
+
+Settings opens on an overview with shortcuts to performance, desktop,
+connections, displays, software and updates. The grouped sidebar filters
+page names and keywords (try GPU, Wi-Fi or wallpaper). Ctrl+K focuses search;
+Enter opens the first match, and arrow keys move through visible pages.
+Advanced performance controls stay in an expandable section. Connection
+shortcuts launch nm-connection-editor, Blueman and pavucontrol; the
+NetworkManager tray applet handles joining nearby Wi-Fi networks and secrets.
+
+Rows label their form controls, toggle focus is visible, and result notices
+are live regions. Modal dialogs contain keyboard focus, make the underlying
+window inert, dismiss with Escape and restore the previous focus. Narrow
+windows stack cards and rows while keeping navigation and content scrollable.
+The existing dark glass palette and cached wallpaper treatment remain.
+
+`node scripts/tests/ui-smoke.mjs` runs the built UI in an isolated headless
+Chromium profile, checks these interactions and saves desktop/compact
+screenshots in `build/shots/ui-smoke/`. It requires Node with WebSocket
+support and Chromium; it adds no frontend runtime dependencies. Native
+WebKitGTK integration is checked separately in the development VM.
+
+![Settings overview in the development VM](img/settings-overview.png)

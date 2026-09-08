@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Network connections
+Exec=nm-applet --indicator
+TryExec=nm-applet
+NotShowIn=GNOME;KDE;
+Terminal=false

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Game Library
+Comment=Your installed games, together in one shelf
+Exec=mindshell --app library
+Icon=applications-games
+Categories=Game;
+StartupWMClass=mindos-library
+Terminal=false

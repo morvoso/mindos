@@ -3,12 +3,12 @@
 # MindOS gaming kernel config. Run from the kernel source tree after copying
 # the base config to .config; `make olddefconfig` follows.
 #
-#   MINDOS_CPU=native  -march=native for the build machine (default)
-#   MINDOS_CPU=generic  portable x86-64 build
+#   MINDOS_CPU=generic  portable x86-64 build (default)
+#   MINDOS_CPU=native  -march=native for a build used only on this CPU
 #   MINDOS_LTO=thin|none  Clang ThinLTO (default thin)
 set -e
 cfg=scripts/config
-: "${MINDOS_CPU:=native}"
+: "${MINDOS_CPU:=generic}"
 : "${MINDOS_LTO:=thin}"
 
 # --- identity ------------------------------------------------------------
@@ -18,8 +18,9 @@ $cfg -e IKCONFIG -e IKCONFIG_PROC
 
 # --- CPU, scheduler, latency ------------------------------------------------
 case "$MINDOS_CPU" in
-  native)  $cfg -d GENERIC_CPU -e X86_NATIVE_CPU ;;
-  generic) $cfg -e GENERIC_CPU -d X86_NATIVE_CPU ;;
+  native)  $cfg -e X86_NATIVE_CPU ;;
+  generic) $cfg -d X86_NATIVE_CPU ;;
+  *) echo "MINDOS_CPU must be generic or native" >&2; exit 1 ;;
 esac
 $cfg -e SCHED_BORE                      # Burst-Oriented Response Enhancer
 $cfg -e SCHED_CLASS_EXT                 # sched_ext: scx_lavd / scx_bpfland for games
@@ -46,8 +47,12 @@ $cfg -e NET_SCH_FQ -d DEFAULT_FQ_CODEL -e DEFAULT_FQ --set-str DEFAULT_NET_SCH f
 case "$MINDOS_LTO" in
   thin) $cfg -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN ;;
   none) $cfg -e LTO_NONE -d LTO_CLANG_FULL -d LTO_CLANG_THIN ;;
+  *) echo "MINDOS_LTO must be thin or none" >&2; exit 1 ;;
 esac
-$cfg -d MODULE_SIG -d MODULE_SIG_ALL -d MODULE_SIG_FORCE
+# Lockdown selects signature verification. Sign in-tree modules with the
+# build's embedded key; modules_install strips before signing/compressing.
+# External DKMS modules remain loadable without enrolled Secure Boot keys.
+$cfg -e MODULE_SIG -e MODULE_SIG_ALL -d MODULE_SIG_FORCE
 $cfg -e DEBUG_INFO -e DEBUG_INFO_DWARF5 -e DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED -d DEBUG_INFO_COMPRESSED_NONE
 $cfg -e MODULE_COMPRESS_ZSTD
 $cfg -d RUST
@@ -62,16 +67,20 @@ $cfg -m KVM -m KVM_AMD -m KVM_INTEL -e KVM_GUEST -e PARAVIRT
 $cfg -e VIRTIO_PCI -e VIRTIO_BLK -m VIRTIO_NET -m DRM_VIRTIO_GPU -m VIRTIO_INPUT -m VIRTIO_CONSOLE -e VIRTIO_MENU -m VIRTIO_BALLOON -m HW_RANDOM_VIRTIO -m VIRTIO_FS -m 9P_FS -m NET_9P -m NET_9P_VIRTIO -m VSOCKETS -m VIRTIO_VSOCKETS
 $cfg -m VIRTIO_VDPA -m VHOST_NET -m VHOST_VSOCK
 
-# --- things a gaming desktop never loads (build time and attack surface) ----
+# --- omit unrelated server/legacy subsystems --------------------------------
 $cfg -d XEN -d HYPERV -d VMWARE_VMCI -d VMWARE_BALLOON -d VBOXGUEST
-$cfg -d INFINIBAND -d STAGING -d IIO -d MTD -d COMEDI -d GREYBUS
-$cfg -d MEDIA_DIGITAL_TV_SUPPORT -d MEDIA_ANALOG_TV_SUPPORT -d MEDIA_RADIO_SUPPORT -d MEDIA_SDR_SUPPORT -d MEDIA_PLATFORM_SUPPORT -d MEDIA_TEST_SUPPORT -d MEDIA_PCI_SUPPORT -d DVB_CORE
-$cfg -d SND_SOC -d SOUNDWIRE -d SLIMBUS
-$cfg -d REGULATOR -d INPUT_TOUCHSCREEN -d CAN -d NFC -d ATM -d FDDI -d HIPPI -d WAN
-$cfg -d PARPORT -d PCMCIA -d FIREWIRE -d MEMSTICK -d W1 -d FPGA -d SIOX -d MOST -d EXTCON -d RAPIDIO -d ISDN
-$cfg -d WLAN_VENDOR_ADMTEK -d WLAN_VENDOR_ATMEL -d WLAN_VENDOR_CISCO -d WLAN_VENDOR_INTERSIL -d WLAN_VENDOR_MARVELL -d WLAN_VENDOR_MICROCHIP -d WLAN_VENDOR_PURELIFI -d WLAN_VENDOR_QUANTENNA -d WLAN_VENDOR_RSI -d WLAN_VENDOR_SILABS -d WLAN_VENDOR_ST -d WLAN_VENDOR_TI -d WLAN_VENDOR_ZYDAS
-$cfg -d USB_GADGET -d USB_OTG -d ACCESSIBILITY
+$cfg -d INFINIBAND -d STAGING -d MTD -d COMEDI -d GREYBUS
+$cfg -d MEDIA_DIGITAL_TV_SUPPORT -d MEDIA_ANALOG_TV_SUPPORT -d MEDIA_RADIO_SUPPORT -d MEDIA_SDR_SUPPORT -d MEDIA_PLATFORM_SUPPORT -d MEDIA_TEST_SUPPORT -d DVB_CORE
+$cfg -d SLIMBUS
+$cfg -d CAN -d NFC -d ATM -d FDDI -d HIPPI -d WAN
+$cfg -d PARPORT -d PCMCIA -d FIREWIRE -d MEMSTICK -d W1 -d FPGA -d SIOX -d MOST -d RAPIDIO -d ISDN
+$cfg -d USB_GADGET -d USB_OTG
 $cfg -d DRM_PANEL_BRIDGE -d DRM_LOONGSON -d DRM_ETNAVIV -d DRM_HISI_HIBMC -d DRM_ARCPGU
+
+# Preserve the base config's laptop/handheld audio, touch, gyro, regulator,
+# connector and Wi-Fi drivers, along with PCI capture and accessibility.
+# These device modules load on demand; deleting them does not improve FPS
+# on a desktop but prevents the same image working on other gaming hardware.
 
 # --- things a gaming desktop does load ---------------------------------------
 $cfg -m DRM_AMDGPU -m DRM_I915 -m DRM_XE -m DRM_NOUVEAU -e DRM_AMDGPU_USERPTR -e DRM_AMD_DC

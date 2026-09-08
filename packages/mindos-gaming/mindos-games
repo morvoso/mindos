@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Local game library for the MindOS shell. No accounts, network or DLL scans."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import subprocess
+import sys
+from urllib.parse import urlencode
+
+
+def read_json(path, fallback):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return fallback
+
+
+def fields(path):
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return {}
+    return {k: re.sub(r'\\([\\"])', r'\1', v) for k, v in
+            re.findall(r'"([^"\n]+)"\s+"((?:[^"\\]|\\.)*)"', text)}
+
+
+def scan(home=None):
+    home = Path(home) if home else Path.home()
+    cfg = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+    data = Path(os.environ.get("XDG_DATA_HOME", home / ".local/share"))
+    games, warnings, seen = [], [], set()
+
+    def add(gid, name, source, path, uri, **extra):
+        if not isinstance(path, (str, Path)) or not str(path) or '\x00' in str(path):
+            return
+        path = Path(path).expanduser()
+        if gid in seen or not path.is_dir():
+            return
+        seen.add(gid)
+        games.append(dict(id=gid, name=str(name), source=source, path=str(path),
+                          uri=uri, **extra))
+
+    seeds = [home / ".steam/root", data / "Steam",
+             home / ".var/app/com.valvesoftware.Steam/.local/share/Steam"]
+    libs = {}
+    for seed in seeds:
+        if not (seed / "steamapps").is_dir():
+            continue
+        libs[seed.resolve()] = seed
+        vdf = seed / "steamapps/libraryfolders.vdf"
+        try:
+            paths = re.findall(r'"path"\s+"((?:[^"\\]|\\.)*)"', vdf.read_text())
+            for p in paths:
+                lib = Path(p.replace("\\\\", "\\"))
+                libs[lib.resolve()] = lib
+        except OSError:
+            pass
+    for lib in libs.values():
+        for acf in sorted((lib / "steamapps").glob("appmanifest_*.acf")):
+            f = fields(acf)
+            appid, name, directory = (f.get(k, "") for k in ("appid", "name", "installdir"))
+            if not appid.isdigit() or not name or not directory:
+                continue
+            if name.startswith(("Proton", "Steam Linux Runtime", "Steamworks", "Steam Controller")):
+                continue
+            if f.get("StateFlags", "4").isdigit() and not int(f.get("StateFlags", "4")) & 4:
+                continue
+            path = lib / "steamapps/common" / directory
+            if not path.resolve().is_relative_to((lib / "steamapps/common").resolve()):
+                continue
+            art = None
+            for seed in seeds:
+                cache = seed / "appcache/librarycache"
+                candidates = [cache / f"{appid}_library_600x900.jpg", cache / f"{appid}_header.jpg",
+                              cache / appid / "library_600x900.jpg", cache / appid / "header.jpg"]
+                art = next((str(p) for p in candidates if p.is_file()), art)
+                if art:
+                    break
+            add(f"steam:{appid}", name, "steam", path, f"steam://rungameid/{appid}",
+                art=art, lastPlayed=int(f.get("LastPlayed", "0")) if f.get("LastPlayed", "0").isdigit() else 0)
+
+    heroic_configs = [cfg, home / ".var/app/com.heroicgameslauncher.hgl/config"]
+    for base in heroic_configs:
+        for installed in [base / "legendary/installed.json", base / "heroic/legendaryConfig/legendary/installed.json"]:
+            entries = read_json(installed, {})
+            if not isinstance(entries, dict):
+                continue
+            for slug, game in entries.items():
+                if isinstance(game, dict) and game.get("install_path"):
+                    add(f"heroic:{slug}", game.get("title") or slug, "heroic", game["install_path"],
+                        "heroic://launch?" + urlencode(dict(appName=slug, runner="legendary")))
+        installed = read_json(base / "heroic/gog_store/installed.json", {})
+        library = read_json(base / "heroic/store_cache/gog_library.json", {})
+        cached = library.get("games", []) if isinstance(library, dict) else []
+        titles = {str(g.get("app_name")): g.get("title") for g in cached
+                  if isinstance(g, dict)} if isinstance(cached, list) else {}
+        entries = installed.get("installed", []) if isinstance(installed, dict) else []
+        for game in entries if isinstance(entries, list) else []:
+            if not isinstance(game, dict) or not game.get("install_path"):
+                continue
+            slug = str(game.get("appName") or game.get("app_name") or "")
+            if slug:
+                add(f"gog:{slug}", titles.get(slug) or game.get("title") or slug, "gog", game["install_path"],
+                    "heroic://launch?" + urlencode(dict(appName=slug, runner="gog")))
+
+    for db in [data / "lutris/pga.db", home / ".var/app/net.lutris.Lutris/data/lutris/pga.db"]:
+        if not db.is_file():
+            continue
+        try:
+            con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=1)
+            try:
+                for gid, name, directory in con.execute("SELECT id, name, directory FROM games WHERE installed = 1"):
+                    if name and directory:
+                        add(f"lutris:{gid}", name, "lutris", directory, f"lutris:rungameid/{int(gid)}")
+            finally:
+                con.close()
+        except (sqlite3.Error, ValueError) as e:
+            warnings.append(f"Could not read Lutris library: {e}")
+    games.sort(key=lambda g: (-g.get("lastPlayed", 0), g["name"].casefold()))
+    return dict(games=games, warnings=warnings)
+
+
+def launch(gid):
+    game = next((g for g in scan()["games"] if g["id"] == gid), None)
+    if not game:
+        raise ValueError("This game is no longer installed. Refresh your library.")
+    # Argument arrays only. The launcher retains its own Proton, GameMode,
+    # launch-option and cloud-save configuration.
+    result = subprocess.run(["gio", "open", game["uri"]], capture_output=True, text=True, timeout=15)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "The game launcher could not be opened.")
+    return dict(id=gid, dispatched=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("scan")
+    sub.add_parser("launch").add_argument("id")
+    args = parser.parse_args()
+    try:
+        print(json.dumps(scan() if args.command == "scan" else launch(args.id)))
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        print(json.dumps(dict(error=str(e))))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

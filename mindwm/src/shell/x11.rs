@@ -89,6 +89,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         }
         let previous = self.focused_window();
         self.focus_window(&elem);
+        *elem.tile().output.borrow_mut() = self.space.output_under(self.pointer.current_location()).next().map(|o| o.name());
         self.layout.window_opened(&elem, previous);
     }
 

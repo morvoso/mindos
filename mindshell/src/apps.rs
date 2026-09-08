@@ -12,6 +12,8 @@ pub struct AppEntry {
     pub name: String,
     pub comment: String,
     pub exec: String,
+    #[serde(skip)]
+    pub desktop_file: PathBuf,
     /// Icon name (or absolute path) from the entry; empty when none.
     pub icon: String,
     /// The icon file the name resolved to in the configured theme, if any.
@@ -108,7 +110,8 @@ pub fn load_apps(icon_theme: &str, icon_size: u16) -> Vec<AppEntry> {
                     continue;
                 }
                 if let Ok(text) = std::fs::read_to_string(&path) {
-                    if let Some(app) = parse_desktop_entry(&text, &id, &current_desktop) {
+                    if let Some(mut app) = parse_desktop_entry(&text, &id, &current_desktop) {
+                        app.desktop_file = path;
                         apps.insert(id, app);
                     }
                 }
@@ -204,6 +207,7 @@ pub fn parse_desktop_entry(text: &str, id: &str, current_desktop: &[String]) -> 
         name,
         comment: if comment.is_empty() { generic } else { comment },
         exec,
+        desktop_file: Default::default(),
         icon,
         icon_path: None,
         categories,
@@ -219,17 +223,22 @@ pub fn parse_desktop_entry(text: &str, id: &str, current_desktop: &[String]) -> 
 /// entries use `wine`, `wine64` or `wine start`; Proton-backed launchers
 /// pass the exe through `proton run`.
 pub fn exec_is_wine(exec: &str) -> bool {
-    let mut words = exec.split_whitespace().peekable();
-    // Skip `env` and its VAR=value assignments.
-    if words.peek() == Some(&"env") {
+    let Ok(argv) = gtk4::glib::shell_parse_argv(exec) else { return false };
+    let mut words = argv.iter().filter_map(|s| s.to_str()).peekable();
+    if words.peek().is_some_and(|w| w.rsplit('/').next() == Some("env")) {
         words.next();
-        while words.peek().is_some_and(|w| w.contains('=')) {
-            words.next();
-        }
+        while words.peek().is_some_and(|w| w.contains('=') || *w == "--") { words.next(); }
     }
     let Some(program) = words.next() else { return false };
     let program = program.rsplit('/').next().unwrap_or(program);
-    matches!(program, "wine" | "wine64" | "wine-preloader" | "wine64-preloader" | "proton")
+    matches!(program, "wine" | "wine64" | "wine-preloader" | "wine64-preloader" | "proton" | "mindos-win" | "mindos-win-open")
+}
+
+impl AppEntry {
+    pub fn launch_command(&self) -> String {
+        if self.terminal || self.desktop_file.as_os_str().is_empty() { return self.exec.clone(); }
+        format!("gio launch '{}'", self.desktop_file.to_string_lossy().replace('\'', "'\\''"))
+    }
 }
 
 /// Strip desktop-entry field codes (%f, %U, ...) so the string can be run by `sh -c`.

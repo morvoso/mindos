@@ -273,6 +273,8 @@ pub fn run_winit() {
             let damage_tracker = &mut state.backend_data.damage_tracker;
             let show_window_preview = state.show_window_preview;
             let locked = state.idle.locked;
+            let capture_blocked = locked || state.idle.stage == crate::idle::Stage::Blank;
+            let capture = &mut state.capture;
 
             let dnd_icon = state.dnd_icon.as_ref();
             let mindbar = &mut state.mindbar;
@@ -353,7 +355,12 @@ pub fn run_winit() {
                 #[cfg(feature = "debug")]
                 elements.push(CustomRenderElements::Fps(fps_element.clone()));
 
-                if let Some(bar) = mindbar.render_element(renderer, output_size, scale.x) {
+                if !locked {
+                    if let Some(osd) = mindbar.render_osd(renderer, &output.name(), output_size, scale.x) {
+                        elements.push(CustomRenderElements::Overlay(osd));
+                    }
+                }
+                if let Some(bar) = mindbar.render_element(renderer, &output.name(), output_size, scale.x) {
                     elements.push(CustomRenderElements::Overlay(bar));
                 }
                 // The startup screen goes away as soon as the shell maps its
@@ -380,6 +387,9 @@ pub fn run_winit() {
                     show_window_preview,
                     backdrop,
                     locked,
+                    capture_blocked,
+                    capture,
+                    now.into(),
                 )
                 .map_err(|err| match err {
                     OutputDamageTrackerError::Rendering(err) => err.into(),
