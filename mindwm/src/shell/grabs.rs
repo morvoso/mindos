@@ -165,7 +165,7 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerMoveS
     }
 
     fn unset(&mut self, data: &mut AnvilState<BackendData>) {
-        finish_move(data, &self.window, self.initial_window_location, self.start_data.location);
+        finish_move(data, &self.window, self.initial_window_location, self.start_data.location, true);
     }
 }
 
@@ -268,7 +268,7 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchMoveSurfa
     }
 
     fn unset(&mut self, data: &mut AnvilState<BackendData>) {
-        finish_move(data, &self.window, self.initial_window_location, self.start_data.location);
+        finish_move(data, &self.window, self.initial_window_location, self.start_data.location, false);
     }
 }
 
@@ -277,21 +277,139 @@ fn finish_move<BackendData: Backend>(
     window: &WindowElement,
     initial_location: Point<i32, Logical>,
     start_location: Point<f64, Logical>,
+    from_pointer: bool,
 ) {
     // Grab callbacks hold the input device's lock. Relayout and focus must
     // run after that lock is released. Derive the release position from the
     // last move, which also works for touch without reading a stale pointer.
-    let release = data.space.element_location(window).unwrap_or(initial_location).to_f64()
+    let carried = data.space.element_location(window).unwrap_or(initial_location).to_f64()
         - initial_location.to_f64() + start_location;
     let window = window.clone();
     data.handle.insert_idle(move |data| {
         if window.alive() {
+            // The pointer itself says where the drop landed. The window
+            // follows it, but a client that will not take a size, or one the
+            // layout has already moved, leaves the two some way apart.
+            let release = if from_pointer { data.pointer.current_location() } else { carried };
             data.drag_finished(&window, release);
         } else {
             data.layout.dragging = None;
             data.layout.dirty = true;
         }
     });
+}
+
+/// Super + right drag on a tile: moves the divider the tile owns. In columns
+/// that is the tile's share of the strip; in dwindle it is the split the tile
+/// was carved out of. The last tile of a dwindle owns no split, so the drag
+/// moves the one before it, the other way round.
+pub struct TileResizeGrab<BackendData: Backend + 'static> {
+    pub start_data: PointerGrabStartData<AnvilState<BackendData>>,
+    /// The tile whose fraction the drag changes.
+    pub target: WindowElement,
+    /// The divider is vertical: sideways drags move it.
+    pub axis_x: bool,
+    /// Dragging that way makes the target smaller, not larger.
+    pub invert: bool,
+    /// Pixels in one whole fraction.
+    pub span: f32,
+    pub start_frac: f32,
+    pub min: f32,
+    pub max: f32,
+}
+
+impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for TileResizeGrab<BackendData> {
+    fn motion(
+        &mut self,
+        data: &mut AnvilState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>,
+        _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
+        event: &MotionEvent,
+    ) {
+        handle.motion(data, None, event);
+        if !self.target.alive() {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+            return;
+        }
+        let delta = event.location - self.start_data.location;
+        let along = if self.axis_x { delta.x } else { delta.y } as f32;
+        let along = if self.invert { -along } else { along };
+        let frac = (self.start_frac + along / self.span).clamp(self.min, self.max);
+        if (frac - self.target.tile().width.get()).abs() > 0.001 {
+            self.target.tile().width.set(frac);
+            data.layout.dirty = true;
+        }
+    }
+
+    fn relative_motion(
+        &mut self,
+        data: &mut AnvilState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>,
+        focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
+        event: &RelativeMotionEvent,
+    ) {
+        handle.relative_motion(data, focus, event);
+    }
+
+    fn button(
+        &mut self,
+        data: &mut AnvilState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>,
+        event: &ButtonEvent,
+    ) {
+        handle.button(data, event);
+        if handle.current_pressed().is_empty() {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
+    }
+
+    fn axis(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, details: AxisFrame) {
+        handle.axis(data, details)
+    }
+
+    fn frame(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>) {
+        handle.frame(data);
+    }
+
+    fn gesture_swipe_begin(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GestureSwipeBeginEvent) {
+        handle.gesture_swipe_begin(data, event);
+    }
+
+    fn gesture_swipe_update(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GestureSwipeUpdateEvent) {
+        handle.gesture_swipe_update(data, event);
+    }
+
+    fn gesture_swipe_end(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GestureSwipeEndEvent) {
+        handle.gesture_swipe_end(data, event);
+    }
+
+    fn gesture_pinch_begin(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GesturePinchBeginEvent) {
+        handle.gesture_pinch_begin(data, event);
+    }
+
+    fn gesture_pinch_update(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GesturePinchUpdateEvent) {
+        handle.gesture_pinch_update(data, event);
+    }
+
+    fn gesture_pinch_end(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GesturePinchEndEvent) {
+        handle.gesture_pinch_end(data, event);
+    }
+
+    fn gesture_hold_begin(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GestureHoldBeginEvent) {
+        handle.gesture_hold_begin(data, event);
+    }
+
+    fn gesture_hold_end(&mut self, data: &mut AnvilState<BackendData>, handle: &mut PointerInnerHandle<'_, AnvilState<BackendData>>, event: &GestureHoldEndEvent) {
+        handle.gesture_hold_end(data, event);
+    }
+
+    fn start_data(&self) -> &PointerGrabStartData<AnvilState<BackendData>> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, data: &mut AnvilState<BackendData>) {
+        data.layout.dirty = true;
+    }
 }
 
 bitflags::bitflags! {
@@ -445,9 +563,10 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerResiz
             }
             #[cfg(feature = "xwayland")]
             WindowSurface::X11(x11) => {
-                let location = data.space.element_location(&self.window).unwrap();
-                x11.configure(Rectangle::new(location, self.last_window_size))
-                    .unwrap();
+                let Some(location) = data.space.element_location(&self.window) else {
+                    return;
+                };
+                let _ = x11.configure(Rectangle::new(location, self.last_window_size));
             }
         }
     }
@@ -487,7 +606,9 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerResiz
                     xdg.send_pending_configure();
                     if self.edges.intersects(ResizeEdge::TOP_LEFT) {
                         let geometry = self.window.geometry();
-                        let mut location = data.space.element_location(&self.window).unwrap();
+                        let Some(mut location) = data.space.element_location(&self.window) else {
+                            return;
+                        };
 
                         if self.edges.intersects(ResizeEdge::LEFT) {
                             location.x = self.initial_window_location.x
@@ -501,22 +622,28 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerResiz
                         data.space.map_element(self.window.clone(), location, true);
                     }
 
-                    with_states(&self.window.wl_surface().unwrap(), |states| {
-                        let mut data = states
-                            .data_map
-                            .get::<RefCell<SurfaceData>>()
-                            .unwrap()
-                            .borrow_mut();
+                    let Some(surface) = self.window.wl_surface() else {
+                    return;
+                };
+                with_states(&surface, |states| {
+                        let Some(cell) = states.data_map.get::<RefCell<SurfaceData>>() else {
+                            return;
+                        };
+                        let mut data = cell.borrow_mut();
                         if let ResizeState::Resizing(resize_data) = data.resize_state {
                             data.resize_state = ResizeState::WaitingForFinalAck(resize_data, event.serial);
                         } else {
-                            panic!("invalid resize state: {:?}", data.resize_state);
+                            // Something else already finished this resize. A
+                            // stale grab is not worth taking the session down for.
+                            tracing::warn!(state = ?data.resize_state, "resize ended in an unexpected state");
                         }
                     });
                 }
                 #[cfg(feature = "xwayland")]
                 WindowSurface::X11(x11) => {
-                    let mut location = data.space.element_location(&self.window).unwrap();
+                    let Some(mut location) = data.space.element_location(&self.window) else {
+                        return;
+                    };
                     if self.edges.intersects(ResizeEdge::TOP_LEFT) {
                         let geometry = self.window.geometry();
 
@@ -531,23 +658,23 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerResiz
 
                         data.space.map_element(self.window.clone(), location, true);
                     }
-                    x11.configure(Rectangle::new(location, self.last_window_size))
-                        .unwrap();
+                    let _ = x11.configure(Rectangle::new(location, self.last_window_size));
 
                     let Some(surface) = self.window.wl_surface() else {
                         // X11 Window got unmapped, abort
                         return;
                     };
                     with_states(&surface, |states| {
-                        let mut data = states
-                            .data_map
-                            .get::<RefCell<SurfaceData>>()
-                            .unwrap()
-                            .borrow_mut();
+                        let Some(cell) = states.data_map.get::<RefCell<SurfaceData>>() else {
+                            return;
+                        };
+                        let mut data = cell.borrow_mut();
                         if let ResizeState::Resizing(resize_data) = data.resize_state {
                             data.resize_state = ResizeState::WaitingForCommit(resize_data);
                         } else {
-                            panic!("invalid resize state: {:?}", data.resize_state);
+                            // Something else already finished this resize. A
+                            // stale grab is not worth taking the session down for.
+                            tracing::warn!(state = ?data.resize_state, "resize ended in an unexpected state");
                         }
                     });
                 }
@@ -700,7 +827,9 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchResizeSur
                 xdg.send_pending_configure();
                 if self.edges.intersects(ResizeEdge::TOP_LEFT) {
                     let geometry = self.window.geometry();
-                    let mut location = data.space.element_location(&self.window).unwrap();
+                    let Some(mut location) = data.space.element_location(&self.window) else {
+                        return;
+                    };
 
                     if self.edges.intersects(ResizeEdge::LEFT) {
                         location.x =
@@ -714,22 +843,28 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchResizeSur
                     data.space.map_element(self.window.clone(), location, true);
                 }
 
-                with_states(&self.window.wl_surface().unwrap(), |states| {
-                    let mut data = states
-                        .data_map
-                        .get::<RefCell<SurfaceData>>()
-                        .unwrap()
-                        .borrow_mut();
+                let Some(surface) = self.window.wl_surface() else {
+                    return;
+                };
+                with_states(&surface, |states| {
+                    let Some(cell) = states.data_map.get::<RefCell<SurfaceData>>() else {
+                        return;
+                    };
+                    let mut data = cell.borrow_mut();
                     if let ResizeState::Resizing(resize_data) = data.resize_state {
                         data.resize_state = ResizeState::WaitingForFinalAck(resize_data, event.serial);
                     } else {
-                        panic!("invalid resize state: {:?}", data.resize_state);
+                        // Something else already finished this resize. A stale
+                        // grab is not worth taking the session down for.
+                        tracing::warn!(state = ?data.resize_state, "resize ended in an unexpected state");
                     }
                 });
             }
             #[cfg(feature = "xwayland")]
             WindowSurface::X11(x11) => {
-                let mut location = data.space.element_location(&self.window).unwrap();
+                let Some(mut location) = data.space.element_location(&self.window) else {
+                    return;
+                };
                 if self.edges.intersects(ResizeEdge::TOP_LEFT) {
                     let geometry = self.window.geometry();
 
@@ -744,23 +879,23 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchResizeSur
 
                     data.space.map_element(self.window.clone(), location, true);
                 }
-                x11.configure(Rectangle::new(location, self.last_window_size))
-                    .unwrap();
+                let _ = x11.configure(Rectangle::new(location, self.last_window_size));
 
                 let Some(surface) = self.window.wl_surface() else {
                     // X11 Window got unmapped, abort
                     return;
                 };
                 with_states(&surface, |states| {
-                    let mut data = states
-                        .data_map
-                        .get::<RefCell<SurfaceData>>()
-                        .unwrap()
-                        .borrow_mut();
+                    let Some(cell) = states.data_map.get::<RefCell<SurfaceData>>() else {
+                        return;
+                    };
+                    let mut data = cell.borrow_mut();
                     if let ResizeState::Resizing(resize_data) = data.resize_state {
                         data.resize_state = ResizeState::WaitingForCommit(resize_data);
                     } else {
-                        panic!("invalid resize state: {:?}", data.resize_state);
+                        // Something else already finished this resize. A stale
+                        // grab is not worth taking the session down for.
+                        tracing::warn!(state = ?data.resize_state, "resize ended in an unexpected state");
                     }
                 });
             }
@@ -842,9 +977,10 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchResizeSur
             }
             #[cfg(feature = "xwayland")]
             WindowSurface::X11(x11) => {
-                let location = data.space.element_location(&self.window).unwrap();
-                x11.configure(Rectangle::new(location, self.last_window_size))
-                    .unwrap();
+                let Some(location) = data.space.element_location(&self.window) else {
+                    return;
+                };
+                let _ = x11.configure(Rectangle::new(location, self.last_window_size));
             }
         }
     }

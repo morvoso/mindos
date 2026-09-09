@@ -1,6 +1,16 @@
 use std::{convert::TryInto, process::Command, sync::atomic::Ordering};
 
-use crate::{focus::PointerFocusTarget, shell::FullscreenSurface, AnvilState};
+use std::cell::RefCell;
+
+use crate::{
+    focus::PointerFocusTarget,
+    layout::LayoutMode,
+    shell::{
+        usable_area, FullscreenSurface, PointerMoveSurfaceGrab, PointerResizeSurfaceGrab, ResizeData,
+        ResizeEdge, ResizeState, SurfaceData, TileResizeGrab, WindowElement,
+    },
+    AnvilState,
+};
 
 #[cfg(feature = "udev")]
 use crate::udev::UdevData;
@@ -15,14 +25,14 @@ use smithay::{
     desktop::{layer_map_for_output, WindowSurfaceType},
     input::{
         keyboard::{keysyms as xkb, FilterResult, Keysym, ModifiersState},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, Focus, GrabStartData as PointerGrabStartData, MotionEvent},
     },
     output::Scale,
     reexports::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1,
         wayland_server::protocol::wl_pointer,
     },
-    utils::{Logical, Point, Serial, Transform, SERIAL_COUNTER as SCOUNTER},
+    utils::{IsAlive, Logical, Point, Serial, Transform, SERIAL_COUNTER as SCOUNTER},
     wayland::{
         compositor::with_states,
         seat::WaylandFocus,
@@ -38,6 +48,12 @@ use smithay::backend::input::AbsolutePositionEvent;
 #[cfg(feature = "winit")]
 use smithay::output::Output;
 use tracing::{debug, error, info};
+
+/// How far outside a window frame a plain drag still grabs the frame, and how
+/// far along a side an end still counts as a corner. The ring is entirely
+/// outside the window, so a client never loses a pixel of its own to it.
+const RESIZE_BAND: f64 = 8.0;
+const RESIZE_CORNER: f64 = 28.0;
 
 use crate::state::Backend;
 #[cfg(feature = "udev")]
@@ -71,6 +87,40 @@ fn is_activity<B: InputBackend>(event: &InputEvent<B>) -> bool {
     )
 }
 
+/// The edges a drag from `location` moves, for a frame spanning `x0..x1` by
+/// `y0..y1`. The point is known to be in the ring around the frame: the side
+/// it is on gives one edge, and being within `RESIZE_CORNER` of an end of
+/// that side adds the other, the way a corner works on a frame you can see.
+fn resize_edges(x0: f64, y0: f64, x1: f64, y1: f64, location: Point<f64, Logical>) -> ResizeEdge {
+    let mut edges = ResizeEdge::empty();
+    if location.x < x0 {
+        edges |= ResizeEdge::LEFT;
+    } else if location.x > x1 {
+        edges |= ResizeEdge::RIGHT;
+    }
+    if location.y < y0 {
+        edges |= ResizeEdge::TOP;
+    } else if location.y > y1 {
+        edges |= ResizeEdge::BOTTOM;
+    }
+    let corner = |lo: f64, hi: f64, v: f64, first: ResizeEdge, second: ResizeEdge| {
+        let (a, b) = (v - lo, hi - v);
+        if a <= RESIZE_CORNER && a <= b {
+            first
+        } else if b <= RESIZE_CORNER {
+            second
+        } else {
+            ResizeEdge::empty()
+        }
+    };
+    edges
+        | if edges.intersects(ResizeEdge::LEFT | ResizeEdge::RIGHT) {
+            corner(y0, y1, location.y, ResizeEdge::TOP, ResizeEdge::BOTTOM)
+        } else {
+            corner(x0, x1, location.x, ResizeEdge::LEFT, ResizeEdge::RIGHT)
+        }
+}
+
 #[cfg(test)]
 mod shortcut_tests {
     use super::*;
@@ -95,6 +145,25 @@ mod shortcut_tests {
         assert!(matches!(process_keyboard_shortcut(ModifiersState { shift: true, ..logo }, Keysym::f),
             Some(KeyAction::ToggleFloating)));
         assert!(process_keyboard_shortcut(ModifiersState::default(), Keysym::q).is_none());
+    }
+
+    #[test]
+    fn the_resize_ring_gives_sides_and_corners() {
+        use ResizeEdge as E;
+        let at = |x: f64, y: f64| resize_edges(100.0, 100.0, 500.0, 400.0, (x, y).into());
+        // The middle of a side is that side alone.
+        assert_eq!(at(94.0, 250.0), E::LEFT);
+        assert_eq!(at(506.0, 250.0), E::RIGHT);
+        assert_eq!(at(300.0, 94.0), E::TOP);
+        assert_eq!(at(300.0, 406.0), E::BOTTOM);
+        // The end of a side reaches round the corner.
+        assert_eq!(at(94.0, 110.0), E::TOP_LEFT);
+        assert_eq!(at(506.0, 395.0), E::BOTTOM_RIGHT);
+        assert_eq!(at(120.0, 406.0), E::BOTTOM_LEFT);
+        assert_eq!(at(480.0, 94.0), E::TOP_RIGHT);
+        // Diagonally outside is the corner it is diagonal from.
+        assert_eq!(at(95.0, 95.0), E::TOP_LEFT);
+        assert_eq!(at(505.0, 405.0), E::BOTTOM_RIGHT);
     }
 }
 
@@ -346,7 +415,12 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         );
 
         if wl_pointer::ButtonState::Pressed == state {
-            self.update_keyboard_focus(self.pointer.current_location(), serial);
+            // Super + drag takes the window itself; the click never reaches
+            // the client, but the pointer still has to see the button so the
+            // grab ends when it comes back up.
+            if !self.start_super_drag(button, serial) && !self.start_border_resize(button, serial) {
+                self.update_keyboard_focus(self.pointer.current_location(), serial);
+            }
         };
         let pointer = self.pointer.clone();
         pointer.button(
@@ -359,6 +433,323 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             },
         );
         pointer.frame(self);
+    }
+
+    /// Super + drag, the way niri and hyprland do it: the left button moves
+    /// the window under the pointer, the right button resizes it. In the
+    /// tiling modes the right button moves the divider the window owns rather
+    /// than resizing the window on its own. Returns true when the drag took
+    /// the click.
+    fn start_super_drag(&mut self, button: u32, serial: Serial) -> bool {
+        if (button != 0x110 && button != 0x111) || self.idle.locked || self.mindbar.open || self.pointer.is_grabbed() {
+            return false;
+        }
+        let held = self.seat.get_keyboard().map(|k| k.modifier_state()).unwrap_or_default();
+        if !held.logo || held.ctrl || held.alt {
+            return false;
+        }
+        let location = self.pointer.current_location();
+        // A panel or a popup over the window still takes its own clicks.
+        if let Some(output) = self.space.output_under(location).next().cloned() {
+            if let Some(geo) = self.space.output_geometry(&output) {
+                let map = layer_map_for_output(&output);
+                let local = location - geo.loc.to_f64();
+                if map.layer_under(WlrLayer::Overlay, local).or_else(|| map.layer_under(WlrLayer::Top, local)).is_some() {
+                    return false;
+                }
+            }
+        }
+        let window = self.space.element_under(location).map(|(w, _)| w.clone());
+        let Some(window) = window else {
+            return false;
+        };
+        if window.pending_fullscreen() {
+            return false;
+        }
+        self.activate_window(&window);
+        let start = || PointerGrabStartData { focus: None, button, location };
+        let pointer = self.pointer.clone();
+        if button == 0x110 {
+            let mut initial_window_location = self.space.element_location(&window).unwrap_or_default();
+            if window.pending_maximized() {
+                if let Some(toplevel) = window.0.toplevel().cloned() {
+                    initial_window_location = self.unmaximize_for_drag(&toplevel, &window, location);
+                }
+            }
+            if self.layout.is_tiled(&window) || window.tile().snap.borrow().is_some() {
+                self.layout.dragging = Some(window.clone());
+            }
+            let grab = PointerMoveSurfaceGrab { start_data: start(), window, initial_window_location };
+            pointer.set_grab(self, grab, serial, Focus::Clear);
+            return true;
+        }
+        if self.layout.is_tiled(&window) {
+            let Some(grab) = self.tile_resize_grab(&window, start()) else {
+                return false;
+            };
+            pointer.set_grab(self, grab, serial, Focus::Clear);
+            return true;
+        }
+        let Some(geo) = self.space.element_geometry(&window) else {
+            return false;
+        };
+        // The quadrant the pointer is in picks the corner it drags.
+        let rel = location - geo.loc.to_f64();
+        let mut edges = if rel.x * 2.0 < geo.size.w as f64 { ResizeEdge::LEFT } else { ResizeEdge::RIGHT };
+        edges |= if rel.y * 2.0 < geo.size.h as f64 { ResizeEdge::TOP } else { ResizeEdge::BOTTOM };
+        self.start_floating_resize(window, edges, start(), serial)
+    }
+
+    /// A plain drag on the ring just outside a window frame. Windows the
+    /// compositor decorates draw no resize handles of their own, so without
+    /// this a terminal can only be resized with Super + right drag. Floating
+    /// windows resize from the edge under the pointer; tiled ones move the
+    /// divider the gap sits in, the way i3 and hyprland do.
+    fn start_border_resize(&mut self, button: u32, serial: Serial) -> bool {
+        if button != 0x110 || self.pointer.is_grabbed() {
+            return false;
+        }
+        let held = self.seat.get_keyboard().map(|k| k.modifier_state()).unwrap_or_default();
+        if held.logo || held.ctrl || held.alt || held.shift {
+            return false;
+        }
+        let location = self.pointer.current_location();
+        let Some((window, edges)) = self.resize_border_at(location) else {
+            return false;
+        };
+        self.activate_window(&window);
+        let start_data = PointerGrabStartData { focus: None, button, location };
+        if self.layout.is_tiled(&window) {
+            // A column's left edge is the previous column's right edge, and
+            // that is the tile whose share of the strip the drag changes.
+            let target = if edges.contains(ResizeEdge::LEFT) && self.layout.mode == LayoutMode::Columns {
+                self.tile_before(&window).unwrap_or_else(|| window.clone())
+            } else {
+                window.clone()
+            };
+            let Some(grab) = self.tile_resize_grab(&target, start_data) else {
+                return false;
+            };
+            self.pointer.clone().set_grab(self, grab, serial, Focus::Clear);
+            return true;
+        }
+        self.start_floating_resize(window, edges, start_data, serial)
+    }
+
+    /// Resize a window from `edges`, leaving any tiling or snap behind: a
+    /// pinned window comes loose where it is and resizes from there.
+    fn start_floating_resize(
+        &mut self,
+        window: WindowElement,
+        edges: ResizeEdge,
+        start_data: PointerGrabStartData<Self>,
+        serial: Serial,
+    ) -> bool {
+        window.tile().snap.borrow_mut().take();
+        window.tile().snap_saved.borrow_mut().take();
+        let Some(geo) = self.space.element_geometry(&window) else {
+            return false;
+        };
+        let Some(surface) = window.wl_surface().map(|s| s.into_owned()) else {
+            return false;
+        };
+        let initial_window_location = geo.loc;
+        let initial_window_size = window.0.geometry().size;
+        with_states(&surface, |states| {
+            if let Some(data) = states.data_map.get::<RefCell<SurfaceData>>() {
+                data.borrow_mut().resize_state = ResizeState::Resizing(ResizeData { edges, initial_window_location, initial_window_size });
+            }
+        });
+        let grab = PointerResizeSurfaceGrab {
+            start_data,
+            window,
+            edges,
+            initial_window_location,
+            initial_window_size,
+            last_window_size: initial_window_size,
+        };
+        self.pointer.clone().set_grab(self, grab, serial, Focus::Clear);
+        true
+    }
+
+    /// The tile laid out before `window` on its own display.
+    fn tile_before(&self, window: &WindowElement) -> Option<WindowElement> {
+        let home = self.window_home(window)?;
+        let tiles: Vec<&WindowElement> = self
+            .layout
+            .outputs
+            .get(&home.name())?
+            .order
+            .iter()
+            .filter(|w| w.alive() && !w.pending_fullscreen())
+            .collect();
+        let i = tiles.iter().position(|w| *w == window)?;
+        i.checked_sub(1).map(|k| tiles[k].clone())
+    }
+
+    /// The window frame the pointer is resting against and the edges a drag
+    /// from there would move. Only the empty ring around a frame counts: over
+    /// a window, a panel or a popup the answer is `None` and the click goes
+    /// where it was aimed.
+    pub(crate) fn resize_border_at(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(WindowElement, ResizeEdge)> {
+        // Nothing is resizable behind the lock screen, and the login screen
+        // owns its whole display.
+        if self.idle.locked || self.mindbar.open || self.config.session.kiosk {
+            return None;
+        }
+        let mut found: Option<(WindowElement, ResizeEdge)> = None;
+        for window in self.space.elements().rev() {
+            if !window.alive() {
+                continue;
+            }
+            let Some(geo) = self.space.element_geometry(window).map(|g| g.to_f64()) else {
+                continue;
+            };
+            let (x0, y0) = (geo.loc.x, geo.loc.y);
+            let (x1, y1) = (x0 + geo.size.w, y0 + geo.size.h);
+            // Every pixel a client draws stays the client's, and a window in
+            // front of another hides that one's ring along with the rest of it.
+            if (x0..=x1).contains(&location.x) && (y0..=y1).contains(&location.y) {
+                return None;
+            }
+            // A window filling its display has no room to grow into.
+            if window.pending_fullscreen() || window.pending_maximized() {
+                continue;
+            }
+            if location.x < x0 - RESIZE_BAND
+                || location.x > x1 + RESIZE_BAND
+                || location.y < y0 - RESIZE_BAND
+                || location.y > y1 + RESIZE_BAND
+            {
+                continue;
+            }
+            let edges = resize_edges(x0, y0, x1, y1, location);
+            // In the gap between two tiles both frames are in reach; the one
+            // whose right or bottom edge it is owns the divider there.
+            let owns_divider = edges.intersects(ResizeEdge::RIGHT | ResizeEdge::BOTTOM);
+            if found.is_none() || owns_divider {
+                found = Some((window.clone(), edges));
+                if owns_divider {
+                    break;
+                }
+            }
+        }
+        found.as_ref()?;
+        // A panel or a popup over that ring still takes its own clicks.
+        if let Some(output) = self.space.output_under(location).next().cloned() {
+            if let Some(geo) = self.space.output_geometry(&output) {
+                let map = layer_map_for_output(&output);
+                let local = location - geo.loc.to_f64();
+                if map
+                    .layer_under(WlrLayer::Overlay, local)
+                    .or_else(|| map.layer_under(WlrLayer::Top, local))
+                    .is_some()
+                {
+                    return None;
+                }
+            }
+        }
+        found
+    }
+
+    /// Dress the pointer for the resize ring it is over, and undress it again
+    /// on the way out. A client that sets its own cursor takes it back.
+    pub(crate) fn update_resize_cursor(&mut self, location: Point<f64, Logical>) {
+        use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+        let icon = if self.pointer.is_grabbed() {
+            self.resize_cursor
+        } else {
+            self.resize_border_at(location).map(|(_, e)| {
+                let (l, r) = (e.intersects(ResizeEdge::LEFT), e.intersects(ResizeEdge::RIGHT));
+                let (t, b) = (e.intersects(ResizeEdge::TOP), e.intersects(ResizeEdge::BOTTOM));
+                match (l, r, t, b) {
+                    (true, _, true, _) => CursorIcon::NwResize,
+                    (_, true, true, _) => CursorIcon::NeResize,
+                    (true, _, _, true) => CursorIcon::SwResize,
+                    (_, true, _, true) => CursorIcon::SeResize,
+                    (true, ..) => CursorIcon::WResize,
+                    (_, true, ..) => CursorIcon::EResize,
+                    (_, _, true, _) => CursorIcon::NResize,
+                    _ => CursorIcon::SResize,
+                }
+            })
+        };
+        if icon == self.resize_cursor {
+            return;
+        }
+        self.resize_cursor = icon;
+        self.cursor_status = match icon {
+            Some(icon) => CursorImageStatus::Named(icon),
+            None => CursorImageStatus::default_named(),
+        };
+        self.request_repaint();
+    }
+
+    /// The divider a Super + right drag on `window` moves. Columns drag the
+    /// tile's share of the strip sideways; dwindle drags the split the tile
+    /// was carved out of, and the tile at the end of a dwindle owns no split,
+    /// so it borrows the one before it and pushes it the other way.
+    fn tile_resize_grab(
+        &mut self,
+        window: &WindowElement,
+        start_data: PointerGrabStartData<Self>,
+    ) -> Option<TileResizeGrab<BackendData>> {
+        let home = self.window_home(window)?;
+        let tiles: Vec<WindowElement> = self
+            .layout
+            .outputs
+            .get(&home.name())?
+            .order
+            .iter()
+            .filter(|w| w.alive() && !w.pending_fullscreen())
+            .cloned()
+            .collect();
+        let i = tiles.iter().position(|w| w == window)?;
+        let gap = self.layout.gap as f32;
+        let frac_of = |w: &WindowElement| {
+            let f = w.tile().width.get();
+            if f <= 0.0 { 0.5 } else { f }
+        };
+        match self.layout.mode {
+            LayoutMode::Columns => {
+                let area = usable_area(&self.space, &home)?;
+                let span = (area.size.w - 2 * self.layout.outer_gap) as f32 - gap;
+                (span > 1.0).then(|| TileResizeGrab {
+                    start_data,
+                    target: window.clone(),
+                    axis_x: true,
+                    invert: false,
+                    span,
+                    start_frac: frac_of(window),
+                    min: 0.15,
+                    max: 1.0,
+                })
+            }
+            LayoutMode::Dwindle => {
+                let k = if i + 1 == tiles.len() { i.checked_sub(1)? } else { i };
+                // What the split divided: this tile and everything after it.
+                let rest = tiles[k..]
+                    .iter()
+                    .filter_map(|w| self.space.element_geometry(w))
+                    .reduce(|a, b| a.merge(b))?;
+                let axis_x = tiles[k].tile().split_x.get();
+                let span = (if axis_x { rest.size.w } else { rest.size.h }) as f32 - gap;
+                (span > 1.0).then(|| TileResizeGrab {
+                    start_data,
+                    target: tiles[k].clone(),
+                    axis_x,
+                    invert: k != i,
+                    span,
+                    start_frac: frac_of(&tiles[k]),
+                    min: 0.1,
+                    max: 0.9,
+                })
+            }
+            LayoutMode::Floating => None,
+        }
     }
 
     fn update_keyboard_focus(&mut self, location: Point<f64, Logical>, serial: Serial) {

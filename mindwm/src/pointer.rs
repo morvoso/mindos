@@ -311,6 +311,7 @@ impl<B: Backend> AnvilState<B> {
         );
         pointer.frame(self);
         self.activate_pointer_constraint();
+        self.update_resize_cursor(position);
     }
 }
 

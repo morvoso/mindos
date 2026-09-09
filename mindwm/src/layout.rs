@@ -102,6 +102,10 @@ pub enum Direction {
 
 /// Column width presets (fraction of the usable width), cycled with Super+R.
 const COLUMN_WIDTHS: [f32; 4] = [1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0];
+/// A dwindle tile shares its split with a sibling, so it never takes all of it.
+const SPLIT_WIDTHS: [f32; 3] = [1.0 / 3.0, 0.5, 2.0 / 3.0];
+/// What a floating window takes of the screen when it is stepped through sizes.
+const FLOAT_SIZES: [f32; 3] = [0.5, 0.7, 0.9];
 const DEFAULT_COLUMN_WIDTH: f32 = 0.5;
 const MIN_TILE: i32 = 120;
 
@@ -114,8 +118,14 @@ pub struct TileData {
     pub clip: Cell<Option<Rectangle<i32, Logical>>>,
     /// Taken out of the tiling by the user (Super+Shift+F).
     pub floating: Cell<bool>,
-    /// Column width as a fraction of the usable width (0 = default).
+    /// How wide this tile is: in columns, the fraction of the usable width; in
+    /// dwindle, the fraction of the space still unallocated when it is placed.
+    /// 0 means the layout's own default.
     pub width: Cell<f32>,
+    /// Dwindle only: the last split this tile owned ran left-to-right. A
+    /// Super+right drag then moves the divider horizontally rather than
+    /// vertically.
+    pub split_x: Cell<bool>,
     /// Geometry before the window was maximised (floating mode restores it).
     pub saved: RefCell<Option<Rectangle<i32, Logical>>>,
     /// Geometry before the window became a tile; it goes back there when the
@@ -283,14 +293,15 @@ impl LayoutState {
 
     /// The next column width preset for a window.
     pub fn cycle_width(&mut self, window: &WindowElement) {
+        let widths: &[f32] = if self.mode == LayoutMode::Columns { &COLUMN_WIDTHS } else { &SPLIT_WIDTHS };
         let current = window.tile().width.get();
         let current = if current <= 0.0 { DEFAULT_COLUMN_WIDTH } else { current };
-        let idx = COLUMN_WIDTHS
+        let idx = widths
             .iter()
             .position(|w| (w - current).abs() < 0.01)
-            .map(|i| (i + 1) % COLUMN_WIDTHS.len())
+            .map(|i| (i + 1) % widths.len())
             .unwrap_or(1);
-        window.tile().width.set(COLUMN_WIDTHS[idx]);
+        window.tile().width.set(widths[idx]);
         self.dirty = true;
     }
 }
@@ -303,26 +314,30 @@ pub fn client_rect(area: Rectangle<i32, Logical>, header: i32) -> Rectangle<i32,
     )
 }
 
-/// Dwindle: window `i` takes half of what is left (split along the longer
-/// side), the rest goes to the windows after it.
-pub fn dwindle_rects(area: Rectangle<i32, Logical>, n: usize, gap: i32) -> Vec<Rectangle<i32, Logical>> {
+/// Dwindle: window `i` takes `fracs[i]` of what is left (split along the
+/// longer side), the rest goes to the windows after it. A fraction of 0 means
+/// the default half. The flag says which way the split ran, so a drag on the
+/// divider knows whether it is moving it left/right or up/down.
+pub fn dwindle_rects(area: Rectangle<i32, Logical>, fracs: &[f32], gap: i32) -> Vec<(Rectangle<i32, Logical>, bool)> {
+    let n = fracs.len();
     let mut out = Vec::with_capacity(n);
     let mut rest = area;
-    for i in 0..n {
+    for (i, frac) in fracs.iter().enumerate() {
         if i + 1 == n {
-            out.push(rest);
+            out.push((rest, rest.size.w >= rest.size.h));
             break;
         }
+        let frac = if *frac <= 0.0 { 0.5 } else { frac.clamp(0.1, 0.9) };
         if rest.size.w >= rest.size.h {
-            let w1 = ((rest.size.w - gap) / 2).max(MIN_TILE);
-            out.push(Rectangle::new(rest.loc, (w1, rest.size.h).into()));
+            let w1 = split_at(rest.size.w, frac, gap);
+            out.push((Rectangle::new(rest.loc, (w1, rest.size.h).into()), true));
             rest = Rectangle::new(
                 (rest.loc.x + w1 + gap, rest.loc.y).into(),
                 ((rest.size.w - w1 - gap).max(MIN_TILE), rest.size.h).into(),
             );
         } else {
-            let h1 = ((rest.size.h - gap) / 2).max(MIN_TILE);
-            out.push(Rectangle::new(rest.loc, (rest.size.w, h1).into()));
+            let h1 = split_at(rest.size.h, frac, gap);
+            out.push((Rectangle::new(rest.loc, (rest.size.w, h1).into()), false));
             rest = Rectangle::new(
                 (rest.loc.x, rest.loc.y + h1 + gap).into(),
                 (rest.size.w, (rest.size.h - h1 - gap).max(MIN_TILE)).into(),
@@ -330,6 +345,13 @@ pub fn dwindle_rects(area: Rectangle<i32, Logical>, n: usize, gap: i32) -> Vec<R
         }
     }
     out
+}
+
+/// Where a split falls: `frac` of the space either side of the gap, never
+/// leaving less than a usable tile on either side.
+fn split_at(span: i32, frac: f32, gap: i32) -> i32 {
+    let usable = (span - gap).max(2 * MIN_TILE);
+    (((usable as f32) * frac).round() as i32).clamp(MIN_TILE, usable - MIN_TILE)
 }
 
 /// Columns: full-height columns of the given width fractions on a strip
@@ -423,6 +445,35 @@ fn output_owner<'a>(saved: Option<&str>, sticky: bool, geometry: Option<Rectangl
         .map(|r| i64::from(r.size.w) * i64::from(r.size.h)).unwrap_or(0)).map(|(name, _)| name.as_str())
 }
 
+/// How wide the drop zones at the edges of a display are.
+const EDGE_ZONE: f64 = 20.0;
+
+/// A display edge with no other display beyond it. Dropping a window at the
+/// border between two screens should carry it across, not pin it.
+fn outer_edge(all: &[Rectangle<i32, Logical>], geo: Rectangle<i32, Logical>, left: bool) -> bool {
+    !all.iter().any(|g| {
+        *g != geo
+            && g.loc.y < geo.loc.y + geo.size.h
+            && g.loc.y + g.size.h > geo.loc.y
+            && if left { g.loc.x + g.size.w <= geo.loc.x + 1 } else { g.loc.x + 1 >= geo.loc.x + geo.size.w }
+    })
+}
+
+/// The display nearest a point, by the gap between the point and its edges.
+fn nearest_output(outputs: &[(String, Rectangle<i32, Logical>)], at: Point<f64, Logical>) -> Option<String> {
+    outputs
+        .iter()
+        .min_by(|a, b| gap_to(a.1, at).total_cmp(&gap_to(b.1, at)))
+        .map(|(name, _)| name.clone())
+}
+
+/// Squared distance from a point to a rectangle (0 inside it).
+fn gap_to(rect: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> f64 {
+    let dx = (rect.loc.x as f64 - at.x).max(at.x - (rect.loc.x + rect.size.w) as f64).max(0.0);
+    let dy = (rect.loc.y as f64 - at.y).max(at.y - (rect.loc.y + rect.size.h) as f64).max(0.0);
+    dx * dx + dy * dy
+}
+
 impl<BackendData: Backend> AnvilState<BackendData> {
     /// Once per event-loop turn: drop dead tiles, arrange when needed.
     pub fn layout_refresh(&mut self) {
@@ -464,6 +515,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             window.tile().clip.set(None);
         }
         self.layout.outputs.retain(|name, _| outputs.iter().any(|o| o.name() == *name));
+        // Only the tiling modes place new windows in an order; floating would
+        // hold on to every window ever opened.
+        if !self.layout.mode.is_tiling() {
+            self.layout.pending.clear();
+        }
         for output in outputs {
             self.arrange_output(&output);
         }
@@ -535,7 +591,14 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 ((area.size.w - 2 * outer).max(MIN_TILE), (area.size.h - 2 * outer).max(MIN_TILE)).into(),
             );
             let rects = match mode {
-                LayoutMode::Dwindle => dwindle_rects(inner, tiles.len(), gap),
+                LayoutMode::Dwindle => {
+                    let fracs: Vec<f32> = tiles.iter().map(|w| w.tile().width.get()).collect();
+                    let rects = dwindle_rects(inner, &fracs, gap);
+                    for (w, (_, split_x)) in tiles.iter().zip(&rects) {
+                        w.tile().split_x.set(*split_x);
+                    }
+                    rects.into_iter().map(|(r, _)| r).collect()
+                }
                 LayoutMode::Columns => {
                     let widths: Vec<f32> = tiles.iter().map(|w| w.tile().width.get()).collect();
                     let focused_idx = focused.as_ref().and_then(|f| tiles.iter().position(|w| w == f));
@@ -878,6 +941,29 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             return;
         };
         if !self.layout.is_tiled(&from) {
+            // A floating window has no neighbour to trade places with, so the
+            // arrows put it against an edge instead: sideways for a half of
+            // the screen, up for all of it, down to give it back.
+            let zone = from.tile().snap.borrow().clone();
+            match dir {
+                Direction::Left | Direction::Right => {
+                    let want = if matches!(dir, Direction::Left) { "left-half" } else { "right-half" };
+                    let release = zone.as_deref() == Some(want);
+                    self.snap_window(&from, if release { "release" } else { want }, None);
+                }
+                Direction::Up => {
+                    if !from.pending_maximized() {
+                        self.toggle_maximize_window(&from);
+                    }
+                }
+                Direction::Down => {
+                    if from.pending_maximized() {
+                        self.toggle_maximize_window(&from);
+                    } else if zone.is_some() {
+                        self.snap_window(&from, "release", None);
+                    }
+                }
+            }
             return;
         }
         if self.layout.mode == LayoutMode::Columns {
@@ -907,22 +993,76 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         }
     }
 
-    /// Super+R in columns mode: the next width preset for the focused column.
+    /// Super+R: the next size preset for the focused window, whatever the
+    /// layout is. A column takes a share of the strip, a dwindle tile takes a
+    /// share of the split it was carved from, and a floating window takes a
+    /// share of the screen about the middle it already has.
     pub fn cycle_column_width(&mut self) {
-        if self.layout.mode != LayoutMode::Columns {
+        let Some(window) = self.focused_window() else {
+            return;
+        };
+        if self.layout.is_tiled(&window) {
+            self.layout.cycle_width(&window);
             return;
         }
-        if let Some(window) = self.focused_window() {
-            if self.layout.is_tiled(&window) {
-                self.layout.cycle_width(&window);
-            }
+        if window.pending_fullscreen() {
+            return;
         }
+        if window.pending_maximized() {
+            self.toggle_maximize_window(&window);
+        }
+        let Some(area) = self.window_home(&window).and_then(|o| usable_area(&self.space, &o)) else {
+            return;
+        };
+        let Some(geo) = self.space.element_geometry(&window) else {
+            return;
+        };
+        let current = window.tile().width.get();
+        let idx = FLOAT_SIZES
+            .iter()
+            .position(|f| (f - current).abs() < 0.01)
+            .map(|i| (i + 1) % FLOAT_SIZES.len())
+            .unwrap_or(0);
+        let fraction = FLOAT_SIZES[idx];
+        window.tile().width.set(fraction);
+        window.tile().snap.borrow_mut().take();
+        window.tile().snap_saved.borrow_mut().take();
+        let size: Size<i32, Logical> = (
+            ((area.size.w as f32 * fraction) as i32).max(240),
+            ((area.size.h as f32 * fraction) as i32).max(160),
+        )
+            .into();
+        let centre = geo.loc + Point::from((geo.size.w / 2, geo.size.h / 2));
+        let loc = Point::from((
+            (centre.x - size.w / 2).clamp(area.loc.x, (area.loc.x + area.size.w - size.w).max(area.loc.x)),
+            (centre.y - size.h / 2).clamp(area.loc.y, (area.loc.y + area.size.h - size.h).max(area.loc.y)),
+        ));
+        let placed = self.apply_rect(&window, Rectangle::new(loc, size), false);
+        self.space.map_element(window.clone(), placed, true);
+        self.layout.dirty = true;
     }
 
     /// Snap an edge drop, or swap with the tile at the release position.
     pub fn drag_finished(&mut self, window: &WindowElement, pointer: Point<f64, Logical>) {
         self.layout.dragging = None;
-        let destination = self.space.output_under(pointer).next().map(|o| o.name());
+        // Where the drop landed. Between two displays, or a little past the
+        // edge of one, the pointer is over nothing at all: the window's own
+        // centre then says which display it went to, and failing that the
+        // nearest one, so a window never ends up owned by a display it is
+        // not on (it would be laid out off screen, out of reach).
+        let centre = self
+            .space
+            .element_geometry(window)
+            .map(|g| (g.loc + Point::from((g.size.w / 2, g.size.h / 2))).to_f64());
+        let mut destination = self.space.output_under(pointer).next().map(|o| o.name());
+        if destination.is_none() {
+            destination = centre.and_then(|c| self.space.output_under(c).next()).map(|o| o.name());
+        }
+        if destination.is_none() {
+            let all: Vec<(String, Rectangle<i32, Logical>)> = self.space.outputs()
+                .filter_map(|o| self.space.output_geometry(o).map(|g| (o.name(), g))).collect();
+            destination = centre.and_then(|c| nearest_output(&all, c));
+        }
         let changed_output = destination.is_some() && *window.tile().output.borrow() != destination;
         if changed_output {
             *window.tile().output.borrow_mut() = destination;
@@ -932,12 +1072,17 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         // Dragging a pinned window detaches it. Dropping at a display edge
         // uses the same zones as the companion's explicit snap controls.
         window.tile().snap.borrow_mut().take();
+        let screens: Vec<Rectangle<i32, Logical>> =
+            self.space.outputs().filter_map(|o| self.space.output_geometry(o)).collect();
         let target = self.space.outputs().find_map(|output| {
             let area = usable_area(&self.space, output)?;
+            let geo = self.space.output_geometry(output)?;
             if pointer.y < area.loc.y as f64 || pointer.y >= (area.loc.y + area.size.h) as f64 { return None; }
             let x = pointer.x - area.loc.x as f64;
-            if x >= 0.0 && x <= 20.0 { Some((output.name(), "left-two-thirds")) }
-            else if x >= (area.size.w - 20) as f64 && x < area.size.w as f64 { Some((output.name(), "right-third")) }
+            // Only an edge with nothing beyond it pins a window: the border
+            // between two displays is a road to the next screen, not a zone.
+            if x >= 0.0 && x <= EDGE_ZONE && outer_edge(&screens, geo, true) { Some((output.name(), "left-two-thirds")) }
+            else if x >= (area.size.w as f64 - EDGE_ZONE) && x < area.size.w as f64 && outer_edge(&screens, geo, false) { Some((output.name(), "right-third")) }
             else { None }
         });
         if let Some((output, zone)) = target {
@@ -1011,6 +1156,26 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_between_two_screens_lands_on_one_of_them() {
+        let left = rect(0, 0, 1920, 1080);
+        let right = rect(1920, 0, 1920, 1080);
+        let screens = [left, right];
+        // The border between the two is a road, not a drop zone; the outer
+        // edges still pin a window.
+        assert!(!outer_edge(&screens, left, false));
+        assert!(!outer_edge(&screens, right, true));
+        assert!(outer_edge(&screens, left, true));
+        assert!(outer_edge(&screens, right, false));
+        // A screen on its own has two outer edges.
+        assert!(outer_edge(&[left], left, true) && outer_edge(&[left], left, false));
+        // A drop past the end of the desktop still belongs to a screen.
+        let named = vec![("left".to_string(), left), ("right".to_string(), right)];
+        assert_eq!(nearest_output(&named, (4000.0, 500.0).into()), Some("right".into()));
+        assert_eq!(nearest_output(&named, (-40.0, -80.0).into()), Some("left".into()));
+        assert_eq!(nearest_output(&[], (0.0, 0.0).into()), None);
+    }
+
+    #[test]
     fn monitors_keep_independent_column_ownership_and_scroll() {
         let outputs = vec![("left".into(), rect(-1000, 0, 1000, 800)), ("right".into(), rect(0, 0, 1600, 900))];
         // A left-hand column now physically extends across the right display.
@@ -1031,8 +1196,8 @@ mod tests {
         // The crop rejects off-screen input and render geometry.
         assert!(outputs[0].1.intersection(left[0]).is_none());
         assert!(outputs[0].1.intersection(left[3]).is_some());
-        let tiles = dwindle_rects(outputs[1].1, 3, 10);
-        assert!(tiles.iter().all(|r| r.loc.x >= 0 && r.loc.x + r.size.w <= 1600));
+        let tiles = dwindle_rects(outputs[1].1, &[0.0; 3], 10);
+        assert!(tiles.iter().all(|(r, _)| r.loc.x >= 0 && r.loc.x + r.size.w <= 1600));
     }
 
     #[test]
@@ -1057,22 +1222,43 @@ mod tests {
         assert_eq!(serde_json::to_string(&LayoutMode::Dwindle).unwrap(), "\"dwindle\"");
     }
 
+    /// The rectangles only, for the tests that do not care which way a split ran.
+    fn dwindle(area: Rectangle<i32, Logical>, n: usize, gap: i32) -> Vec<Rectangle<i32, Logical>> {
+        dwindle_rects(area, &vec![0.0; n], gap).into_iter().map(|(r, _)| r).collect()
+    }
+
     #[test]
     fn dwindle_spirals_along_the_longer_side() {
         let area = rect(0, 0, 1920, 1080);
-        assert_eq!(dwindle_rects(area, 1, 8), vec![area]);
-        let two = dwindle_rects(area, 2, 8);
+        assert_eq!(dwindle(area, 1, 8), vec![area]);
+        let two = dwindle(area, 2, 8);
         assert_eq!(two[0], rect(0, 0, 956, 1080));
         assert_eq!(two[1], rect(964, 0, 956, 1080));
-        let three = dwindle_rects(area, 3, 8);
+        let three = dwindle(area, 3, 8);
         assert_eq!(three[0], rect(0, 0, 956, 1080));
         assert_eq!(three[1], rect(964, 0, 956, 536));
         assert_eq!(three[2], rect(964, 544, 956, 536));
         // never overlapping, never empty
-        let many = dwindle_rects(area, 9, 8);
+        let many = dwindle(area, 9, 8);
         for r in &many {
             assert!(r.size.w >= MIN_TILE && r.size.h >= MIN_TILE);
         }
+    }
+
+    #[test]
+    fn a_dragged_divider_moves_the_dwindle_split() {
+        let area = rect(0, 0, 1920, 1080);
+        // The first window takes a third instead of a half; the second takes
+        // what is left, and the split ran left to right.
+        let rects = dwindle_rects(area, &[1.0 / 3.0, 0.0], 8);
+        assert_eq!(rects[0].0.size.w, 637);
+        assert!(rects[0].1, "a wide area splits horizontally");
+        assert_eq!(rects[1].0.loc.x, 645);
+        assert_eq!(rects[1].0.size.w, 1275);
+        // A fraction past either end still leaves a usable tile on both sides.
+        let squeezed = dwindle_rects(area, &[0.999, 0.0], 8);
+        assert!(squeezed[0].0.size.w <= 1912 - MIN_TILE);
+        assert!(squeezed[1].0.size.w >= MIN_TILE);
     }
 
     #[test]

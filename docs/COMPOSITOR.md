@@ -118,12 +118,18 @@ primary output, per-output settings) and announced to the shell as a
   for and opens centred on the output it appears on; a second window that
   would land on the first is cascaded 40 px down and right. Drag by the title
   bar to move, `Super+M` maximises to the usable area (the output minus the
-  panels), `Super+F` fills the screen. `[layout].open_maximized = true`
+  panels), `Super+F` fills the screen. `Super+Shift+Left/Right` snaps the
+  window to that half of the screen (again to release it), `Super+Shift+Up`
+  maximises and `Super+Shift+Down` gives it back, and `Super+R` steps it
+  through a half, seven tenths and nine tenths of the screen about the middle
+  it already has. `[layout].open_maximized = true`
   brings back the old game mode where every new window opens maximised.
 * **Tiles** (`dwindle`, like Hyprland). Every window is a tile; a new one
   splits the focused tile along its longer side, so windows spiral inwards.
   `Super+arrows` move the focus, `Super+Shift+arrows` swap tiles,
-  `Super+Shift+F` floats the focused window (and tiles it again). A window
+  `Super+Shift+F` floats the focused window (and tiles it again), and
+  `Super+R` steps the focused tile's share of its split through a third, a
+  half and two thirds. A window
   remembers the size and place it had before it became a tile: switching back
   to floating (or floating the window itself) puts it back there at once,
   from the compositor, not left to the application's next redraw. A window
@@ -131,6 +137,15 @@ primary output, per-output settings) and announced to the shell as a
 * **Columns** (`columns`, like Niri). Windows are columns on an endless strip
   that scrolls sideways to keep the focused one in view; `Super+R` cycles a
   column through a third, a half, two thirds and the full width.
+
+Every window can be resized without a modifier: an 8 px ring just outside a
+window frame (28 px of it at each end counts as the corner) is the resize
+handle, and the pointer changes to the matching arrow over it. The ring is
+entirely outside the window, so no client loses a pixel of its own to it, and
+it is the only resize handle windows the compositor decorates have — a
+terminal draws none of its own. A floating window resizes from the edge under
+the pointer; in the tiling modes the ring is the gap between two tiles, and
+dragging it moves the divider they share, as `Super+right-drag` does.
 
 `Super+T` cycles the modes. Tiling modes keep `gap` pixels between tiles and
 `outer_gap` from the edge of the usable area. Dialogs (toplevels with a
@@ -190,9 +205,9 @@ window.
 | `Super+M` | Toggle maximize on the focused window |
 | `Super+T` | Next window layout (floating → tiles → columns) |
 | `Super+Shift+F` | Float / tile the focused window (tiling modes) |
-| `Super+R` | Cycle the width of the focused column (columns mode) |
+| `Super+R` | Step the focused window's size: a column's width, a tile's share of its split, or a floating window's share of the screen |
 | `Super+←↑↓→` | Focus the window in that direction |
-| `Super+Shift+←↑↓→` | Move (swap) the focused window in that direction |
+| `Super+Shift+←↑↓→` | Move (swap) the focused tile in that direction; a floating window snaps to that half, maximises (up) or is released (down) |
 | `Super+Tab` / `Alt+Tab` | Switch recent visible windows; hold the modifier to keep cycling |
 | `Super+Shift+Tab` / `Alt+Shift+Tab` | Cycle backward; Escape restores the original window |
 | `Super+1..9` | Move the pointer to output *n* |
@@ -204,6 +219,7 @@ window.
 | `Super+Shift+R` | Rotate the output under the pointer |
 | `Super+Shift+W` | Built-in window preview (all windows scaled side by side) |
 | `Super` + mouse wheel | Step through the windows in the layout order (tiles and columns; nothing in floating) |
+| Drag a window's outer edge | Resize it (floating) or move the divider it shares with the next tile (tiling) |
 
 Most shortcuts use `Super`; `Print` and `Shift+Print` capture screenshots.
 Window switching keeps a stable recent-use order while Alt/Super is held.

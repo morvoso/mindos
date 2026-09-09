@@ -593,7 +593,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     /// Unmaximise a window at the start of a drag: it takes its saved size
     /// (or lets the client pick one) and hangs from the pointer by its title
     /// bar. Returns where the window's element starts.
-    fn unmaximize_for_drag(
+    pub(crate) fn unmaximize_for_drag(
         &mut self,
         surface: &ToplevelSurface,
         window: &WindowElement,

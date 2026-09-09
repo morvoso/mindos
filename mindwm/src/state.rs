@@ -186,6 +186,9 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub window_cycle: crate::window_cycle::WindowCycle,
     pub media_keys: crate::media::MediaKeys,
     pub cursor_status: CursorImageStatus,
+    /// The resize cursor the compositor is showing over a window's resize
+    /// ring, so it knows the arrow is its own to put back.
+    pub resize_cursor: Option<CursorIcon>,
     pub seat_name: String,
     pub seat: Seat<AnvilState<BackendData>>,
     pub clock: Clock<Monotonic>,
@@ -371,6 +374,12 @@ impl<BackendData: Backend> SeatHandler for AnvilState<BackendData> {
         set_primary_focus(dh, seat, focus);
     }
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        // Over a window's resize ring the compositor owns the shape. Whatever
+        // is under the ring — the desktop, another window's shadow — keeps
+        // asking for its own arrow, and it must not paint over the handle.
+        if self.resize_cursor.is_some() {
+            return;
+        }
         self.cursor_status = image;
         self.request_repaint();
     }
@@ -862,6 +871,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             window_cycle: Default::default(),
             media_keys,
             cursor_status: CursorImageStatus::default_named(),
+            resize_cursor: None,
             seat_name,
             seat,
             pointer,
@@ -1510,6 +1520,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             return;
         }
         let location = self.pointer.current_location();
+        // Windows move and resize out from under a still pointer too, so the
+        // resize ring it is on — or has just left — is re-read here as well.
+        self.update_resize_cursor(location);
         let under = self.surface_under(location);
         if under.as_ref().map(|(target, _)| target) == self.pointer.current_focus().as_ref() {
             return;
@@ -1606,6 +1619,30 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             BarAction::RunShell(cmd) => self.spawn_shell(&cmd),
             BarAction::Confirm { id, approve } => self.mind.confirm(&id, approve),
             BarAction::Cancel => self.mind.cancel(),
+            BarAction::Copy(text) => self.copy_to_clipboard(&text),
+        }
+    }
+
+    /// Put text on the clipboard through wl-copy (part of the session's
+    /// wl-clipboard dependency); the compositor itself has no clipboard
+    /// source of its own to offer.
+    pub fn copy_to_clipboard(&self, text: &str) {
+        use std::io::Write;
+        let child = std::process::Command::new("wl-copy")
+            .arg("--type").arg("text/plain;charset=utf-8")
+            .envs(self.child_env())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match child {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                // wl-copy stays alive as the selection owner; do not wait on it.
+            }
+            Err(err) => tracing::warn!(%err, "wl-copy is unavailable, nothing was copied"),
         }
     }
 

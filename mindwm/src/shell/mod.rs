@@ -776,3 +776,45 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         }
     }
 }
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use smithay::output::{Mode, PhysicalProperties, Subpixel};
+    use smithay::utils::Transform;
+
+    fn display(name: &str, at: (i32, i32), size: (i32, i32)) -> Output {
+        let output = Output::new(
+            name.to_string(),
+            PhysicalProperties { size: (600, 340).into(), subpixel: Subpixel::Unknown, make: "MindOS".into(), model: "Test".into() },
+        );
+        let mode = Mode { size: (size.0, size.1).into(), refresh: 60_000 };
+        output.change_current_state(Some(mode), Some(Transform::Normal), None, Some(at.into()));
+        output.set_preferred(mode);
+        output
+    }
+
+    /// A window opens where the pointer is: a shortcut fired with the mouse on
+    /// the second display must not put its window on the first one.
+    #[test]
+    fn a_new_window_lands_on_the_display_the_pointer_is_on() {
+        let mut space: Space<WindowElement> = Space::default();
+        let left = display("left", (0, 0), (1920, 1080));
+        let right = display("right", (1920, 0), (2560, 1440));
+        space.map_output(&left, (0, 0));
+        space.map_output(&right, (1920, 0));
+
+        let on_left = pointer_output_area(&space, (400.0, 500.0).into());
+        assert_eq!(on_left.loc, (0, 0).into());
+        assert_eq!(on_left.size, (1920, 1080).into());
+
+        let on_right = pointer_output_area(&space, (2400.0, 900.0).into());
+        assert_eq!(on_right.loc, (1920, 0).into());
+        assert_eq!(on_right.size, (2560, 1440).into());
+
+        // Just over the seam is still the right-hand display.
+        assert_eq!(pointer_output_area(&space, (1921.0, 10.0).into()).loc, (1920, 0).into());
+        // A pointer nowhere at all falls back to a real display, never to nothing.
+        assert!(space.outputs().any(|o| space.output_geometry(o).map(|g| g.loc) == Some(pointer_output_area(&space, (-500.0, -500.0).into()).loc)));
+    }
+}
