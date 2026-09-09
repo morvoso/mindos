@@ -2,10 +2,12 @@
 //! local image files and their thumbnails.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Weak;
-use std::time::UNIX_EPOCH;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk4::gdk_pixbuf::Pixbuf;
 use gtk4::gio;
@@ -22,14 +24,57 @@ pub const ORIGIN: &str = "mindos://shell";
 /// Thumbnails wider than this are not produced (the UI asks for 320 or so).
 const MAX_THUMB: i32 = 1024;
 
-type Body = (Vec<u8>, &'static str);
+/// Response bytes are shared: the bundle and the icons are handed out to
+/// every view from one copy in memory.
+type Body = (Arc<[u8]>, &'static str);
 
-/// What a route produces: bytes right away, or a job for a worker thread
-/// (files and thumbnails must not block the main loop).
+/// What a route produces: bytes right away (marked reusable for the bundle
+/// and its fonts), or a job for a worker thread (files and thumbnails must
+/// not block the main loop).
 enum Served {
     Now(Body),
+    Cacheable(Body),
     Later(Box<dyn FnOnce() -> Option<Body> + Send>),
     NotFound,
+}
+
+/// Files read through the handler, by path, validated by size and
+/// modification time: every view asks for the bundle, its fonts and the
+/// icons, and every popup is a new view.
+struct Cached {
+    mtime: Option<SystemTime>,
+    len: u64,
+    body: Arc<[u8]>,
+}
+
+static FILES: OnceLock<Mutex<HashMap<PathBuf, Cached>>> = OnceLock::new();
+
+/// Beyond this the file cache starts over (icons come in many sizes).
+const FILE_CACHE_LIMIT: usize = 48 << 20;
+
+/// Where each bundle path resolved to, so a repeat request skips the
+/// directory walk and the canonicalisation.
+static APP_PATHS: OnceLock<Mutex<HashMap<(PathBuf, String), PathBuf>>> = OnceLock::new();
+
+fn read_cached(path: &Path) -> Option<Arc<[u8]>> {
+    let meta = std::fs::metadata(path).ok()?;
+    let (mtime, len) = (meta.modified().ok(), meta.len());
+    let files = FILES.get_or_init(Default::default);
+    let hit = files
+        .lock()
+        .ok()
+        .and_then(|m| m.get(path).filter(|c| c.mtime == mtime && c.len == len).map(|c| c.body.clone()));
+    if let Some(body) = hit {
+        return Some(body);
+    }
+    let body: Arc<[u8]> = Arc::from(std::fs::read(path).ok()?);
+    if let Ok(mut m) = files.lock() {
+        if m.values().map(|c| c.body.len()).sum::<usize>() + body.len() > FILE_CACHE_LIMIT {
+            m.clear();
+        }
+        m.insert(path.to_path_buf(), Cached { mtime, len, body: body.clone() });
+    }
+    Some(body)
 }
 
 pub fn register(context: &webkit::WebContext, app: Weak<App>) {
@@ -38,8 +83,7 @@ pub fn register(context: &webkit::WebContext, app: Weak<App>) {
         sm.register_uri_scheme_as_cors_enabled(SCHEME);
         // "Local" origins may display file: resources: the desktop sets
         // `background-image: url(file:///...)` for image wallpapers.
-        let companion = app.upgrade().is_some_and(|a| a.app_mode.as_ref().is_some_and(|m| m.name == "companion"));
-        if !companion { sm.register_uri_scheme_as_local(SCHEME); }
+        sm.register_uri_scheme_as_local(SCHEME);
     }
     context.register_uri_scheme(SCHEME, move |request| {
         let Some(app) = app.upgrade() else {
@@ -49,6 +93,7 @@ pub fn register(context: &webkit::WebContext, app: Weak<App>) {
         let uri = request.uri().map(|u| u.to_string()).unwrap_or_default();
         match serve(&app, &uri) {
             Served::Now(body) => finish(request, body),
+            Served::Cacheable(body) => finish_cacheable(request, body),
             Served::Later(job) => {
                 let request = request.clone();
                 glib::spawn_future_local(async move {
@@ -83,6 +128,21 @@ fn finish(request: &webkit::URISchemeRequest, (bytes, mime): Body) {
     let len = bytes.len() as i64;
     let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
     request.finish(&stream, len, Some(mime));
+}
+
+/// Like `finish`, marking the bytes good for an hour: the bundle and its
+/// fonts are the same for every view, and WebKit keeps them in its memory
+/// cache across page loads instead of asking again.
+fn finish_cacheable(request: &webkit::URISchemeRequest, (bytes, mime): Body) {
+    let len = bytes.len() as i64;
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
+    let response = webkit::URISchemeResponse::new(&stream, len);
+    response.set_content_type(mime);
+    response.set_status(200, None);
+    let headers = webkit::soup::MessageHeaders::new(webkit::soup::MessageHeadersType::Response);
+    headers.append("Cache-Control", "max-age=3600");
+    response.set_http_headers(headers);
+    request.finish_with_response(&response);
 }
 
 fn fail(request: &webkit::URISchemeRequest, msg: &str) {
@@ -131,11 +191,15 @@ fn serve(app: &App, uri: &str) -> Served {
         Some(b) => Served::Now(b),
         None => Served::NotFound,
     };
+    let cacheable = |body: Option<Body>| match body {
+        Some(b) => Served::Cacheable(b),
+        None => Served::NotFound,
+    };
     if let Some(rel) = path.strip_prefix("/app/") {
-        return now(serve_app(&app.ui_dir, rel));
+        return cacheable(serve_app(&app.ui_dir, rel));
     }
     if path == "/app" || path == "/" {
-        return now(serve_app(&app.ui_dir, "index.html"));
+        return cacheable(serve_app(&app.ui_dir, "index.html"));
     }
     if let Some(rest) = path.strip_prefix("/icon/") {
         let name = icons::percent_decode(rest);
@@ -144,20 +208,20 @@ fn serve(app: &App, uri: &str) -> Served {
             .unwrap_or(app.config.shell.icon_size);
         let Some(file) = icons::resolve(&name, size, &app.icon_theme.get()) else { return Served::NotFound };
         let mime = icons::mime_for(&file);
-        return now(std::fs::read(&file).ok().map(|b| (b, mime)));
+        return now(read_cached(&file).map(|b| (b, mime)));
     }
     if let Some(rest) = path.strip_prefix("/tray/") {
         let id = icons::percent_decode(rest);
-        return now(app.tray.as_ref().and_then(|t| t.pixmap(&id)).map(|b| (b, "image/png")));
+        return now(app.tray.as_ref().and_then(|t| t.pixmap(&id)).map(|b| (Arc::from(b), "image/png")));
     }
     if let Some(rest) = path.strip_prefix("/notify/") {
         let id: u32 = rest.parse().unwrap_or(0);
-        return now(app.notify.as_ref().and_then(|n| n.pixmap(id)).map(|b| (b, "image/png")));
+        return now(app.notify.as_ref().and_then(|n| n.pixmap(id)).map(|b| (Arc::from(b), "image/png")));
     }
     if let Some(rest) = path.strip_prefix("/file/") {
         let Some(file) = image_path(rest) else { return Served::NotFound };
         let mime = mime_for_ext(&file);
-        return Served::Later(Box::new(move || std::fs::read(&file).ok().map(|b| (b, mime))));
+        return Served::Later(Box::new(move || std::fs::read(&file).ok().map(|b| (Arc::from(b), mime))));
     }
     if let Some(rest) = path.strip_prefix("/thumb/") {
         let Some(file) = image_path(rest) else { return Served::NotFound };
@@ -193,7 +257,7 @@ fn thumbnail(path: &Path, width: i32) -> Option<Body> {
     let cache_dir = app::dirs_cache().join("mindos/shell/thumbs");
     let cached = cache_dir.join(format!("{key:016x}.png"));
     if let Ok(bytes) = std::fs::read(&cached) {
-        return Some((bytes, "image/png"));
+        return Some((Arc::from(bytes), "image/png"));
     }
     let pixbuf = Pixbuf::from_file_at_scale(path, width, width * 2, true).ok()?;
     let bytes = pixbuf.save_to_bufferv("png", &[]).ok()?;
@@ -202,7 +266,7 @@ fn thumbnail(path: &Path, width: i32) -> Option<Body> {
     if std::fs::write(&tmp, &bytes).is_ok() {
         let _ = std::fs::rename(&tmp, &cached);
     }
-    Some((bytes, "image/png"))
+    Some((Arc::from(bytes), "image/png"))
 }
 
 fn serve_app(ui_dir: &Path, rel: &str) -> Option<Body> {
@@ -211,14 +275,25 @@ fn serve_app(ui_dir: &Path, rel: &str) -> Option<Body> {
     if rel.is_empty() {
         return serve_app(ui_dir, "index.html");
     }
-    if let Some(font) = rel.strip_prefix("fonts/") {
-        if let Some(found) = find_font(ui_dir, font) {
-            return std::fs::read(&found).ok().map(|b| (b, mime_for_ext(&found)));
+    let paths = APP_PATHS.get_or_init(Default::default);
+    let key = (ui_dir.to_path_buf(), rel.to_string());
+    if let Some(file) = paths.lock().ok().and_then(|m| m.get(&key).cloned()) {
+        if let Some(body) = read_cached(&file) {
+            return Some((body, mime_for_ext(&file)));
         }
     }
-    let file = safe_join(ui_dir, rel)?;
-    let file = if file.is_dir() { file.join("index.html") } else { file };
-    std::fs::read(&file).ok().map(|b| (b, mime_for_ext(&file)))
+    let file = rel
+        .strip_prefix("fonts/")
+        .and_then(|font| find_font(ui_dir, font))
+        .or_else(|| {
+            let file = safe_join(ui_dir, rel)?;
+            Some(if file.is_dir() { file.join("index.html") } else { file })
+        })?;
+    let body = read_cached(&file)?;
+    if let Ok(mut m) = paths.lock() {
+        m.insert(key, file.clone());
+    }
+    Some((body, mime_for_ext(&file)))
 }
 
 fn find_font(ui_dir: &Path, name: &str) -> Option<PathBuf> {

@@ -35,7 +35,7 @@ pub async fn run() -> Vec<Finding> {
     }
 
     // kernel: running vs installed
-    let running = sh("uname -r").await;
+    let running = sysinfo::kernel();
     let installed = Path::new("/usr/lib/modules").join(&running).exists();
     if !running.is_empty() && !installed {
         let mut x = finding("kernel-stale", "warn", "Reboot to finish the kernel update", format!("The running kernel ({}) is no longer installed; drivers and modules cannot load until you reboot.", running));
@@ -98,10 +98,12 @@ pub async fn run() -> Vec<Finding> {
         f.push(finding("mindd-socket", "warn", "The Mind's socket is missing", "The desktop cannot reach mindd; check `systemctl status mindd`.".into()));
     }
 
-    // snapshots: none at all means no way back
-    let snaps = sh("snapper --no-dbus --csvout -c root list --columns number 2>/dev/null | grep -cE '^[1-9][0-9]*$' ").await;
-    if !Path::new("/run/archiso/bootmnt").exists() && Path::new("/etc/snapper/configs/root").exists() && snaps.trim() == "0" {
-        f.push(finding("no-snapshots", "info", "No system snapshots yet", "The first update creates one; snapshots appear in the boot menu and `mindos-boot restore` goes back to one.".into()));
+    // snapshots: none at all means no way back (not asked on live media or without a config)
+    if !Path::new("/run/archiso/bootmnt").exists() && Path::new("/etc/snapper/configs/root").exists() {
+        let snaps = sh("snapper --no-dbus --csvout -c root list --columns number 2>/dev/null | grep -cE '^[1-9][0-9]*$' ").await;
+        if snaps.trim() == "0" {
+            f.push(finding("no-snapshots", "info", "No system snapshots yet", "The first update creates one; snapshots appear in the boot menu and `mindos-boot restore` goes back to one.".into()));
+        }
     }
     f
 }
@@ -178,7 +180,7 @@ async fn verify_last_update(d: &Daemon, findings: &[Finding]) {
         return;
     }
     let touched_kernel = lu.packages.iter().any(|p| p.starts_with("linux-mindos") || p.starts_with("nvidia"));
-    let running = sh("uname -r").await;
+    let running = sysinfo::kernel();
     let stale = !Path::new("/usr/lib/modules").join(&running).exists();
     if touched_kernel && stale {
         // cannot judge before the reboot; leave a gentle hint instead

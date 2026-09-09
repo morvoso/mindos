@@ -1,17 +1,29 @@
 import * as bridge from './bridge';
-import { h } from './dom';
+import { h, reconcile } from './dom';
 import { Game, GameLibrary, gameCommand, launchGame, libraryPreferences, nativeGames, runningWindow, saveLibraryPreferences, sourceLabel } from './games';
 import { icon } from './icons';
 import { store } from './state';
-import { openGaming, openCompanion, play as gamingRequest, type GameMeta, type Session } from './gaming';
+import { openGaming, play as gamingRequest, type GameMeta } from './gaming';
+
+type Details = { metadata: Record<string, GameMeta>; storage: Record<string, unknown> };
+
+/** The last scan, kept for the life of the page. Switching between the gaming
+ *  and productivity desktops remounts the library, which then paints from here
+ *  at once instead of spawning the scanner again. A scan older than FRESH_MS,
+ *  or one taken before the desktop entries changed, is repeated quietly behind
+ *  the cached grid; the Refresh button always scans again. */
+const cache: { scanned: Game[]; warnings: string[]; details: Details; native: string; selected: string; at: number } =
+  { scanned: [], warnings: [], details: { metadata: {}, storage: {} }, native: '', selected: '', at: 0 };
+const FRESH_MS = 5 * 60_000;
+const nativeKey = () => nativeGames().map((g) => g.id).join(' ');
 
 export function renderGameLibrary(root: HTMLElement, close?: () => void): () => void {
   root.classList.add('game-library');
   let alive = true, loading = false, launchPending = false;
-  let scanned: Game[] = [], selected = '', source = 'all', filter = 'all';
+  let scanned = cache.scanned, selected = cache.selected, source = 'all', filter = 'all';
   let prefs = libraryPreferences();
-  let loaded = false;
-  let details: { metadata: Record<string, GameMeta>; storage: Record<string, unknown>; sessions: Session[] } = { metadata: {}, storage: {}, sessions: [] };
+  let loaded = cache.at > 0;
+  let details = cache.details;
   const summary = h('span', { class: 'gaming-meta' }, 'Reading local libraries');
   const message = h('p', { class: 'gaming-message', role: 'status', 'aria-live': 'polite', hidden: true });
   const search = h('input', { class: 'input game-search', type: 'search', placeholder: 'Find a game…', 'aria-label': 'Search game library' });
@@ -21,9 +33,11 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
   const refresh = h('button', { class: 'btn', 'aria-label': 'Refresh game library', onclick: () => void load() }, icon('refresh', 14));
   const hero = h('div', { class: 'game-feature' });
   const grid = h('div', { class: 'game-grid' });
+  const empty = h('div', { class: 'game-empty' });
   const count = h('span', { class: 'gaming-meta', role: 'status' });
   const tabs = h('div', { class: 'game-tabs', 'aria-label': 'Library view' });
-  const footer = h('footer', { class: 'gaming-panel-footer' });
+  const footer = h('footer', { class: 'gaming-panel-footer' },
+    h('button', { class: 'gaming-text-action', onclick: () => void command(() => bridge.call('mind.open', { text: 'Help me troubleshoot a game on Linux.' })) }, 'Ask Mind', icon('arrow-right', 12)));
   const heading = h('header', { class: 'gaming-panel-title' }, h('h2', {}, 'Library'), summary,
     close ? h('button', { class: 'gaming-close', title: 'Show desktop', 'aria-label': 'Close library', onclick: close }, icon('x', 14)) : null);
   root.append(heading, h('div', { class: 'game-library-body' },
@@ -53,10 +67,14 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
     let hash = 0;
     for (const ch of game.id) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
     box.style.setProperty('--art-hue', String(Math.abs(hash) % 360));
-    if (game.art) {
-      // Only cached local artwork. The shell never downloads covers on login.
-      const img = h('img', { src: `mindos://shell/file/${encodeURIComponent(game.art)}`, alt: '', loading: 'lazy' });
-      img.onerror = () => img.remove();
+    const steamId = game.id.match(/^steam:(\d+)$/)?.[1];
+    const fallback = steamId ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamId}/header.jpg` : '';
+    if (game.art || fallback) {
+      const img = h('img', { src: game.art ? `mindos://shell/file/${encodeURIComponent(game.art)}` : fallback, alt: '', loading: 'lazy' });
+      img.onerror = () => {
+        if (fallback && img.src !== fallback) img.src = fallback;
+        else img.remove();
+      };
       box.append(img);
     }
     return box;
@@ -67,36 +85,57 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
     renderHero(game);
     try {
       const result = await launchGame(game);
-      details.sessions.filter(s => s.game === game.id).forEach(s => { s.suspended = false; });
       prefs.launched[game.id] = Math.floor(Date.now() / 1000);
       saveLibraryPreferences(prefs);
       report(result === 'focused' ? `Returned to ${game.name}.` : `${game.name} requested in ${sourceLabel[game.source] || game.source}. The launcher handles startup.`);
     } catch (e) { report(String(e), true); }
     finally { launchPending = false; if (alive) render(); }
   };
+  // The hero is rebuilt only when what it shows changes; window and layout
+  // events are frequent, and each rebuild decodes the artwork again.
+  let heroKey = '';
   const renderHero = (game?: Game) => {
-    if (!game) { hero.hidden = true; return; }
-    hero.hidden = false;
+    if (!game) { hero.hidden = true; heroKey = ''; return; }
     const running = runningWindow(game);
     const favorite = prefs.favorites.includes(game.id);
-    const held = details.sessions.some(s => s.game === game.id && s.active && s.suspended);
     const meta = details.metadata[game.id];
+    const key = [game.id, game.name, game.source, game.path || '', game.art || '', !!running, favorite, launchPending, JSON.stringify(meta ?? null), !!details.storage[game.id]].join(' ');
+    if (key === heroKey) return;
+    heroKey = key;
+    hero.hidden = false;
     hero.replaceChildren(art(game, 'game-feature-art'), h('div', { class: 'game-feature-copy' },
-      h('span', { class: 'game-feature-state gaming-meta' }, h('i'), held ? 'Held in memory · ready to resume' : running ? 'Running · return to your game' : details.storage[game.id] ? 'Cold storage · linked & playable' : 'Installed · ready to launch'),
+      h('span', { class: 'game-feature-state gaming-meta' }, h('i'), running ? 'Running · return to your game' : details.storage[game.id] ? 'Cold storage · linked & playable' : 'Installed · ready to launch'),
       h('h1', {}, game.name),
       h('p', { class: 'gaming-meta' }, `${sourceLabel[game.source] || game.source} / ${meta?.completion != null ? `${meta.completion}% · ${meta.chapter || 'Progress tracked'}` : 'Local library'}`),
       h('div', { class: 'game-feature-actions' },
-        h('button', { class: 'btn primary game-play', disabled: launchPending, onclick: () => void play(game) }, icon(running ? 'refresh' : 'gamepad', 16), launchPending ? 'Opening…' : held ? 'Resume' : running ? 'Return to game' : 'Play'),
+        h('button', { class: 'btn primary game-play', disabled: launchPending, onclick: () => void play(game) }, icon(running ? 'refresh' : 'gamepad', 16), launchPending ? 'Opening…' : running ? 'Return to game' : 'Play'),
         h('button', { class: 'btn', onclick: () => void command(() => settings()) }, icon('sliders', 14), 'Tuning'),
-        h('button', { class: 'btn', onclick: () => void command(() => openGaming('sessions', game.id)) }, 'Session'),
         h('button', { class: 'btn', onclick: () => void command(() => openGaming('saves', game.id)) }, 'Saves'),
-        h('button', { class: 'btn', onclick: () => void command(() => openCompanion(game.id)) }, 'Companion'),
         game.path ? h('button', { class: 'btn', title: 'Open game folder', 'aria-label': 'Open game folder', onclick: () => void command(() => bridge.call('fs.open', { path: game.path })) }, icon('folder', 14)) : null,
         h('button', { class: 'btn game-favorite', title: 'Favorite', 'aria-label': `Favorite ${game.name}`, 'aria-pressed': String(favorite), onclick: () => {
           prefs.favorites = favorite ? prefs.favorites.filter((id) => id !== game.id) : [...prefs.favorites, game.id];
           saveLibraryPreferences(prefs); render();
         } }, icon('star', 14)))));
   };
+  // Tiles are keyed by game and kept across renders: a search keystroke or a
+  // selection moves and relabels them instead of rebuilding the grid.
+  const tile = (game: Game) => {
+    const el = h('button', { class: 'game-tile', dataset: { game: game.id }, onclick: () => { selected = el.dataset.game || game.id; render(); el.focus(); } },
+      art(game, 'game-tile-art'), h('strong', {}, game.name), h('span', { class: 'gaming-meta' }));
+    return el;
+  };
+  const updateTile = (el: HTMLElement, game: Game) => {
+    const on = game.id === selected;
+    if (el.classList.contains('selected') !== on) el.classList.toggle('selected', on);
+    if (el.getAttribute('aria-pressed') !== String(on)) el.setAttribute('aria-pressed', String(on));
+    const label = `Select ${game.name}`;
+    if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label);
+    const name = el.children[1], state = el.lastElementChild;
+    if (name && name.textContent !== game.name) name.textContent = game.name;
+    const text = runningWindow(game) ? '● Running' : sourceLabel[game.source] || game.source;
+    if (state && state.textContent !== text) state.textContent = text;
+  };
+  let tabsFilter = '';
   const render = () => {
     const games = allGames();
     const needle = search.value.trim().toLocaleLowerCase();
@@ -104,32 +143,40 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
       && (filter !== 'favorites' || prefs.favorites.includes(g.id))
       && `${g.name} ${sourceLabel[g.source] || g.source}`.toLocaleLowerCase().includes(needle));
     if (!games.some((g) => g.id === selected)) selected = games[0]?.id || '';
-    summary.textContent = `${games.length} titles · ${new Set(games.map((g) => g.source)).size} sources`;
-    count.textContent = `${visible.length} ${visible.length === 1 ? 'title' : 'titles'}`;
+    cache.selected = selected;
+    const text = `${games.length} titles · ${new Set(games.map((g) => g.source)).size} sources`;
+    if (summary.textContent !== text) summary.textContent = text;
+    const total = `${visible.length} ${visible.length === 1 ? 'title' : 'titles'}`;
+    if (count.textContent !== total) count.textContent = total;
     renderHero(games.find((g) => g.id === selected));
-    tabs.replaceChildren(...[['all', 'Installed'], ['favorites', 'Favorites']].map(([value, label]) =>
-      h('button', { class: 'game-tab', 'aria-pressed': String(filter === value), onclick: () => { filter = value; render(); } }, label)));
-    grid.replaceChildren(...visible.map((game, i) => h('button', {
-      class: `game-tile${game.id === selected ? ' selected' : ''}`, 'aria-label': `Select ${game.name}`, 'aria-pressed': String(game.id === selected),
-      dataset: { game: game.id }, onclick: () => { selected = game.id; render(); grid.querySelector<HTMLButtonElement>(`[data-index="${i}"]`)?.focus(); },
-    }, art(game, 'game-tile-art'), h('strong', {}, game.name), h('span', { class: 'gaming-meta' }, runningWindow(game) ? '● Running' : sourceLabel[game.source] || game.source))));
-    grid.querySelectorAll<HTMLElement>('.game-tile').forEach((el, i) => { el.dataset.index = String(i); });
-    if (!visible.length) grid.append(h('div', { class: 'game-empty' }, icon('gamepad', 32),
-      h('h3', {}, loading && !loaded ? 'Reading your libraries…' : games.length ? 'No matching games' : 'No installed games'),
-      h('p', {}, games.length ? 'Try another search, source or view.' : 'Install a game in Steam, Heroic or Lutris, then refresh.'),
-      !games.length ? h('button', { class: 'btn', onclick: () => void command(() => settings()) }, 'Set up gaming tools', icon('arrow-right', 14)) : null));
-    footer.replaceChildren(
-      h('button', { class: 'gaming-text-action', onclick: () => void command(() => bridge.call('mind.open', { text: 'Help me troubleshoot a game on Linux.' })) }, 'Ask Mind', icon('arrow-right', 12)));
+    if (tabsFilter !== filter) {
+      tabsFilter = filter;
+      tabs.replaceChildren(...[['all', 'Installed'], ['favorites', 'Favorites']].map(([value, label]) =>
+        h('button', { class: 'game-tab', 'aria-pressed': String(filter === value), onclick: () => { filter = value; render(); } }, label)));
+    }
+    empty.remove();
+    reconcile(grid, visible, (g) => g.id, tile, updateTile);
+    grid.querySelectorAll<HTMLElement>('.game-tile').forEach((el, i) => { if (el.dataset.index !== String(i)) el.dataset.index = String(i); });
+    if (!visible.length) {
+      empty.replaceChildren(icon('gamepad', 32),
+        h('h3', {}, loading && !loaded ? 'Reading your libraries…' : games.length ? 'No matching games' : 'No installed games'),
+        h('p', {}, games.length ? 'Try another search, source or view.' : 'Install a game in Steam, Heroic or Lutris, then refresh.'));
+      if (!games.length) empty.append(h('button', { class: 'btn', onclick: () => void command(() => settings()) }, 'Set up gaming tools', icon('arrow-right', 14)));
+      grid.append(empty);
+    }
   };
-  const load = async () => {
+  /** Scan the launchers. `quiet` keeps the cached grid on screen meanwhile. */
+  const load = async (quiet = false) => {
     if (loading) return;
-    loading = true; refresh.disabled = true; root.setAttribute('aria-busy', 'true'); render();
+    loading = true; refresh.disabled = true; root.setAttribute('aria-busy', 'true');
+    if (!quiet) render();
     try {
       const result = await gameCommand<GameLibrary>('scan');
+      // The scan is worth keeping even after this view has gone.
+      cache.scanned = result.games; cache.warnings = result.warnings; cache.at = Date.now(); cache.native = nativeKey();
+      try { cache.details = await gamingRequest<Details>('library.state', { games: nativeGames().map((g) => g.id) }); } catch { /* Library works without the optional gaming service. */ }
       if (!alive) return;
-      scanned = result.games;
-      try { details = await gamingRequest<typeof details>('library.state', { games: nativeGames().map(g => g.id) }); } catch { /* Library works without the optional gaming service. */ }
-      loaded = true;
+      scanned = cache.scanned; details = cache.details; loaded = true;
       report(result.warnings.join(' '), result.warnings.length > 0);
     } catch (e) { report(String(e), true); }
     finally { loading = false; if (alive) { refresh.disabled = false; root.setAttribute('aria-busy', 'false'); render(); } }
@@ -149,9 +196,26 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
     if (next) { e.preventDefault(); next.focus(); }
   };
   root.addEventListener('keydown', keyboard);
-  const storage = () => { prefs = libraryPreferences(); render(); };
+  const storage = () => {
+    const next = libraryPreferences();
+    if (JSON.stringify(next) === JSON.stringify(prefs)) return;
+    prefs = next; render();
+  };
   window.addEventListener('storage', storage);
-  const offs = [store.on('apps', render), store.on('layout', storage), store.on('windows', () => renderHero(allGames().find((g) => g.id === selected)))];
-  void load();
+  // Window events arrive on every focus change; only a change in what runs matters here.
+  let running = store.state.windows.map((w) => w.app_id).join(' ');
+  const windows = () => {
+    const now = store.state.windows.map((w) => w.app_id).join(' ');
+    if (now === running) return;
+    running = now; render();
+  };
+  const apps = () => {
+    render();
+    if (loaded && cache.native !== nativeKey()) void load(true);
+  };
+  const offs = [store.on('apps', apps), store.on('layout', storage), store.on('windows', windows)];
+  if (loaded) report(cache.warnings.join(' '), cache.warnings.length > 0);
+  render();
+  if (!loaded || Date.now() - cache.at > FRESH_MS || cache.native !== nativeKey()) void load(loaded);
   return () => { alive = false; offs.forEach((off) => off()); window.removeEventListener('storage', storage); root.removeEventListener('keydown', keyboard); };
 }

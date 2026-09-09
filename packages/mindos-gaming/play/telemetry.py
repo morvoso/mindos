@@ -5,7 +5,7 @@ from pathlib import Path
 import statistics
 from collections import deque
 from .common import DATA, read
-from .sessions import list_sessions
+from .sessions import load_sessions
 
 
 def parse_trace(path):
@@ -46,15 +46,41 @@ def parse_trace(path):
                 points=[round(v, 2) for v in frames[::max(1, len(frames)//180)]][-180:])
 
 
+def recordings(directory):
+    """A session's CSVs, and the (name, size, mtime) list a summary of them is valid for."""
+    traces = sorted(Path(directory).glob('*.csv'))
+    seen = []
+    for f in traces:
+        st = f.stat()
+        seen.append([f.name, st.st_size, st.st_mtime_ns])
+    return traces, seen
+
+
+def summarize(directory):
+    """What history() reports for a session, with the recordings it was read from."""
+    traces, seen = recordings(directory)
+    stats = None
+    for f in traces:
+        stats = parse_trace(f) or stats
+    return dict(traces=seen, stats=stats)
+
+
+def session_stats(session, remembered):
+    """The recorded metrics: the summary kept at game end while its CSVs are unchanged, else a fresh parse."""
+    traces, seen = recordings(DATA / 'traces' / session['id'])
+    if isinstance(remembered, dict) and 'stats' in remembered and remembered.get('traces') == seen:
+        return remembered['stats']
+    stats = None
+    for f in traces:
+        stats = parse_trace(f) or stats
+    return stats
+
+
 def history(gid=None):
     result = []
-    for s in list_sessions():
+    for s, remembered in load_sessions():
         if gid and s['game'] != gid: continue
-        traces = sorted((DATA / 'traces' / s['id']).glob('*.csv'))
-        stats = None
-        for f in traces:
-            stats = parse_trace(f) or stats
-        result.append({**s, 'stats': stats})
+        result.append({**s, 'stats': session_stats(s, remembered)})
     return result
 
 

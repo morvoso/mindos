@@ -1,7 +1,7 @@
 // Settings › Wallpaper: a grid of the pictures found on the system.
 
 import * as bridge from '../bridge';
-import { appearanceControls } from '../appearance';
+import { appearance, appearanceControls, onAppearance, paletteFor, setPaletteColor } from '../appearance';
 import { h } from '../dom';
 import { icon } from '../icons';
 import { store } from '../state';
@@ -10,10 +10,33 @@ import { card, notice, pageHeader, thumbUrl } from './shared';
 
 export function wallpaperPage(el: HTMLElement): () => void {
   const note = notice();
-  const appearance = appearanceControls();
+  const appearanceCtl = appearanceControls();
   const grid = h('div', { class: 'wp-grid' });
   const extra: WallpaperEntry[] = [];
   let entries: WallpaperEntry[] = [];
+  let paletteTheme: 'dark' | 'light' = appearance.theme;
+  const paletteGrid = h('div', { class: 'palette-grid' });
+  const paletteTabs = h('div', { class: 'palette-tabs' });
+
+  const renderPalette = () => {
+    const p = paletteFor(paletteTheme);
+    paletteGrid.replaceChildren();
+    const fields: Array<[keyof typeof p, string]> = [
+      ['accent', 'Highlight'], ['background', 'Background'], ['surface', 'Surface'],
+      ['surfaceStrong', 'Raised surface'], ['border', 'Border'], ['text', 'Text'], ['muted', 'Muted text'],
+    ];
+    for (const [key, label] of fields) {
+      const input = h('input', { type: 'color', value: p[key], 'aria-label': `${label} color` }) as HTMLInputElement;
+      input.addEventListener('input', () => setPaletteColor(paletteTheme, key, input.value));
+      paletteGrid.appendChild(h('label', { class: 'palette-field' }, h('span', {}, label), input, h('code', {}, p[key].toUpperCase())));
+    }
+    paletteTabs.replaceChildren(...(['dark', 'light'] as const).map((theme) => {
+      const button = h('button', { class: `btn${paletteTheme === theme ? ' primary' : ''}`, type: 'button' }, theme === 'dark' ? 'Dark theme' : 'Light theme');
+      button.onclick = () => { paletteTheme = theme; renderPalette(); };
+      return button;
+    }));
+  };
+  renderPalette();
 
   const folderIn = h('input', { type: 'text', class: 'grow', placeholder: '~/Pictures/Wallpapers', spellcheck: 'false' }) as HTMLInputElement;
   const addBtn = h('button', { class: 'btn', onclick: () => addFolder(folderIn.value.trim()) }, icon('folder', 14), 'Add pictures from this folder');
@@ -24,7 +47,8 @@ export function wallpaperPage(el: HTMLElement): () => void {
   el.append(
     pageHeader('Wallpaper', 'Select a desktop background. Images in ~/Pictures/Wallpapers and /usr/share/backgrounds are listed here.'),
     note.el,
-    card('Appearance', appearance.el, h('p', { class: 'row-help' }, 'Dark grey glass, green highlights and a static wallpaper. Choose a built-in background or one of your own images.')),
+    card('Appearance', appearanceCtl.el, h('p', { class: 'row-help' }, 'Choose a theme and tune its colors. Changes apply immediately and are saved to this desktop.')),
+    card('Theme colors', paletteTabs, paletteGrid),
     card(null, grid),
     card('Add a folder', h('div', { class: 'inline-form' }, folderIn, addBtn), h('div', { class: 'row-help' }, 'An image can also be set by right-clicking it in Files or Image Viewer and choosing “Set as Background”.')),
   );
@@ -87,5 +111,6 @@ export function wallpaperPage(el: HTMLElement): () => void {
     })
     .catch((e) => note.show(`Could not list wallpapers: ${e instanceof Error ? e.message : e}`, 'error'));
   store.bind(grid, 'layout', render);
-  return () => appearance.destroy();
+  const unlisten = onAppearance(renderPalette);
+  return () => { appearanceCtl.destroy(); unlisten(); };
 }

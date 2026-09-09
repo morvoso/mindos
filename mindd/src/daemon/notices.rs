@@ -61,29 +61,36 @@ impl Notices {
     }
 
     /// Add or replace a notice (same id). Returns true when something changed
-    /// for the user (new notice, or a different title/body/level).
+    /// for the user (new notice, or a different title/body/level). The file
+    /// is rewritten only when the stored notice differs in any field: the
+    /// health checks post the same findings every half hour.
     pub fn post(&self, mut n: Notice) -> bool {
         if n.time == 0 {
             n.time = now();
         }
         let changed = {
             let mut list = self.list.lock().unwrap();
-            let changed = match list.iter().position(|x| x.id == n.id) {
+            let (changed, dirty) = match list.iter().position(|x| x.id == n.id) {
                 Some(i) => {
                     let same = list[i].title == n.title && list[i].body == n.body && list[i].level == n.level;
                     if same {
                         n.time = list[i].time;
                     }
-                    list[i] = n.clone();
-                    !same
+                    let dirty = list[i] != n;
+                    if dirty {
+                        list[i] = n.clone();
+                    }
+                    (!same, dirty)
                 }
                 None => {
                     list.push(n.clone());
-                    true
+                    (true, true)
                 }
             };
-            list.sort_by(|a, b| b.time.cmp(&a.time));
-            self.save(&list);
+            if dirty {
+                list.sort_by(|a, b| b.time.cmp(&a.time));
+                self.save(&list);
+            }
             changed
         };
         if changed {
@@ -110,11 +117,20 @@ impl Notices {
         removed
     }
 
-    /// Remove every notice whose id starts with `prefix` and is not in `keep`.
+    /// Remove every notice whose id starts with `prefix` and is not in `keep`:
+    /// one rewrite of the file for the whole batch.
     pub fn retain_prefix(&self, prefix: &str, keep: &[String]) {
-        let ids: Vec<String> = self.list.lock().unwrap().iter().filter(|n| n.id.starts_with(prefix) && !keep.contains(&n.id)).map(|n| n.id.clone()).collect();
-        for id in ids {
-            self.dismiss(&id);
+        let removed: Vec<String> = {
+            let mut list = self.list.lock().unwrap();
+            let removed: Vec<String> = list.iter().filter(|n| n.id.starts_with(prefix) && !keep.contains(&n.id)).map(|n| n.id.clone()).collect();
+            if !removed.is_empty() {
+                list.retain(|n| !removed.contains(&n.id));
+                self.save(&list);
+            }
+            removed
+        };
+        for id in &removed {
+            self.broadcast(Event::NoticeGone { id: id.clone() });
         }
     }
 

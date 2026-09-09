@@ -35,8 +35,7 @@ mod system;
 mod tray;
 mod windows;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use gtk4 as gtk;
 use gtk::glib;
@@ -73,17 +72,61 @@ pub enum HostEvent {
 
 static QUIT: AtomicBool = AtomicBool::new(false);
 
+/// The write end of the pipe a signal is reported through.
+static SIGNAL_PIPE: AtomicI32 = AtomicI32::new(-1);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    // Only async-signal-safe calls here: a flag and one byte down the pipe.
+    QUIT.store(true, Ordering::SeqCst);
+    let fd = SIGNAL_PIPE.load(Ordering::SeqCst);
+    if fd >= 0 {
+        let byte = [0u8];
+        unsafe { libc::write(fd, byte.as_ptr() as *const libc::c_void, 1) };
+    }
+}
+
+/// End the main loop on systemd's stop signal (and Ctrl-C at a terminal)
+/// through the event channel. The handler writes to a pipe; a thread parked
+/// on its other end sends the event, so nothing polls for it.
+fn watch_signals(tx: async_channel::Sender<HostEvent>) {
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        tracing::warn!("cannot create the signal pipe; stop signals are not handled");
+        return;
+    }
+    let [read_end, write_end] = fds;
+    SIGNAL_PIPE.store(write_end, Ordering::SeqCst);
+    std::thread::Builder::new()
+        .name("mindshell-signals".into())
+        .spawn(move || {
+            let mut byte = [0u8];
+            loop {
+                let n = unsafe { libc::read(read_end, byte.as_mut_ptr() as *mut libc::c_void, 1) };
+                if n == 1 {
+                    let _ = tx.send_blocking(HostEvent::Quit);
+                } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                } else {
+                    return;
+                }
+            }
+        })
+        .expect("spawn signal thread");
+    unsafe {
+        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
+    }
+}
+
 /// True once SIGTERM/SIGINT/SIGHUP arrived (the main loop quits shortly after).
 pub fn quit_requested() -> bool {
     QUIT.load(Ordering::SeqCst)
 }
 
-extern "C" fn on_signal(_: libc::c_int) {
-    QUIT.store(true, Ordering::SeqCst);
-}
 
 /// The apps `--app` accepts (each is a page set in the UI bundle).
-pub const APPS: &[&str] = &["settings", "library", "gaming", "companion", "greeter"];
+pub const APPS: &[&str] = &["settings", "library", "gaming", "greeter"];
 
 fn usage() {
     println!(
@@ -198,11 +241,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    unsafe {
-        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
-    }
 
     let main_loop = glib::MainLoop::new(None, false);
     let (tx, rx) = async_channel::unbounded::<HostEvent>();
@@ -218,13 +256,7 @@ fn main() {
             }
         });
     }
-    glib::timeout_add_local(Duration::from_millis(200), move || {
-        if QUIT.load(Ordering::SeqCst) {
-            let _ = tx.send_blocking(HostEvent::Quit);
-            return glib::ControlFlow::Break;
-        }
-        glib::ControlFlow::Continue
-    });
+    watch_signals(tx.clone());
 
     main_loop.run();
     tracing::info!("bye");

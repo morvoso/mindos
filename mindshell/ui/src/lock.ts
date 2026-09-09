@@ -15,7 +15,6 @@ import * as bridge from './bridge';
 import { h } from './dom';
 import { icon } from './icons';
 import { showKeyboard } from './controller';
-import { play, type Session } from './gaming';
 import { BLANK, startSaver } from './savers';
 
 interface LockState {
@@ -123,11 +122,6 @@ function lockCard(): Card {
   const el = h('div', { class: 'lock-stage' }, h('div', { class: 'g-card lock-card' }, h('div', { class: 'lock-badge' }, icon('lock', 15), 'Locked'), avatar, who, whoSub, form, msg, caps));
   const cardEl = el.firstElementChild as HTMLElement;
   cardEl.append(h('button', { class: 'btn', type: 'button', onclick: () => showKeyboard(input) }, 'On-screen keyboard'));
-  const resume = h('select', { 'aria-label': 'After unlocking' }, h('option', { value: '' }, 'Return to desktop'));
-  cardEl.append(resume);
-  void play<Session[]>('sessions').then(sessions => {
-    for (const s of sessions.filter(s => s.active && s.suspended)) resume.append(h('option', { value: s.game }, `Resume ${s.game}`));
-  }).catch(() => { resume.hidden = true; });
   let busy = false;
 
   const showMsg = (text: string, kind: 'error' | 'info' | '' = ''): void => {
@@ -154,7 +148,7 @@ function lockCard(): Card {
     go.disabled = true;
     showMsg('');
     try {
-      const r = await bridge.call<{ ok?: boolean; error?: string }>('lock.unlock', { password, resume: resume.value });
+      const r = await bridge.call<{ ok?: boolean; error?: string }>('lock.unlock', { password });
       if (r?.ok) {
         showMsg('Welcome back.', 'info');
         cardEl.classList.add('done');

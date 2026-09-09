@@ -101,7 +101,7 @@ async fn run(
     pixmaps: Pixmaps,
     icon_theme: icons::ThemeRef,
 ) {
-    let mut versions: HashMap<String, u64> = HashMap::new();
+    let mut versions: HashMap<String, (u64, Vec<u8>)> = HashMap::new();
     let mut last_snapshot: Option<String> = None;
     loop {
         let client = match Client::new().await {
@@ -312,10 +312,27 @@ fn icon_url(name: &str, size: u16) -> String {
     format!("mindos://shell/icon/{}?size={}", icons::percent_encode(name), size)
 }
 
+/// `icons::resolve` remembered per name and theme: a chatty item sends a
+/// signal several times a second, and the lookup stats its way through the
+/// icon directories each time. Only found icons are remembered, so one
+/// installed later is picked up.
+fn resolve_cached(name: &str, theme: &str) -> Option<std::path::PathBuf> {
+    thread_local! {
+        static KNOWN: std::cell::RefCell<HashMap<(String, String), std::path::PathBuf>> = std::cell::RefCell::new(HashMap::new());
+    }
+    let key = (name.to_string(), theme.to_string());
+    if let Some(found) = KNOWN.with(|k| k.borrow().get(&key).cloned()) {
+        return Some(found);
+    }
+    let found = icons::resolve(name, 32, theme)?;
+    KNOWN.with(|k| k.borrow_mut().insert(key, found.clone()));
+    Some(found)
+}
+
 fn publish(
     client: &Client,
     pixmaps: &Pixmaps,
-    versions: &mut HashMap<String, u64>,
+    versions: &mut HashMap<String, (u64, Vec<u8>)>,
     icon_theme: &icons::ThemeRef,
     events: &async_channel::Sender<HostEvent>,
     last: &mut Option<String>,
@@ -324,6 +341,7 @@ fn publish(
     let theme = icon_theme.get();
     let snapshot: Vec<Value> = {
         let Ok(map) = items.lock() else { return };
+        versions.retain(|id, _| map.contains_key(id));
         let mut list: Vec<(&String, &(StatusNotifierItem, Option<TrayMenu>))> = map.iter().collect();
         list.sort_by(|a, b| a.0.cmp(b.0));
         list.into_iter()
@@ -344,7 +362,7 @@ fn item_json(
     item: &StatusNotifierItem,
     has_menu: bool,
     pixmaps: &Pixmaps,
-    versions: &mut HashMap<String, u64>,
+    versions: &mut HashMap<String, (u64, Vec<u8>)>,
     icon_theme: &str,
 ) -> Value {
     let attention = item.status == Status::NeedsAttention;
@@ -369,26 +387,25 @@ fn item_json(
                 icon = Some(format!("mindos://shell/icon/{}", icons::percent_encode(&p.to_string_lossy())));
             }
         }
-        if let (None, Some(p)) = (&icon, icons::resolve(name, 32, icon_theme)) {
+        if let (None, Some(p)) = (&icon, resolve_cached(name, icon_theme)) {
             icon = Some(icon_url(&p.to_string_lossy(), 32));
         }
     }
     if icon.is_none() {
         if let Some(pix) = pixmap {
-            if let Some(png) = encode_png(pix) {
-                let version = versions.entry(id.to_string()).or_insert(0);
-                let mut changed = true;
-                if let Ok(map) = pixmaps.lock() {
-                    if let Some((_, old)) = map.get(id) {
-                        changed = *old != png;
-                    }
-                }
-                if changed {
+            // The raw pixels decide whether anything changed; the PNG is
+            // encoded once per distinct icon, not once per signal.
+            let (version, seen) = versions.entry(id.to_string()).or_insert((0, Vec::new()));
+            if *version == 0 || *seen != pix.pixels {
+                if let Some(png) = encode_png(pix) {
                     *version += 1;
+                    *seen = pix.pixels.clone();
                     if let Ok(mut map) = pixmaps.lock() {
                         map.insert(id.to_string(), (*version, png));
                     }
                 }
+            }
+            if *version > 0 {
                 icon = Some(format!("mindos://shell/tray/{}?v={}", icons::percent_encode(id), version));
             }
         }

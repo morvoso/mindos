@@ -21,7 +21,7 @@ use smithay::{
     },
     xwayland::{
         xwm::{Reorder, ResizeEdge as X11ResizeEdge, XwmId},
-        xwm::WmWindowType, X11Surface, X11Wm, XwmHandler,
+        xwm::{WmWindowProperty, WmWindowType}, X11Surface, X11Wm, XwmHandler,
     },
 };
 use tracing::{error, trace};
@@ -60,6 +60,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         window.set_mapped(true).unwrap();
         let elem = WindowElement(Window::new_x11_window(window.clone()));
         elem.id(); // ids follow creation order
@@ -94,12 +95,14 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         let location = window.geometry().loc;
         let window = WindowElement(Window::new_x11_window(window));
         self.space.map_element(window, location, true);
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         let maybe = self
             .space
             .elements()
@@ -124,6 +127,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         self.minimized
             .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
     }
@@ -168,15 +172,18 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         if self.space.element_location(&elem) != Some(loc) {
             self.space.map_element(elem, loc, false);
         }
+        self.request_repaint();
         // TODO: We don't properly handle the order of override-redirect windows here,
         //       they are always mapped top and then never reordered.
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         self.maximize_request_x11(&window);
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         let Some(elem) = self
             .space
             .elements()
@@ -202,6 +209,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         if let Some(elem) = self
             .space
             .elements()
@@ -229,6 +237,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.request_repaint();
         if let Some(elem) = self
             .space
             .elements()
@@ -303,6 +312,12 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
 
     fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {
         self.move_request_x11(&window)
+    }
+
+    fn property_notify(&mut self, _xwm: XwmId, _window: X11Surface, _property: WmWindowProperty) {
+        // A new title or class: the title bar and the shell's window list
+        // pick it up at the next turn.
+        self.request_repaint();
     }
 
     fn allow_selection_access(&mut self, xwm: XwmId, _selection: SelectionTarget) -> bool {

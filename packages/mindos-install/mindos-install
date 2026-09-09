@@ -5,10 +5,13 @@
 #   MINDOS_DISK=/dev/nvme0n1  MINDOS_HOSTNAME=mindos  MINDOS_USER=alice
 #   MINDOS_PASSWORD=secret    MINDOS_TZ=America/Chicago
 #   MINDOS_INSTALL_GAMING=1   MINDOS_AUTOLOGIN=0
+#   MINDOS_INSTALL_DEV=0      (the developer stack: compilers, containers, editors)
 #   MINDOS_GPU_DRIVER=auto    (mesa explicitly chooses Nouveau on NVIDIA)
 #   MINDOS_NVIDIA_MODULES=auto (prefer prebuilt; prebuilt or dkms can be forced)
 #
-# Layout: GPT — 1 MiB BIOS boot, 1 GiB EFI (/boot), rest btrfs (@ @home @log @pkg @snapshots).
+# Layout: GPT — 1 MiB BIOS boot, 4 GiB EFI (/boot), rest btrfs (@ @home @log @pkg @snapshots).
+# The ESP holds the kernel and initramfs of every snapshot that can be booted, so it
+# is sized for several of them rather than for one.
 # Boot: Limine on the EFI partition (and the BIOS boot partition); snapper keeps
 # snapshots of @ around every pacman run and the boot menu lists them (mindos-boot).
 set -euo pipefail
@@ -64,7 +67,7 @@ if [[ $AUTO == 1 ]]; then
   PASSWORD=${MINDOS_PASSWORD:?MINDOS_PASSWORD required}
   TZ_=${MINDOS_TZ:-America/Chicago}
   GAMING=${MINDOS_INSTALL_GAMING:-1}
-  DEV=0
+  DEV=${MINDOS_INSTALL_DEV:-0}
   AUTOLOGIN=${MINDOS_AUTOLOGIN:-0}
 else
   say "Disks:"; list_disks | sed 's/^/    /'; echo
@@ -86,7 +89,8 @@ else
   ask TZ_ "Timezone" "${deftz:-America/Chicago}"
   ask g "Install the gaming stack (Steam, gamescope, Lutris, Wine)? [Y/n]" Y
   GAMING=$([[ $g =~ ^[Nn] ]] && echo 0 || echo 1)
-  DEV=0
+  ask d "Install the developer stack (compilers, containers, editors, command-line tools)? [y/N]" N
+  DEV=$([[ $d =~ ^[Yy] ]] && echo 1 || echo 0)
   ask l "Skip the login screen and sign $USERNAME in automatically at boot? [y/N]" N
   AUTOLOGIN=$([[ $l =~ ^[Yy] ]] && echo 1 || echo 0)
 fi
@@ -103,6 +107,7 @@ KEYMAP=us
 PKGS=(base linux-firmware pipewire-jack mindos-base mindos-session mindos-mind mindwm mindos-theme mindos-apps)
 PKGS+=("${GPU_PKGS[@]}")
 [[ $GAMING == 1 ]] && PKGS+=(mindos-gaming)
+[[ $DEV == 1 ]] && PKGS+=(mindos-dev)
 
 # Resolve from an empty package DB before erasing anything. A rolling Arch
 # userspace update can outpace our prebuilt NVIDIA modules; auto then uses DKMS.
@@ -117,9 +122,10 @@ python3 -c 'import json,sys; p=json.load(sys.stdin); print("NVIDIA modules: " + 
 echo
 say "Plan"
 cat <<PLAN
-    disk      $DISK  (GPT: BIOS boot 1M, EFI 1G, btrfs rest)
+    disk      $DISK  (GPT: BIOS boot 1M, EFI 4G, btrfs rest)
     hostname  $HOSTNAME_      user  $USERNAME      timezone  $TZ_
     login     $([[ $AUTOLOGIN == 1 ]] && echo "automatic (no login screen)" || echo "MindOS login screen")
+    extras    $([[ $GAMING == 1 ]] && echo "gaming stack" || echo "no gaming stack"), $([[ $DEV == 1 ]] && echo "developer stack" || echo "no developer stack")
     graphics  $GPU_SUMMARY
     packages  ${PKGS[*]}
 PLAN
@@ -134,11 +140,19 @@ say "Partitioning $DISK"
 sgdisk --zap-all "$DISK" >/dev/null
 sgdisk --clear \
   -n 1:0:+1M   -t 1:ef02 -c 1:"BIOS boot" \
-  -n 2:0:+1G   -t 2:ef00 -c 2:"MINDOS_EFI" \
+  -n 2:0:+4G   -t 2:ef00 -c 2:"MINDOS_EFI" \
   -n 3:0:0     -t 3:8300 -c 3:"mindos" "$DISK" >/dev/null
 partprobe "$DISK" 2>/dev/null || true
 udevadm settle
-part() { lsblk -pnro NAME,PARTN "$DISK" | awk -v n="$1" '$2==n {print $1}'; }
+# Partition numbers come from sysfs: udev is not always running (chroots, early
+# boot), and lsblk's PARTN column is empty without it.
+part() {
+  local sys
+  for sys in /sys/class/block/"${DISK##*/}"/"${DISK##*/}"*/partition; do
+    [[ -r $sys && $(<"$sys") == "$1" ]] || continue
+    sys=${sys%/partition}; echo "/dev/${sys##*/}"; return
+  done
+}
 EFI=$(part 2); ROOT=$(part 3)
 [[ -b $EFI && -b $ROOT ]] || die "partitions not found on $DISK"
 
@@ -184,6 +198,7 @@ say "Configuring the system"
 # mkinitcpio: MindOS hooks, modules trimmed to the GPUs present
 mods=("${GPU_MODULES[@]}")
 mkdir -p "$TARGET/etc/mkinitcpio.conf.d"
+install -Dm644 /usr/share/mindos/linux-mindos.preset "$TARGET/etc/mkinitcpio.d/linux-mindos.preset"
 sed "s/^MODULES=.*/MODULES=(${mods[*]})/" /usr/share/mindos/mkinitcpio-mindos.conf \
   > "$TARGET/etc/mkinitcpio.conf.d/mindos.conf"
 if [[ $AUTOLOGIN == 1 ]]; then
@@ -240,6 +255,7 @@ cat <<SUMMARY
       hostname $HOSTNAME_   user $USERNAME (wheel, mindos)
       login    $([[ $AUTOLOGIN == 1 ]] && echo "automatic at boot; logging out shows the MindOS login screen" || echo "the MindOS login screen (greetd)")
       kernel   linux-mindos   boot menu Limine ($([[ $UEFI == 1 ]] && echo UEFI || echo BIOS))
+      extras   $([[ $GAMING == 1 ]] && echo "gaming stack" || echo "no gaming stack"), $([[ $DEV == 1 ]] && echo "developer stack (run mindos-dev-setup once)" || echo "no developer stack")
       updates  snapper takes a snapshot before and after every pacman run; the boot menu
                lists them under "Snapshots" and 'mindos-boot restore' rolls back
       Mind     mindd enabled; models in /var/lib/mindos/models

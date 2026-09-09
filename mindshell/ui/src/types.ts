@@ -42,6 +42,16 @@ export interface Wallpaper {
   path?: string;
 }
 
+export interface AppearancePalette {
+  accent: string;
+  background: string;
+  surface: string;
+  surfaceStrong: string;
+  border: string;
+  text: string;
+  muted: string;
+}
+
 export interface Layout {
   version: number;
   panels: PanelDef[];
@@ -50,10 +60,17 @@ export interface Layout {
     widgets: DesktopWidgetEntry[];
     /** Show the Desktop folder as icons (default true). */
     icons?: boolean;
-    workspace?: { mode: 'gaming' | 'productivity'; notes: string };
-    appearance?: { theme: 'dark' | 'light'; live?: boolean };
+    workspace?: { mode: 'gaming' | 'productivity'; notes: string; shortcuts?: WorkspaceShortcut[] };
+    appearance?: { theme: 'dark' | 'light'; live?: boolean; dark?: AppearancePalette; light?: AppearancePalette };
     library?: { favorites: string[]; launched: Record<string, number> };
   };
+}
+
+export interface WorkspaceShortcut {
+  id: string;
+  appId: string;
+  label: string;
+  icon?: string;
 }
 
 export interface OutputInfo {

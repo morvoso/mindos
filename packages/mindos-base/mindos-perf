@@ -25,6 +25,7 @@ RUN_DIR=/run/mindos/perf
 MODE_FILE=$STATE_DIR/mode
 GAME_FILE=$RUN_DIR/game
 PREV_FILE=$RUN_DIR/prev-mode
+NVIDIA_FILE=$RUN_DIR/nvidia    # GPU 0's name, persistence mode and power limit as last set here
 
 # ----- defaults (perf.conf overrides) -----------------------------------------
 GAME_MODE=performance          # mode while a game runs ("" keeps the current mode)
@@ -41,11 +42,24 @@ w() { # write a sysfs/procfs value if the file exists; never fail the run
   { printf '%s\n' "$v" > "$f"; } 2>/dev/null || true
 }
 first() { for f in "$@"; do [ -r "$f" ] && { cat "$f" 2>/dev/null; return; }; done; echo ""; }
+# readval VAR FILE...: what "first" prints, into VAR without forking (status
+# runs every few seconds while the gaming desktop is up).
+readval() {
+  local -n _readval=$1; shift
+  local f; _readval=""
+  for f in "$@"; do
+    [ -r "$f" ] || continue
+    IFS= read -r -d '' _readval < "$f" 2>/dev/null || true
+    while [[ $_readval == *$'\n' ]]; do _readval=${_readval%$'\n'}; done
+    return 0
+  done
+}
 have() { command -v "$1" >/dev/null 2>&1; }
 
 need_root() { [ "$(id -u)" = 0 ] || die "$1 needs root (members of the mindos group: sudo -n mindos-perf $1)"; }
 
-mode_get() { first "$MODE_FILE" | tr -d '[:space:]'; }
+mode_into() { readval "$1" "$MODE_FILE"; local -n _mode=$1; _mode=${_mode//[[:space:]]/}; }
+mode_get() { local m; mode_into m; printf '%s\n' "$m"; }
 valid_mode() { case "$1" in balanced|performance|quiet) return 0;; esac; return 1; }
 
 # Serialize mode/config/game transitions, including their hardware writes.
@@ -61,11 +75,12 @@ save_value() {
   local path=$1 value=$2
   printf '%s\n' "$value" > "$path.tmp" && mv -f -- "$path.tmp" "$path" || die "cannot write $path"
 }
-game_count() {
-  local n; n=$(first "$GAME_FILE")
-  [[ "$n" =~ ^[0-9]{1,9}$ ]] || n=0
-  printf '%s\n' "$((10#$n))"
+games_into() {
+  readval "$1" "$GAME_FILE"; local -n _games=$1
+  [[ "$_games" =~ ^[0-9]{1,9}$ ]] || _games=0
+  _games=$((10#$_games))
 }
+game_count() { local n; games_into n; printf '%s\n' "$n"; }
 
 # ----- knobs ------------------------------------------------------------------
 cpu_policies() { ls -d /sys/devices/system/cpu/cpufreq/policy* 2>/dev/null; }
@@ -137,6 +152,12 @@ set_nvidia() { # $1 performance|balanced|quiet
     [[ "$limit" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
     [ -n "$uuid" ] && nvidia-smi -i "$uuid" -pl "$limit" >/dev/null 2>&1
   done < <(nvidia-smi --query-gpu="uuid,$field" --format=csv,noheader,nounits 2>/dev/null)
+  # The name, persistence mode and power limit only change here, so "status"
+  # reads this file instead of asking the driver every time.
+  local line
+  line=$(nvidia-smi --query-gpu=name,persistence_mode,power.limit --format=csv,noheader,nounits 2>/dev/null | head -1)
+  mkdir -p "$RUN_DIR"
+  if [ -n "$line" ]; then save_value "$NVIDIA_FILE" "$line"; else rm -f "$NVIDIA_FILE"; fi
   return 0
 }
 
@@ -208,69 +229,125 @@ mind_sleep() { # $1 on|off — as the invoking user if possible (group mindos)
 }
 
 # ----- status -----------------------------------------------------------------
-status_json() {
-  local mode eff game gov epp boost prof thp scx nv nvname nvlimit persistence=false
-  mode=$(mode_get); [ -n "$mode" ] || mode=balanced
-  eff=$(first "$RUN_DIR/effective"); [ -n "$eff" ] || eff=$mode
-  game=$(game_count)
-  gov=$(first /sys/devices/system/cpu/cpufreq/policy0/scaling_governor)
-  epp=$(first /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference)
-  boost=$(first /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpufreq/policy0/boost)
-  if [ -z "$boost" ] && [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
-    [ "$(first /sys/devices/system/cpu/intel_pstate/no_turbo)" = 0 ] && boost=1 || boost=0
+# Read once into S_* and print as JSON or text without spawning anything:
+# mindshell asks every few seconds while the gaming desktop is up, and the
+# Mind asks after every switch.
+status_read() {
+  mode_into S_MODE; [ -n "$S_MODE" ] || S_MODE=balanced
+  readval S_EFFECTIVE "$RUN_DIR/effective"; [ -n "$S_EFFECTIVE" ] || S_EFFECTIVE=$S_MODE
+  games_into S_GAME
+  readval S_GOVERNOR /sys/devices/system/cpu/cpufreq/policy0/scaling_governor
+  readval S_EPP /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference
+  readval S_BOOST /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpufreq/policy0/boost
+  if [ -z "$S_BOOST" ] && [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+    local no_turbo; readval no_turbo /sys/devices/system/cpu/intel_pstate/no_turbo
+    [ "$no_turbo" = 0 ] && S_BOOST=1 || S_BOOST=0
   fi
-  prof=$(first /sys/firmware/acpi/platform_profile)
-  thp=$(first /sys/kernel/mm/transparent_hugepage/enabled | grep -o '\[[a-z]*\]' | tr -d '[]')
+  readval S_PROFILE /sys/firmware/acpi/platform_profile
+  # the bracketed word of "always [madvise] never"
+  local thp sep=""; readval thp /sys/kernel/mm/transparent_hugepage/enabled; S_THP=""
+  while [[ $thp =~ \[([a-z]*)\](.*) ]]; do S_THP+=$sep${BASH_REMATCH[1]}; sep=$'\n'; thp=${BASH_REMATCH[2]}; done
+  while [[ $S_THP == *$'\n' ]]; do S_THP=${S_THP%$'\n'}; done
   if [ -d /sys/kernel/sched_ext ]; then
-    scx=$(first /sys/kernel/sched_ext/root/ops)
-    [ -n "$scx" ] || scx="eevdf+bore"
+    readval S_SCHEDULER /sys/kernel/sched_ext/root/ops
+    [ -n "$S_SCHEDULER" ] || S_SCHEDULER="eevdf+bore"
   else
-    scx="eevdf"
+    S_SCHEDULER="eevdf"
   fi
-  nv=false; nvname=""; nvlimit=""
+  S_NVIDIA=false; S_GPU=""; S_POWER_LIMIT=""; S_PERSISTENCE=false
   if have nvidia-smi && [ -e /dev/nvidiactl ]; then
-    local line
-    line=$(nvidia-smi --query-gpu=name,persistence_mode,power.limit --format=csv,noheader,nounits 2>/dev/null | head -1)
+    local line=""
+    if [ -r "$NVIDIA_FILE" ]; then
+      IFS= read -r line < "$NVIDIA_FILE" || true
+    else  # no mode applied yet this boot
+      line=$(nvidia-smi --query-gpu=name,persistence_mode,power.limit --format=csv,noheader,nounits 2>/dev/null | head -1)
+    fi
     if [ -n "$line" ]; then
-      nv=true
-      nvname=${line%%,*}; nvname=${nvname## }
-      nvlimit=${line##*,}; nvlimit=${nvlimit## }
+      S_NVIDIA=true
+      S_GPU=${line%%,*}; S_GPU=${S_GPU## }
+      S_POWER_LIMIT=${line##*,}; S_POWER_LIMIT=${S_POWER_LIMIT## }
       local pm=${line#*,}; pm=${pm%%,*}; pm=${pm//[[:space:]]/}
-      [ "$pm" != Enabled ] || persistence=true
+      [ "$pm" != Enabled ] || S_PERSISTENCE=true
     fi
   fi
-  local cpu; cpu=$(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')
-  local driver; driver=$(first /sys/devices/system/cpu/cpufreq/policy0/scaling_driver)
-  python3 - "$mode" "$eff" "$game" "$GAME_MODE" "$MIND_SLEEPS_WHILE_GAMING" \
-    "$cpu" "$driver" "$gov" "$epp" "$boost" "$prof" "$thp" "$scx" "$SCX_SCHEDULER" \
-    "$nv" "$nvname" "$nvlimit" "$NVIDIA_POWER_LIMIT" "$persistence" <<'PY'
-import json, sys
-keys = ('mode effective game gameMode mindSleeps cpu driver governor epp boost '
-        'platformProfile thp scheduler scx nvidia gpu powerLimit powerLimitPolicy persistence').split()
-s = dict(zip(keys, sys.argv[1:]))
-s['game'] = int(s['game'])
-s['mindSleeps'] = s['mindSleeps'] == '1'
-s['boost'] = None if s['boost'] == '' else s['boost'] == '1'
-for k in ('nvidia', 'persistence'):
-    s[k] = s[k] == 'true'
-print(json.dumps(s, separators=(',', ':')))
-PY
+  S_CPU=""
+  local l
+  if [ -r /proc/cpuinfo ]; then
+    while IFS= read -r l; do
+      case $l in *"model name"*) S_CPU=${l##*: }; break;; esac
+    done < /proc/cpuinfo
+  fi
+  readval S_DRIVER /sys/devices/system/cpu/cpufreq/policy0/scaling_driver
+}
+
+# json_string VAR TEXT: TEXT as a JSON string literal, escaped exactly as
+# python's json.dumps does (ASCII only; a byte that is not UTF-8 becomes U+DCxx).
+json_string() {
+  local -n _json=$1
+  local LC_ALL=C
+  local s=$2 out='"' i n c1 c2 c3 cp lo hi len=${#2}
+  for ((i = 0; i < len; i++)); do
+    printf -v n '%d' "'${s:i:1}"
+    if ((n == 34)); then out+='\"'
+    elif ((n == 92)); then out+='\\'
+    elif ((n >= 32 && n < 127)); then out+=${s:i:1}
+    elif ((n == 10)); then out+='\n'
+    elif ((n == 13)); then out+='\r'
+    elif ((n == 9)); then out+='\t'
+    elif ((n == 8)); then out+='\b'
+    elif ((n == 12)); then out+='\f'
+    elif ((n < 128)); then printf -v c1 '\\u%04x' "$n"; out+=$c1
+    else
+      cp=-1
+      if ((n >= 0xC2 && n <= 0xDF && i + 1 < len)); then
+        printf -v c1 '%d' "'${s:i+1:1}"
+        ((c1 >= 0x80 && c1 <= 0xBF)) && { cp=$(( (n & 0x1F) << 6 | (c1 & 0x3F) )); ((i += 1)); }
+      elif ((n >= 0xE0 && n <= 0xEF && i + 2 < len)); then
+        printf -v c1 '%d' "'${s:i+1:1}"; printf -v c2 '%d' "'${s:i+2:1}"
+        lo=0x80; hi=0xBF; ((n == 0xE0)) && lo=0xA0; ((n == 0xED)) && hi=0x9F
+        ((c1 >= lo && c1 <= hi && c2 >= 0x80 && c2 <= 0xBF)) &&
+          { cp=$(( (n & 0x0F) << 12 | (c1 & 0x3F) << 6 | (c2 & 0x3F) )); ((i += 2)); }
+      elif ((n >= 0xF0 && n <= 0xF4 && i + 3 < len)); then
+        printf -v c1 '%d' "'${s:i+1:1}"; printf -v c2 '%d' "'${s:i+2:1}"; printf -v c3 '%d' "'${s:i+3:1}"
+        lo=0x80; hi=0xBF; ((n == 0xF0)) && lo=0x90; ((n == 0xF4)) && hi=0x8F
+        ((c1 >= lo && c1 <= hi && c2 >= 0x80 && c2 <= 0xBF && c3 >= 0x80 && c3 <= 0xBF)) &&
+          { cp=$(( (n & 0x07) << 18 | (c1 & 0x3F) << 12 | (c2 & 0x3F) << 6 | (c3 & 0x3F) )); ((i += 3)); }
+      fi
+      if ((cp < 0)); then printf -v c1 '\\udc%02x' "$n"
+      elif ((cp < 0x10000)); then printf -v c1 '\\u%04x' "$cp"
+      else printf -v c1 '\\u%04x\\u%04x' $(( 0xD800 + ((cp - 0x10000) >> 10) )) $(( 0xDC00 + ((cp - 0x10000) & 0x3FF) ))
+      fi
+      out+=$c1
+    fi
+  done
+  _json=$out\"
+}
+
+status_json() {
+  status_read
+  local mode eff gamemode cpu driver gov epp prof thp sched scx gpu limit policy boost sleeps=false
+  json_string mode "$S_MODE"; json_string eff "$S_EFFECTIVE"; json_string gamemode "$GAME_MODE"
+  json_string cpu "$S_CPU"; json_string driver "$S_DRIVER"; json_string gov "$S_GOVERNOR"; json_string epp "$S_EPP"
+  json_string prof "$S_PROFILE"; json_string thp "$S_THP"; json_string sched "$S_SCHEDULER"; json_string scx "$SCX_SCHEDULER"
+  json_string gpu "$S_GPU"; json_string limit "$S_POWER_LIMIT"; json_string policy "$NVIDIA_POWER_LIMIT"
+  case "$S_BOOST" in "") boost=null;; 1) boost=true;; *) boost=false;; esac
+  [ "$MIND_SLEEPS_WHILE_GAMING" != 1 ] || sleeps=true
+  printf '{"mode":%s,"effective":%s,"game":%s,"gameMode":%s,"mindSleeps":%s,"cpu":%s,"driver":%s,"governor":%s,"epp":%s,"boost":%s,"platformProfile":%s,"thp":%s,"scheduler":%s,"scx":%s,"nvidia":%s,"gpu":%s,"powerLimit":%s,"powerLimitPolicy":%s,"persistence":%s}\n' \
+    "$mode" "$eff" "$S_GAME" "$gamemode" "$sleeps" "$cpu" "$driver" "$gov" "$epp" "$boost" "$prof" "$thp" \
+    "$sched" "$scx" "$S_NVIDIA" "$gpu" "$limit" "$policy" "$S_PERSISTENCE"
 }
 
 status_text() {
-  local j; j=$(status_json)
-  python3 - "$j" <<'PY' 2>/dev/null || echo "$j"
-import json, sys
-s = json.loads(sys.argv[1])
-print(f"mode:        {s['mode']}" + (f"  (game running: {s['effective']})" if s['game'] else ""))
-print(f"cpu:         {s['cpu']}")
-print(f"governor:    {s['governor']} / epp {s['epp'] or '-'} / boost {'on' if s['boost'] else 'off'} ({s['driver']})")
-print(f"scheduler:   {s['scheduler']}")
-print(f"huge pages:  {s['thp']}")
-if s['platformProfile']: print(f"platform:    {s['platformProfile']}")
-if s['nvidia']: print(f"gpu:         {s['gpu']} (power limit {s['powerLimit']} W)")
-print(f"while gaming: {s['gameMode'] or 'unchanged'}" + (", Mind sleeps" if s['mindSleeps'] else ""))
-PY
+  status_read
+  local boost=off; [ "$S_BOOST" != 1 ] || boost=on
+  printf 'mode:        %s' "$S_MODE"; [ "$S_GAME" = 0 ] || printf '  (game running: %s)' "$S_EFFECTIVE"; printf '\n'
+  printf 'cpu:         %s\n' "$S_CPU"
+  printf 'governor:    %s / epp %s / boost %s (%s)\n' "$S_GOVERNOR" "${S_EPP:--}" "$boost" "$S_DRIVER"
+  printf 'scheduler:   %s\n' "$S_SCHEDULER"
+  printf 'huge pages:  %s\n' "$S_THP"
+  [ -z "$S_PROFILE" ] || printf 'platform:    %s\n' "$S_PROFILE"
+  [ "$S_NVIDIA" != true ] || printf 'gpu:         %s (power limit %s W)\n' "$S_GPU" "$S_POWER_LIMIT"
+  printf 'while gaming: %s' "${GAME_MODE:-unchanged}"; [ "$MIND_SLEEPS_WHILE_GAMING" != 1 ] || printf ', Mind sleeps'; printf '\n'
 }
 
 modes_text() {

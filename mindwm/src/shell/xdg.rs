@@ -49,6 +49,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         // the surface is not already configured
         let window = WindowElement(Window::new_wayland_window(surface.clone()));
         window.id(); // ids follow creation order
+        self.request_repaint();
         place_new_window(&mut self.space, self.pointer.current_location(), &window, true);
         // A new window gets the keyboard right away, no click needed; the
         // layout puts it next to the window that had the focus.
@@ -69,9 +70,28 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         if let Err(err) = self.popups.track_popup(PopupKind::from(surface)) {
             warn!("Failed to track popup: {}", err);
         }
+        self.request_repaint();
+    }
+
+    fn toplevel_destroyed(&mut self, _surface: ToplevelSurface) {
+        self.request_repaint();
+    }
+
+    fn popup_destroyed(&mut self, _surface: PopupSurface) {
+        self.request_repaint();
+    }
+
+    fn title_changed(&mut self, _surface: ToplevelSurface) {
+        // The title bar (and the shell's window list) follow at the next turn.
+        self.request_repaint();
+    }
+
+    fn app_id_changed(&mut self, _surface: ToplevelSurface) {
+        self.request_repaint();
     }
 
     fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
+        self.request_repaint();
         surface.with_pending_state(|state| {
             let geometry = positioner.get_geometry();
             state.geometry = geometry;
@@ -270,6 +290,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, mut wl_output: Option<wl_output::WlOutput>) {
+        self.request_repaint();
         if surface
             .current_state()
             .capabilities
@@ -328,6 +349,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.request_repaint();
         if !surface
             .current_state()
             .states
@@ -354,6 +376,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.request_repaint();
         // Maximised means "fill the usable area": the output minus the
         // exclusive zones of layer-shell panels.
         if surface
@@ -389,6 +412,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.request_repaint();
         if !surface
             .current_state()
             .states
@@ -425,6 +449,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        self.request_repaint();
         let seat: Seat<AnvilState<BackendData>> = Seat::from_resource(&seat).unwrap();
         let kind = PopupKind::Xdg(surface);
         if let Some(root) = find_popup_root_surface(&kind).ok().and_then(|root| {

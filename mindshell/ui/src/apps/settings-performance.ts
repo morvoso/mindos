@@ -126,6 +126,6 @@ export function performancePage(el: HTMLElement): () => void {
   setBusy(false);
   const unsubscribe = perfSubscribe(el, render);
   void perfRefresh(true);
-  const stop = every(el, 5000, () => void perfRefresh());
+  const stop = perfWatch(el);
   return () => { stop(); unsubscribe(); };
 }

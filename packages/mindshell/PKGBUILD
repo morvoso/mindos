@@ -4,7 +4,7 @@
 # the user service and the session autostart entry.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=54
+pkgrel=55
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://github.com/morvoso/mindos"
@@ -24,7 +24,7 @@ optdepends=('mindos-gaming: installed games, session controls, saves and recordi
             'xdg-utils: open external links from the shell'
             'gvfs: moving desktop icons to the trash'
             'nvidia-utils: GPU statistics in the system monitor widgets'
-            'papirus-icon-theme: alternative icon theme (icon_theme in shell.toml)')
+            'papirus-maia-icon-theme: green Papirus-Maia application and desktop icons')
 makedepends=(rust clang lld rsync esbuild pkgconf)
 backup=(etc/mindos/shell.toml etc/pam.d/mindos-lock)
 options=(!lto !debug)
@@ -78,7 +78,7 @@ package() {
   install -Dm644 "$srcdir/mindshell/data/mindos-lock.pam" "$pkgdir/etc/pam.d/mindos-lock"
 
   # The Settings app (the same binary with --app).
-  for entry in mindos-settings mindos-displays mindos-wallpaper mindos-library mindos-gaming mindos-companion; do
+  for entry in mindos-settings mindos-displays mindos-wallpaper mindos-library mindos-gaming; do
     install -Dm644 "$srcdir/mindshell/data/$entry.desktop" "$pkgdir/usr/share/applications/$entry.desktop"
   done
 

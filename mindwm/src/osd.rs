@@ -17,6 +17,10 @@ impl Osd {
         self.buffer = None;
     }
     pub fn clear(&mut self) { self.message = None; self.buffer = None; }
+    /// A card is showing (or fading): the frame after this one is wanted.
+    pub fn active(&self) -> bool {
+        self.message.as_ref().is_some_and(|(_, since)| since.elapsed() < Duration::from_millis(1800))
+    }
 
     pub fn render<R>(&mut self, renderer: &mut R, text: &mut TextRenderer,
                      foreground: Rgba, accent: Rgba, output: &str,

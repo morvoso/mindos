@@ -266,9 +266,11 @@ impl<BackendData: Backend> ClientDndGrabHandler for AnvilState<BackendData> {
             (0, 0).into()
         };
         self.dnd_icon = icon.map(|surface| DndIcon { surface, offset });
+        self.request_repaint();
     }
     fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
         self.dnd_icon = None;
+        self.request_repaint();
     }
 }
 impl<BackendData: Backend> ServerDndGrabHandler for AnvilState<BackendData> {
@@ -370,6 +372,7 @@ impl<BackendData: Backend> SeatHandler for AnvilState<BackendData> {
     }
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.cursor_status = image;
+        self.request_repaint();
     }
 
     fn led_state_changed(&mut self, _seat: &Seat<Self>, led_state: LedState) {
@@ -382,6 +385,7 @@ impl<BackendData: Backend> TabletSeatHandler for AnvilState<BackendData> {
     fn tablet_tool_image(&mut self, _tool: &TabletToolDescriptor, image: CursorImageStatus) {
         // TODO: tablet tools should have their own cursors
         self.cursor_status = image;
+        self.request_repaint();
     }
 }
 delegate_tablet_manager!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
@@ -668,6 +672,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             .insert_source(mind_rx, |event, _, state| {
                 if let channel::Event::Msg(event) = event {
                     state.on_mind_event(event);
+                    state.request_repaint();
                 }
             })
             .expect("Failed to insert the Mind channel into the event loop");
@@ -675,7 +680,10 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let (media_tx, media_rx) = channel::channel::<crate::media::Feedback>();
         handle.insert_source(media_rx, |event, _, state| {
             if let channel::Event::Msg(message) = event {
-                if !state.idle.locked && !state.config.session.kiosk { state.mindbar.show_osd(message); }
+                if !state.idle.locked && !state.config.session.kiosk {
+                    state.mindbar.show_osd(message);
+                    state.request_repaint();
+                }
             }
         }).expect("insert media feedback channel");
         let media_keys = crate::media::MediaKeys::start(media_tx);
@@ -687,7 +695,10 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         );
         let (apps_tx, apps_rx) = channel::channel::<Vec<launcher::AppEntry>>();
         handle.insert_source(apps_rx, |event, _, state| {
-            if let channel::Event::Msg(apps) = event { state.mindbar.set_apps(apps); }
+            if let channel::Event::Msg(apps) = event {
+                state.mindbar.set_apps(apps);
+                state.request_repaint();
+            }
         }).expect("insert application index channel");
         launcher::watch_apps(apps_tx);
         let mut prefs = Prefs::load();
@@ -994,6 +1005,41 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 }
 
 impl<BackendData: Backend + 'static> AnvilState<BackendData> {
+    /// Something on screen changed (a commit, the pointer, a window moving,
+    /// the bar): the outputs need a frame.
+    pub fn request_repaint(&mut self) {
+        BackendData::request_repaint(self);
+    }
+
+    /// A client scheduled a commit for a later frame (`wp_commit_timing_v1`):
+    /// `pre_repaint` releases it, so the repaint loop has to keep coming
+    /// round until it is due.
+    pub fn commit_timers_pending(&self) -> bool {
+        let mut pending = false;
+        let mut check = |states: &smithay::wayland::compositor::SurfaceData| {
+            pending |= states
+                .data_map
+                .get::<CommitTimerBarrierStateUserData>()
+                .is_some_and(|timer| timer.lock().unwrap().next_deadline().is_some());
+        };
+        for window in self.space.elements() {
+            window.with_surfaces(|_, states| check(states));
+        }
+        for output in self.space.outputs() {
+            let map = smithay::desktop::layer_map_for_output(output);
+            for layer_surface in map.layers() {
+                layer_surface.with_surfaces(|_, states| check(states));
+            }
+        }
+        if let CursorImageStatus::Surface(ref surface) = self.cursor_status {
+            with_surfaces_surface_tree(surface, |_, states| check(states));
+        }
+        if let Some(surface) = self.dnd_icon.as_ref().map(|icon| &icon.surface) {
+            with_surfaces_surface_tree(surface, |_, states| check(states));
+        }
+        pending
+    }
+
     pub fn pre_repaint(&mut self, output: &Output, frame_target: impl Into<Time<Monotonic>>) {
         let frame_target = frame_target.into();
 
@@ -1756,15 +1802,21 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     /// focus, maximised state); called once per event-loop turn.
     pub fn refresh_decorations(&mut self) {
         let focused = self.focused_window();
+        let mut changed = false;
         for window in self.space.elements() {
             let mut state = window.decoration_state();
             if !state.is_ssd {
                 continue;
             }
-            state.header_bar.set_title(&window.title());
+            let was_dirty = state.header_bar.is_dirty();
+            window.with_title(|title| state.header_bar.set_title(title));
             state.header_bar.set_focused(focused.as_ref() == Some(window));
             state.header_bar.set_maximized(window.is_maximized());
             state.header_bar.set_tiled(self.layout.mode.is_tiling() && window.tileable());
+            changed |= !was_dirty && state.header_bar.is_dirty();
+        }
+        if changed {
+            self.request_repaint();
         }
     }
 
@@ -1921,6 +1973,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     /// Place outputs and windows again after a display change and keep the
     /// pointer on a screen.
     fn after_output_change(&mut self, output: Option<&Output>) {
+        self.request_repaint();
         crate::shell::fixup_positions(
             &mut self.space,
             self.pointer.current_location(),
@@ -2101,6 +2154,23 @@ pub trait Backend {
     /// real displays do nothing, so the screensaver and the lock still work
     /// in a nested session.
     fn set_blanked(_state: &mut AnvilState<Self>, _blanked: bool)
+    where
+        Self: Sized + 'static,
+    {
+    }
+
+    /// Something on screen changed: draw a frame at the next repaint point,
+    /// or at once when the output had nothing to do. Backends that repaint
+    /// on their own clock (the nested window) ignore it.
+    fn request_repaint(_state: &mut AnvilState<Self>)
+    where
+        Self: Sized + 'static,
+    {
+    }
+
+    /// A fullscreen client committed a buffer: draw the frame now rather
+    /// than at the repaint point, so its flip catches the next vblank.
+    fn repaint_now(_state: &mut AnvilState<Self>, _output: &Output)
     where
         Self: Sized + 'static,
     {

@@ -284,6 +284,12 @@ impl MindBar {
         BarAction::Close
     }
 
+    /// The bar draws something that moves on its own right now: the
+    /// thinking spinner, a fading feedback card or the start-up backdrop.
+    pub fn animating(&self) -> bool {
+        (self.open && self.busy) || self.osd.active() || self.backdrop_since.is_some()
+    }
+
     pub fn show_osd(&mut self, message: crate::media::Feedback) { self.osd.show(message); }
     pub fn clear_osd(&mut self) { self.osd.clear(); }
     pub fn render_osd<R>(&mut self, renderer: &mut R, output: &str,

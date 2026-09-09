@@ -176,9 +176,14 @@ impl<BackendData: Backend> CompositorHandler for AnvilState<BackendData> {
         });
     }
 
+    fn destroyed(&mut self, _surface: &WlSurface) {
+        self.request_repaint();
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.backend_data.early_import(surface);
+        self.request_repaint();
 
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
@@ -187,6 +192,12 @@ impl<BackendData: Backend> CompositorHandler for AnvilState<BackendData> {
             }
             if let Some(window) = self.window_for_surface(&root) {
                 window.0.on_commit();
+                // A game's frame goes to the screen as soon as it arrives
+                // rather than at the repaint point: the flip catches the next
+                // vblank, and with VRR the display follows the game's pace.
+                if let Some(output) = self.fullscreen_output_of(&window) {
+                    BackendData::repaint_now(self, &output);
+                }
 
                 if &root == surface {
                     let is_toplevel = window.0.toplevel().is_some();
@@ -325,9 +336,12 @@ impl<BackendData: Backend> WlrLayerShellHandler for AnvilState<BackendData> {
             .unwrap_or_else(|| self.space.outputs().next().unwrap().clone());
         let mut map = layer_map_for_output(&output);
         map.map_layer(&LayerSurface::new(surface, namespace)).unwrap();
+        drop(map);
+        self.request_repaint();
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        self.request_repaint();
         let mut changed = None;
         for output in self.space.outputs() {
             let mut map = layer_map_for_output(output);
@@ -358,6 +372,21 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         self.space
             .elements()
             .find(|window| window.wl_surface().map(|s| &*s == surface).unwrap_or(false))
+            .cloned()
+    }
+
+    /// The output `window` is drawn fullscreen on, if any.
+    pub fn fullscreen_output_of(&self, window: &WindowElement) -> Option<Output> {
+        self.space
+            .outputs()
+            .find(|output| {
+                output
+                    .user_data()
+                    .get::<FullscreenSurface>()
+                    .and_then(|fullscreen| fullscreen.get())
+                    .as_ref()
+                    == Some(window)
+            })
             .cloned()
     }
 }

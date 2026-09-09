@@ -1,6 +1,5 @@
 import * as bridge from './bridge';
 import { store } from './state';
-import { play, type Session } from './gaming';
 import type { RunResult, WindowInfo } from './types';
 
 export interface Game {
@@ -29,9 +28,6 @@ export function runningWindow(game: Game): WindowInfo | undefined {
 }
 
 export async function launchGame(game: Game): Promise<'focused' | 'launched'> {
-  let sessions: Session[] = [];
-  try { sessions = await play<Session[]>('sessions'); } catch { /* Legacy installations still launch games. */ }
-  if (sessions.some(s => s.game === game.id && s.active && s.suspended)) await play('session.resume', { game: game.id });
   const running = runningWindow(game);
   if (running) {
     await bridge.call('windows.focus', { id: running.id });
@@ -44,7 +40,7 @@ export async function launchGame(game: Game): Promise<'focused' | 'launched'> {
 
 export function nativeGames(): Game[] {
   return store.state.apps.filter((a) => a.categories.includes('Game')
-    && !/steam|lutris|heroic|prism|win-open|protontricks|winetricks|mangohud|goverlay|gamemode|mindos-(library|gaming|companion)/i.test(a.id)
+    && !/steam|lutris|heroic|prism|win-open|protontricks|winetricks|mangohud|goverlay|gamemode|mindos-(library|gaming)/i.test(a.id)
     && !/steam:\/\/(run|rungameid)|heroic:\/\/|lutris:rungame/i.test(a.exec))
     .map((a) => ({ id: `desktop:${a.id}`, name: a.name, source: 'native', desktopId: a.id }));
 }

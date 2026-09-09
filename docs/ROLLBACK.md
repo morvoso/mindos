@@ -33,8 +33,11 @@ sudo pacman -Syu
 the kernel and initramfs that were current when the snapshot was taken into
 `/boot/mindos/k/<id>/`, one copy per distinct kernel+initramfs (most snapshots
 share one), and notes the id in `/boot/mindos/snapshots/<N>`. Copies whose
-snapshot snapper has cleaned up are removed on the next sync. About 35 MB per
-distinct kernel on a 1 GiB partition.
+snapshot snapper has cleaned up are removed on the next sync. A copy is the
+kernel plus its initramfs — on a machine with a discrete GPU that is around
+170 MB, which is why the installer gives `/boot` 4 GiB. `mindos-boot sync`
+refuses to make a copy that would leave the partition under 64 MB free and
+says so; the snapshot then stays out of the boot menu until room is freed.
 
 ## The boot menu
 

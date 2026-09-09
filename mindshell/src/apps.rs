@@ -54,7 +54,7 @@ pub fn data_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn application_dirs() -> Vec<PathBuf> {
+pub fn application_dirs() -> Vec<PathBuf> {
     data_dirs().into_iter().map(|d| d.join("applications")).collect()
 }
 

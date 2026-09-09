@@ -1,7 +1,7 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-base
 pkgver=0.1.0
-pkgrel=27
+pkgrel=31
 pkgdesc="MindOS base system: branding, gaming kernel and system tuning, performance modes, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
 arch=(any)
 url="https://github.com/morvoso/mindos"

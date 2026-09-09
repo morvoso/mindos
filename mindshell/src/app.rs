@@ -1,9 +1,10 @@
 //! The shell host: state, windows, bridge dispatch and the event loop.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -63,7 +64,6 @@ fn app_title(name: &str) -> String {
         "settings" => "Settings".into(),
         "library" => "Game Library".into(),
         "gaming" => "Gaming Center".into(),
-        "companion" => "Game Companion".into(),
         "files" => "Files".into(),
         other => {
             let mut c = other.chars();
@@ -112,6 +112,12 @@ struct State {
     /// (active / screensaver / blank), `locked`, `inhibited` and the chosen
     /// screensaver. See `docs/SHELL.md`, "The screensaver and the lock screen".
     idle: Value,
+    /// The XEmbed tray icons as last encoded, by window id: the base64
+    /// pixels the compositor sent and the data URL made of them.
+    xtray_icons: HashMap<u64, (String, String)>,
+    /// What the windows were last told about the tunnels and the network.
+    last_vpn: Option<Value>,
+    last_network: Option<Value>,
 }
 
 /// How many application notifications the centre keeps.
@@ -149,6 +155,19 @@ pub struct App {
     retired: RefCell<Vec<Rc<ShellWindow>>>,
     first_view: RefCell<Option<webkit::WebView>>,
     stats: RefCell<system::Stats>,
+    /// When the UI last asked for `system.stats` (milliseconds since start,
+    /// plus one; 0 = never): the GPU sampler runs only while that is recent.
+    stats_wanted: Arc<AtomicU64>,
+    /// Answers of read-only helper commands, good for a second, and the
+    /// commands under way with the windows waiting for them.
+    helper_cache: RefCell<HashMap<Vec<String>, (Instant, Value)>>,
+    helper_inflight: RefCell<HashMap<Vec<String>, Vec<async_channel::Sender<Result<Value, String>>>>>,
+    /// The pending write of the layout file.
+    layout_save: RefCell<Option<glib::SourceId>>,
+    /// The catalog as the UI sees it, rebuilt after a scan.
+    apps_json_cache: RefCell<Option<Value>>,
+    apps_monitors: RefCell<Vec<gio::FileMonitor>>,
+    apps_reload_pending: Cell<bool>,
     sync_pending: Cell<bool>,
     layout_monitor: RefCell<Option<gio::FileMonitor>>,
     desktop_monitor: RefCell<Option<gio::FileMonitor>>,
@@ -184,7 +203,17 @@ impl App {
         });
         tracing::info!(ui = %ui_dir.display(), icon_theme = %icon_theme.get(), devtools, hw = config.hardware_acceleration(), app = ?app_mode.as_ref().map(|m| &m.name), "mindshell starting");
 
-        let web_context = webkit::WebContext::new();
+        // One web process renders every view. Its caches are bounded at a
+        // few gigabytes rather than a share of the machine's memory, and
+        // WebKit trims them under pressure instead of ever killing it.
+        let mut pressure = webkit::MemoryPressureSettings::new();
+        pressure.set_memory_limit(3072);
+        pressure.set_conservative_threshold(0.66);
+        pressure.set_strict_threshold(0.9);
+        pressure.set_kill_threshold(0.0);
+        pressure.set_poll_interval(30.0);
+        webkit::NetworkSession::set_memory_pressure_settings(&mut pressure);
+        let web_context = webkit::WebContext::builder().memory_pressure_settings(&pressure).build();
         web_context.set_cache_model(webkit::CacheModel::DocumentViewer);
         let network_session = if app_mode.as_ref().map(|m| m.name == "greeter").unwrap_or(false) {
             // The login screen keeps nothing on disk.
@@ -211,7 +240,18 @@ impl App {
         settings.set_enable_back_forward_navigation_gestures(false);
         settings.set_enable_page_cache(false);
         settings.set_javascript_can_access_clipboard(true);
-        settings.set_enable_write_console_messages_to_stdout(true);
+        // The UI's console lines cross from the web process into this one
+        // and the journal; they are for the inspector and debug logging.
+        let debug_log = std::env::var("RUST_LOG").map(|v| v.contains("debug") || v.contains("trace")).unwrap_or(false);
+        settings.set_enable_write_console_messages_to_stdout(devtools || debug_log);
+        // Engines the pages never use (no sound, media capture, calls or
+        // web databases in the UI) stay out of the web process.
+        settings.set_enable_webaudio(false);
+        settings.set_enable_media_stream(false);
+        settings.set_enable_webrtc(false);
+        settings.set_enable_html5_database(false);
+        settings.set_enable_hyperlink_auditing(false);
+        settings.set_enable_dns_prefetching(false);
         settings.set_user_agent(Some(&format!("mindshell/{}", env!("CARGO_PKG_VERSION"))));
 
         let ipc = IpcClient::start(events.clone());
@@ -244,6 +284,13 @@ impl App {
             retired: RefCell::new(Vec::new()),
             first_view: RefCell::new(None),
             stats: RefCell::new(system::Stats::default()),
+            stats_wanted: Arc::new(AtomicU64::new(0)),
+            helper_cache: RefCell::new(HashMap::new()),
+            helper_inflight: RefCell::new(HashMap::new()),
+            layout_save: RefCell::new(None),
+            apps_json_cache: RefCell::new(None),
+            apps_monitors: RefCell::new(Vec::new()),
+            apps_reload_pending: Cell::new(false),
             sync_pending: Cell::new(false),
             layout_monitor: RefCell::new(None),
             desktop_monitor: RefCell::new(None),
@@ -260,6 +307,9 @@ impl App {
         app.watch_desktop();
         app.watch_icon_theme();
         app.watch_game();
+        if !app.is_greeter() {
+            app.watch_apps();
+        }
         if let Some(display) = gdk::Display::default() {
             let weak = Rc::downgrade(&app);
             display.monitors().connect_items_changed(move |_, _, _, _| {
@@ -858,7 +908,12 @@ impl App {
         if self.first_view.borrow().is_none() {
             *self.first_view.borrow_mut() = Some(view.clone());
         }
-        view.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+        // Full-screen pages that paint every pixel (the wallpaper, the lock
+        // and login screens) are opaque surfaces: the compositor blits them
+        // instead of blending a whole output every frame. Panels, popups
+        // and toasts keep their transparent gaps and corners.
+        let opaque = matches!(kind, Kind::Desktop | Kind::Lock | Kind::Greeter);
+        view.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, if opaque { 1.0 } else { 0.0 }));
         view.set_vexpand(true);
         view.set_hexpand(true);
         let devtools = self.devtools;
@@ -1081,12 +1136,20 @@ impl App {
             "layout.get" => Ok(self.state.borrow().layout.to_value()),
             "layout.save" => {
                 let value = params.get("layout").cloned().ok_or("layout.save: missing 'layout'")?;
-                let layout = Layout::from_value(value)?.sanitized();
-                layout.save()?;
+                let layout = Layout::from_value(value)?;
                 self.set_layout(layout.clone());
+                if self.app_mode.is_some() {
+                    // The shell follows this file; an app window writes it at once.
+                    layout.save()?;
+                } else {
+                    self.schedule_layout_save();
+                }
                 Ok(layout.to_value())
             }
             "layout.reset" => {
+                if let Some(id) = self.layout_save.borrow_mut().take() {
+                    id.remove();
+                }
                 let layout = Layout::reset();
                 self.set_layout(layout.clone());
                 Ok(layout.to_value())
@@ -1325,6 +1388,7 @@ impl App {
                 blocking(move || system::power(&action)).await.map(|_| Value::Null)
             }
             "system.stats" => {
+                self.stats_wanted.store(self.started.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
                 let mut v = self.stats.borrow_mut().snapshot();
                 v["gpu"] = self.state.borrow().gpu.clone().unwrap_or(Value::Null);
                 Ok(v)
@@ -1674,7 +1738,18 @@ impl App {
         self.apps_json_locked(&self.state.borrow().apps)
     }
 
+    /// The catalog as the UI sees it, built once per scan: every window
+    /// load and every `apps.list` asks for it.
     fn apps_json_locked(&self, apps: &[AppEntry]) -> Value {
+        if let Some(cached) = self.apps_json_cache.borrow().as_ref() {
+            return cached.clone();
+        }
+        let value = self.apps_json_build(apps);
+        *self.apps_json_cache.borrow_mut() = Some(value.clone());
+        value
+    }
+
+    fn apps_json_build(&self, apps: &[AppEntry]) -> Value {
         let size = self.config.shell.icon_size;
         Value::Array(
             apps.iter()
@@ -1784,30 +1859,75 @@ impl App {
         if !allowed {
             return Err(format!("shell.run: '{}' is not allowed", argv.join(" ")));
         }
+        // Read-only commands are asked for by several windows at once (every
+        // bar, desktop and Settings page refreshes on `perf_changed`): one run
+        // serves them all, and its answer stands for a second.
+        let shared = !sudo
+            && matches!(
+                cmd,
+                ["mindos-perf", "status" | "get" | "modes", ..]
+                    | ["mindos-games", "scan"]
+                    | ["mindos-boot", "list", ..]
+                    | ["pacman", ..]
+                    | ["checkupdates", ..]
+                    | ["nvidia-smi", ..]
+            );
+        if shared {
+            if let Some((at, value)) = self.helper_cache.borrow().get(&argv) {
+                if at.elapsed() < HELPER_CACHE_TTL {
+                    return Ok(value.clone());
+                }
+            }
+            let waiting = self.helper_inflight.borrow_mut().get_mut(&argv).map(|list| {
+                let (tx, rx) = async_channel::bounded(1);
+                list.push(tx);
+                rx
+            });
+            if let Some(rx) = waiting {
+                return rx.recv().await.unwrap_or_else(|_| Err("shell.run: the command did not finish".into()));
+            }
+            self.helper_inflight.borrow_mut().insert(argv.clone(), Vec::new());
+        }
+        let changes_perf = matches!(cmd, ["mindos-perf", "set" | "config" | "apply", ..]);
         let argv2 = argv.clone();
-        let out = blocking(move || {
+        let result = blocking(move || {
             std::process::Command::new(&argv2[0])
                 .args(&argv2[1..])
                 .stdin(std::process::Stdio::null())
                 .output()
                 .map_err(|e| format!("{}: {e}", argv2[0]))
         })
-        .await?;
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let json = serde_json::from_str::<Value>(stdout.trim()).unwrap_or(Value::Null);
+        .await
+        .map(|out| {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            let json = serde_json::from_str::<Value>(stdout.trim()).unwrap_or(Value::Null);
+            json!({
+                "status": out.status.code().unwrap_or(-1),
+                "ok": out.status.success(),
+                "stdout": stdout,
+                "stderr": stderr,
+                "json": json,
+            })
+        });
+        if shared {
+            if let Ok(value) = &result {
+                self.helper_cache.borrow_mut().insert(argv.clone(), (Instant::now(), value.clone()));
+            }
+            if let Some(waiting) = self.helper_inflight.borrow_mut().remove(&argv) {
+                for tx in waiting {
+                    let _ = tx.try_send(result.clone());
+                }
+            }
+        }
         // A mode switch from one window (the popup) should show in every
-        // other window (the bar widget, Settings) at once.
-        if out.status.success() && matches!(cmd, ["mindos-perf", "set" | "config" | "apply", ..]) {
+        // other window (the bar widget, Settings) at once, and not the
+        // state from before it.
+        if changes_perf && result.as_ref().map(|v| v["ok"] == true).unwrap_or(false) {
+            self.helper_cache.borrow_mut().clear();
             self.broadcast("perf_changed", &json!({ "argv": argv }));
         }
-        Ok(json!({
-            "status": out.status.code().unwrap_or(-1),
-            "ok": out.status.success(),
-            "stdout": stdout,
-            "stderr": stderr,
-            "json": json,
-        }))
+        result
     }
 
     /// Carry out a notice action: open the Mind bar with a question, send a
@@ -1856,9 +1976,98 @@ impl App {
     }
 
     fn set_layout(self: &Rc<Self>, layout: Layout) {
-        self.state.borrow_mut().layout = layout.clone();
-        self.sync_windows();
+        // Only the panels decide which windows exist and where they sit.
+        let panels_changed = {
+            let mut state = self.state.borrow_mut();
+            let changed = state.layout.panels != layout.panels;
+            state.layout = layout.clone();
+            changed
+        };
+        if panels_changed {
+            self.sync_windows();
+        }
         self.broadcast("layout", &json!({ "layout": layout.to_value() }));
+    }
+
+    /// Write the layout file once the changes settle: the desktop notes and
+    /// the colour pickers save on every keystroke, and every window already
+    /// has the new layout from `set_layout`.
+    fn schedule_layout_save(self: &Rc<Self>) {
+        if let Some(id) = self.layout_save.borrow_mut().take() {
+            id.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let id = glib::timeout_add_local_once(LAYOUT_SAVE_DELAY, move || {
+            let Some(app) = weak.upgrade() else { return };
+            app.layout_save.borrow_mut().take();
+            app.write_layout();
+        });
+        *self.layout_save.borrow_mut() = Some(id);
+    }
+
+    /// Write a pending layout now (on the way out).
+    fn flush_layout_save(&self) {
+        if let Some(id) = self.layout_save.borrow_mut().take() {
+            id.remove();
+            self.write_layout();
+        }
+    }
+
+    fn write_layout(&self) {
+        let layout = self.state.borrow().layout.clone();
+        if let Err(e) = layout.save() {
+            tracing::warn!(%e, "cannot save the layout");
+        }
+    }
+
+    /// Rescan the desktop entries when an applications directory changes (a
+    /// package installed, a Wine program writing its entry). The scanner
+    /// thread's slow fingerprint check covers subdirectories.
+    fn watch_apps(self: &Rc<Self>) {
+        for path in apps::application_dirs() {
+            let dir = gio::File::for_path(&path);
+            match dir.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+                Ok(monitor) => {
+                    let weak = Rc::downgrade(self);
+                    monitor.connect_changed(move |_, file, _, event| {
+                        use gio::FileMonitorEvent as E;
+                        let relevant = file
+                            .path()
+                            .map(|p| p.is_dir() || p.extension().is_some_and(|e| e == "desktop"))
+                            .unwrap_or(true);
+                        if relevant && matches!(event, E::ChangesDoneHint | E::Created | E::Deleted | E::Renamed | E::MovedIn | E::MovedOut) {
+                            if let Some(app) = weak.upgrade() {
+                                app.apps_dir_changed();
+                            }
+                        }
+                    });
+                    self.apps_monitors.borrow_mut().push(monitor);
+                }
+                Err(e) => tracing::debug!(path = %path.display(), %e, "cannot watch the applications folder"),
+            }
+        }
+    }
+
+    fn apps_dir_changed(self: &Rc<Self>) {
+        if self.apps_reload_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            let Some(app) = weak.upgrade() else { return };
+            app.apps_reload_pending.set(false);
+            app.reload_apps();
+        });
+    }
+
+    /// Scan the desktop entries again, off the main thread.
+    fn reload_apps(&self) {
+        let events = self.events.clone();
+        let theme = self.icon_theme.get();
+        let size = self.config.shell.icon_size;
+        std::thread::spawn(move || {
+            let _ = events.send_blocking(HostEvent::Apps(apps::load_apps(&theme, size)));
+        });
     }
 
     /// Translate a point in the calling window into global screen coordinates.
@@ -1913,8 +2122,20 @@ impl App {
     async fn network_changed(&self) -> Value {
         let vpn = blocking(system::vpn_list).await;
         let network = blocking(system::network_status).await;
-        self.broadcast("vpn", &vpn);
-        self.broadcast("network", &network);
+        // NetworkManager reports plenty that changes nothing the bar shows.
+        let (vpn_changed, network_changed) = {
+            let mut state = self.state.borrow_mut();
+            (
+                state.last_vpn.replace(vpn.clone()).as_ref() != Some(&vpn),
+                state.last_network.replace(network.clone()).as_ref() != Some(&network),
+            )
+        };
+        if vpn_changed {
+            self.broadcast("vpn", &vpn);
+        }
+        if network_changed {
+            self.broadcast("network", &network);
+        }
         vpn
     }
 
@@ -2095,7 +2316,28 @@ impl App {
             HostEvent::Ipc(IpcEvent::Event(name, value)) => match name.as_str() {
                 "tray" => {
                     let items = value.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
-                    self.state.borrow_mut().xtray = Value::Array(items.iter().filter_map(xembed_item_json).collect());
+                    {
+                        // Encoding an icon is the costly part; one whose pixels
+                        // did not change keeps its data URL from last time.
+                        let mut state = self.state.borrow_mut();
+                        let mut known = std::mem::take(&mut state.xtray_icons);
+                        let mut icons = HashMap::new();
+                        let list: Vec<Value> = items
+                            .iter()
+                            .filter_map(|item| {
+                                let id = item.get("id")?.as_u64()?;
+                                let pixels = item.get("pixels")?.as_str()?;
+                                let icon = match known.remove(&id) {
+                                    Some((seen, icon)) if seen == pixels => icon,
+                                    _ => xembed_icon(item)?,
+                                };
+                                icons.insert(id, (pixels.to_string(), icon.clone()));
+                                Some(xembed_item_json(item, id, icon))
+                            })
+                            .collect();
+                        state.xtray_icons = icons;
+                        state.xtray = Value::Array(list);
+                    }
                     self.broadcast("tray", &json!({ "items": self.tray_items_json() }));
                 }
                 "windows" => {
@@ -2162,8 +2404,12 @@ impl App {
                 self.broadcast("tray", &json!({ "items": self.tray_items_json() }));
             }
             HostEvent::Apps(list) => {
-                self.state.borrow_mut().apps = list;
-                self.broadcast("apps", &json!({ "apps": self.apps_json() }));
+                // A rescan that found the same entries is not news to anyone.
+                if self.state.borrow().apps != list {
+                    self.state.borrow_mut().apps = list;
+                    *self.apps_json_cache.borrow_mut() = None;
+                    self.broadcast("apps", &json!({ "apps": self.apps_json() }));
+                }
             }
             HostEvent::Audio(audio) => self.set_audio(audio),
             HostEvent::Network => self.schedule_network_refresh(),
@@ -2220,6 +2466,7 @@ impl App {
             }
             HostEvent::Quit => {
                 tracing::info!("shutting down");
+                self.flush_layout_save();
                 let mut all: Vec<Rc<ShellWindow>> = self.windows.borrow_mut().drain(..).collect();
                 all.extend(self.retired.borrow_mut().drain(..));
                 *self.first_view.borrow_mut() = None;
@@ -2303,8 +2550,10 @@ impl App {
             .spawn(move || {
                 let mut fingerprint = apps::fingerprint();
                 let _ = events.send_blocking(HostEvent::Apps(apps::load_apps(&theme.get(), size)));
+                // The directories themselves are watched (`watch_apps`); this
+                // walk only catches changes deeper down.
                 loop {
-                    std::thread::sleep(Duration::from_secs(5));
+                    std::thread::sleep(Duration::from_secs(30));
                     if game_running() {
                         continue;
                     }
@@ -2325,20 +2574,62 @@ impl App {
         // Lock the screen before the machine suspends (a logind delay inhibitor).
         crate::sleepwatch::start(self.lock_on_sleep.clone(), self.events.clone());
 
+        // The volume follows PipeWire's own change feed; without one it is
+        // polled, more slowly while a game has the machine.
         let events = self.events.clone();
         std::thread::Builder::new()
             .name("mindshell-audio".into())
             .spawn(move || {
                 let mut last: Option<Option<Audio>> = None;
+                let mut publish = |now: Option<Audio>| -> bool {
+                    if last.as_ref() == Some(&now) {
+                        return true;
+                    }
+                    last = Some(now.clone());
+                    events.send_blocking(HostEvent::Audio(now)).is_ok()
+                };
                 loop {
-                    let now = system::audio_get();
-                    if last.as_ref() != Some(&now) {
-                        last = Some(now.clone());
-                        if events.send_blocking(HostEvent::Audio(now)).is_err() {
+                    if let Some(mut child) = system::audio_events() {
+                        if let Some(stdout) = child.stdout.take() {
+                            let (tx, rx) = std::sync::mpsc::channel::<()>();
+                            std::thread::spawn(move || {
+                                use std::io::BufRead;
+                                for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                                    if system::audio_event_matters(&line) && tx.send(()).is_err() {
+                                        return;
+                                    }
+                                }
+                            });
+                            if !publish(system::audio_get()) {
+                                let _ = child.kill();
+                                return;
+                            }
+                            loop {
+                                match rx.recv_timeout(Duration::from_secs(30)) {
+                                    Ok(()) => {
+                                        // A volume change is a burst of events; read once it settles.
+                                        while rx.recv_timeout(Duration::from_millis(100)).is_ok() {}
+                                    }
+                                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                                }
+                                if !publish(system::audio_get()) {
+                                    let _ = child.kill();
+                                    return;
+                                }
+                            }
+                        }
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    // No feed (or it ended): poll for a minute, then try the feed again.
+                    let until = Instant::now() + Duration::from_secs(60);
+                    while Instant::now() < until {
+                        if !publish(system::audio_get()) {
                             return;
                         }
+                        std::thread::sleep(Duration::from_millis(if game_running() { 5000 } else { 1500 }));
                     }
-                    std::thread::sleep(Duration::from_millis(1500));
                 }
             })
             .expect("spawn audio thread");
@@ -2373,19 +2664,34 @@ impl App {
             })
             .expect("spawn network thread");
 
+        // The GPU is sampled only while something shows the numbers: the
+        // `system.stats` calls keep `stats_wanted` fresh, and a sample is
+        // taken every 2 s while they are recent (nvidia-smi is a process
+        // start and a driver query each time).
         let events = self.events.clone();
+        let wanted = self.stats_wanted.clone();
+        let started = self.started;
         std::thread::Builder::new()
             .name("mindshell-gpu".into())
             .spawn(move || {
                 let mut stats = system::Stats::default();
+                let mut sampled: Option<Instant> = None;
                 loop {
-                    // Hidden desktop telemetry must not contend with a game.
-                    // Keep the cheap counter check so sampling resumes promptly.
-                    let gpu = if game_running() { None } else { stats.gpu_sample() };
-                    if events.send_blocking(HostEvent::Gpu(gpu)).is_err() {
-                        return;
+                    let asked = match wanted.load(Ordering::Relaxed) {
+                        0 => false,
+                        at => (started.elapsed().as_millis() as u64).saturating_sub(at - 1) < STATS_INTEREST_MS,
+                    };
+                    let due = sampled.map(|t| t.elapsed() >= Duration::from_secs(2)).unwrap_or(true);
+                    if asked && due {
+                        sampled = Some(Instant::now());
+                        // Hidden desktop telemetry must not contend with a game.
+                        // Keep the cheap counter check so sampling resumes promptly.
+                        let gpu = if game_running() { None } else { stats.gpu_sample() };
+                        if events.send_blocking(HostEvent::Gpu(gpu)).is_err() {
+                            return;
+                        }
                     }
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(Duration::from_millis(500));
                 }
             })
             .expect("spawn gpu thread");
@@ -2394,6 +2700,15 @@ impl App {
 
 /// The GameMode counter kept by `mindos-perf game-start` / `game-end`.
 const GAME_FILE: &str = "/run/mindos/perf/game";
+
+/// How long after a `system.stats` call the GPU keeps being sampled.
+const STATS_INTEREST_MS: u64 = 6_000;
+
+/// How long a read-only helper command's answer is handed out again.
+const HELPER_CACHE_TTL: Duration = Duration::from_millis(1000);
+
+/// How long the layout file waits for further changes before it is written.
+const LAYOUT_SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// True while at least one game is running.
 fn game_running() -> bool {
@@ -2453,26 +2768,31 @@ fn xembed_id(id: &str) -> Option<u32> {
     id.strip_prefix("x11:")?.parse().ok()
 }
 
-/// A compositor `tray` item (`{ id, title, class, pid, width, height, pixels }`,
-/// pixels base64 RGBA) as a shell tray item with a data-URL icon.
-fn xembed_item_json(item: &Value) -> Option<Value> {
-    let id = item.get("id")?.as_u64()?;
+/// The icon of a compositor `tray` item (`{ width, height, pixels }`, pixels
+/// base64 RGBA) as a PNG data URL.
+fn xembed_icon(item: &Value) -> Option<String> {
     let width = item.get("width")?.as_u64()? as u32;
     let height = item.get("height")?.as_u64()? as u32;
     let pixels = gtk4::glib::base64_decode(item.get("pixels")?.as_str()?);
     let png = crate::tray::encode_rgba_png(width, height, &pixels)?;
+    Some(format!("data:image/png;base64,{}", gtk4::glib::base64_encode(&png)))
+}
+
+/// A compositor `tray` item (`{ id, title, class, pid, ... }`) as a shell
+/// tray item with its data-URL icon.
+fn xembed_item_json(item: &Value, id: u64, icon: String) -> Value {
     let title = item.get("title").and_then(Value::as_str).unwrap_or("").to_string();
     let class = item.get("class").and_then(Value::as_str).unwrap_or("").to_string();
     let label = if title.is_empty() { class.clone() } else { title.clone() };
-    Some(json!({
+    json!({
         "id": format!("x11:{id}"),
         "title": label,
         "tooltip": title,
-        "icon": format!("data:image/png;base64,{}", gtk4::glib::base64_encode(&png)),
+        "icon": icon,
         "status": "active",
         "hasMenu": false,
         "xembed": true,
         "app": class,
         "pid": item.get("pid").cloned().unwrap_or(Value::Null),
-    }))
+    })
 }

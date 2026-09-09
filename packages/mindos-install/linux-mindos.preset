@@ -1,0 +1,13 @@
+# MindOS preset for the installed system.
+#
+# Deliberately no ALL_config: mkinitcpio only appends the
+# /etc/mkinitcpio.conf.d drop-ins when no configuration file was named, because
+# -c sets _optconfd=0. Naming /etc/mkinitcpio.conf here would skip
+# mindos.conf (losing plymouth and sd-volatile), and naming mindos.conf itself
+# would skip the base configuration. Leaving it out gives both, which is how
+# Arch's own preset template is shaped.
+ALL_kver="/boot/vmlinuz-linux-mindos"
+PRESETS=(default fallback)
+default_image="/boot/initramfs-linux-mindos.img"
+fallback_options="-S autodetect"
+fallback_image="/boot/initramfs-linux-mindos-fallback.img"

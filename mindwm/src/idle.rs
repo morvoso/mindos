@@ -108,6 +108,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         }
         let was_blank = self.idle.stage == Stage::Blank;
         self.idle.stage = stage;
+        self.request_repaint();
         // No pointer over a screensaver. The cursor is the compositor's to
         // draw, and a stationary one would sit in the same place for hours:
         // CSS in the shell's lock window cannot help, because a client only
@@ -137,6 +138,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         }
         tracing::info!(locked, "the session is now {}", if locked { "locked" } else { "unlocked" });
         self.idle.locked = locked;
+        self.request_repaint();
         if locked {
             self.window_cycle.finish();
             self.media_keys.stop();

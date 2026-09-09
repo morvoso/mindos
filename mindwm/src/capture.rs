@@ -323,6 +323,8 @@ impl<B: Backend + 'static> Dispatch<ZwlrScreencopyFrameV1, FrameData> for AnvilS
             damage,
             since: Instant::now(),
         });
+        // The copy is made during a repaint; an idle output would never make one.
+        state.request_repaint();
     }
 }
 

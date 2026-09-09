@@ -1,7 +1,7 @@
 // Layout helpers: the default layout, lookups and small mutations.
 
 import { deepClone, newId } from './dom';
-import type { DesktopWidgetEntry, Layout, PanelDef, WidgetEntry } from './types';
+import type { AppearancePalette, DesktopWidgetEntry, Layout, PanelDef, WidgetEntry, WorkspaceShortcut } from './types';
 
 export function defaultLayout(): Layout {
   return {
@@ -73,8 +73,21 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
     desktop: {
       wallpaper: desktop.wallpaper ?? { mode: 'builtin' },
       icons: desktop.icons !== false,
-      workspace: { mode: desktop.workspace?.mode === 'productivity' ? 'productivity' : 'gaming', notes: String(desktop.workspace?.notes ?? '') },
-      ...(desktop.appearance ? { appearance: { theme: desktop.appearance.theme === 'light' ? 'light' as const : 'dark' as const } } : {}),
+      workspace: {
+        mode: desktop.workspace?.mode === 'productivity' ? 'productivity' : 'gaming',
+        notes: String(desktop.workspace?.notes ?? ''),
+        shortcuts: Array.isArray(desktop.workspace?.shortcuts) ? desktop.workspace.shortcuts.map((s: WorkspaceShortcut) => ({
+          id: String(s.id), appId: String(s.appId), label: String(s.label), ...(s.icon ? { icon: String(s.icon) } : {}),
+        })) : [],
+      },
+      ...(desktop.appearance ? {
+        appearance: {
+          theme: desktop.appearance.theme === 'light' ? 'light' as const : 'dark' as const,
+          ...(desktop.appearance.live !== undefined ? { live: Boolean(desktop.appearance.live) } : {}),
+          ...(desktop.appearance.dark ? { dark: desktop.appearance.dark as AppearancePalette } : {}),
+          ...(desktop.appearance.light ? { light: desktop.appearance.light as AppearancePalette } : {}),
+        },
+      } : {}),
       ...(desktop.library ? { library: desktop.library } : {}),
       widgets: (desktop.widgets ?? []).map((w, j) => ({
         id: w.id ?? `d-${j}`, type: w.type ?? 'unknown', output: w.output ?? '*',

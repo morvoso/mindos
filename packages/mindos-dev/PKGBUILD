@@ -3,7 +3,7 @@
 # editor defaults (docs/DEV.md).
 pkgname=mindos-dev
 pkgver=0.1.0
-pkgrel=5
+pkgrel=6
 pkgdesc="MindOS development stack: build tools, containers, editors and command-line tools, with shell prompt and git defaults"
 arch=(any)
 url="https://github.com/morvoso/mindos"

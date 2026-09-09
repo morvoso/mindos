@@ -183,9 +183,10 @@ overrides both, and `git config --global` never writes to the system files.
 
 ## Kernel limits
 
-`/usr/lib/sysctl.d/61-mindos-dev.conf` raises the inotify limits
-(`max_user_watches` 1048576, `max_user_instances` 1024) so that editors,
-bundlers and test watchers can monitor large directory trees, and sets
+`/usr/lib/sysctl.d/61-mindos-dev.conf` raises the inotify watch limit
+(`max_user_watches` 1048576; the base system already allows 8192 inotify
+instances) so that editors, bundlers and test watchers can monitor large
+directory trees, and sets
 `kernel.perf_event_paranoid = 1` so that `perf record ./my-program` works
 without root. `kptr_restrict` keeps its default value.
 

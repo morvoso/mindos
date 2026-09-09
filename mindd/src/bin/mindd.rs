@@ -6,8 +6,14 @@
 use anyhow::{anyhow, Result};
 use mindos_mind::config::Config;
 use mindos_mind::daemon::{audit::Audit, llm, server, Daemon};
+use mindos_mind::proto::Notice;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// After a failed GPU start the model runs on the CPU; the next restart this
+/// long after the failure tries the GPU again.
+const GPU_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
+const CPU_NOTICE: &str = "mind:cpu-fallback";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -104,9 +110,13 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
-    let mut gpu = d.config.model.gpu_layers != 0;
+    let wants_gpu = d.config.model.gpu_layers != 0;
+    let mut gpu = wants_gpu;
     let mut backoff = 2u64;
     let mut last_model: Option<std::path::PathBuf> = None;
+    // When the GPU start failed, so a restart after the cooldown tries it again
+    // instead of pinning the model to the CPU for the daemon's lifetime.
+    let mut gpu_failed_at: Option<Instant> = None;
     loop {
         if d.is_sleeping() {
             *d.model_name.lock().unwrap() = "(sleeping)".into();
@@ -130,9 +140,14 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
         let model = std::fs::canonicalize(&model).unwrap_or(model);
         if last_model.as_ref() != Some(&model) {
             // a new model gets a fresh try on the GPU
-            gpu = d.config.model.gpu_layers != 0;
+            gpu = wants_gpu;
             backoff = 2;
             last_model = Some(model.clone());
+            gpu_failed_at = None;
+        }
+        if !gpu && wants_gpu && gpu_failed_at.map(|t| t.elapsed() >= GPU_RETRY_AFTER).unwrap_or(false) {
+            eprintln!("mindd: trying the GPU again");
+            gpu = true;
         }
         let thinking = d.thinking.load(Ordering::Relaxed);
         *d.model_name.lock().unwrap() = model.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -151,12 +166,14 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
             }
         };
         // wait for health (a model change meanwhile starts over)
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let mut healthy = false;
         let mut restart = false;
+        let mut exited = None;
         while started.elapsed() < Duration::from_secs(300) {
             if let Ok(Some(status)) = proc.child.try_wait() {
                 eprintln!("mindd: llama-server exited during startup: {}", status);
+                exited = Some(status);
                 break;
             }
             if d.llm.health().await {
@@ -178,6 +195,20 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
             if gpu {
                 eprintln!("mindd: GPU backend failed, falling back to CPU");
                 gpu = false;
+                gpu_failed_at = Some(Instant::now());
+                let reason = match exited {
+                    Some(status) => format!("llama-server stopped with {}", status),
+                    None => "llama-server gave no answer within five minutes".to_string(),
+                };
+                d.notices.post(Notice {
+                    id: CPU_NOTICE.into(),
+                    level: "warn".into(),
+                    title: "The Mind is running on the processor".into(),
+                    body: format!("The language model could not start on the graphics card ({}). It runs on the processor for now, so answers take longer. The graphics card is tried again when the model next restarts, ten minutes after the failure at the earliest.", reason),
+                    source: "mind".into(),
+                    time: 0,
+                    actions: vec![],
+                });
             } else {
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(backoff)) => {}
@@ -189,6 +220,10 @@ async fn supervise_model(d: std::sync::Arc<Daemon>) {
         }
         backoff = 2;
         eprintln!("mindd: model ready in {:.1}s", started.elapsed().as_secs_f64());
+        if gpu {
+            gpu_failed_at = None;
+            d.notices.dismiss(CPU_NOTICE);
+        }
         d.ready.store(true, Ordering::Release);
         // supervise
         loop {

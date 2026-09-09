@@ -6,7 +6,9 @@ import { h } from './dom';
 import { renderGamingDesktop } from './gaming-desktop';
 import { icon } from './icons';
 import { store } from './state';
-import type { FsListing } from './types';
+import { systemControls } from './system-menu';
+import { renderDesktopIcons } from './desktop-icons';
+import type { Layout, WorkspaceShortcut } from './types';
 
 type Mode = 'gaming' | 'productivity';
 type Page = { name: string; page?: string; arg?: string };
@@ -35,6 +37,7 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
     const offs: (() => void)[] = [];
     let systemDispose: (() => void) | undefined;
     let alive = true;
+    let productivityCustomNav: HTMLElement | undefined;
     let area: HTMLElement, nav: HTMLElement, main: HTMLElement, rail: HTMLElement, header: HTMLElement;
     if (current === 'gaming') {
       offs.push(renderGamingDesktop(root, output));
@@ -44,8 +47,8 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
       rail = area.querySelector('.gaming-rail')!;
       header = area.querySelector('.gaming-menubar')!;
     } else {
-      const appearance = appearanceControls(); offs.push(appearance.destroy);
-      header = h('header', { class: 'gaming-menubar' }, h('strong', { class: 'gaming-brand' }, h('i'), 'MINDOS'), h('span', { class: 'gaming-meta gaming-edition' }, '// Home'), appearance.el);
+      const appearance = appearanceControls(); const systemMenu = systemControls(); offs.push(appearance.destroy, systemMenu.destroy);
+      header = h('header', { class: 'gaming-menubar' }, h('strong', { class: 'gaming-brand' }, h('i'), 'MINDOS'), h('span', { class: 'gaming-meta gaming-edition' }, '// Home'), h('div', { class: 'header-actions' }, appearance.el, systemMenu.el));
       nav = h('nav', { class: 'gaming-nav', 'aria-label': 'Desktop shortcuts' });
       main = h('section', { class: 'gaming-main productivity-main' });
       rail = h('aside', { class: 'gaming-rail', 'aria-label': 'Work and home tools' });
@@ -59,7 +62,10 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
         for (const edge of ['top', 'right', 'bottom', 'left'] as const) area.style.setProperty(`--gaming-${edge}`, `${pads[edge]}px`);
       };
       place(); offs.push(store.on('layout', place), store.on('editMode', place));
-      offs.push(renderProductivity(main, rail, output));
+      const customNav = h('span', { class: 'workspace-custom-nav' });
+      productivityCustomNav = customNav;
+      offs.push(renderProductivity(main, rail, output, customNav));
+      (area as HTMLElement).dataset.productivityNav = 'true';
     }
     area.dataset.workspaceMode = current;
     if (animate && !matchMedia('(prefers-reduced-motion: reduce)').matches && !store.state.game) {
@@ -113,21 +119,19 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
     });
     nav.replaceChildren(h('span', { class: 'gaming-meta' }, current === 'gaming' ? 'Gaming' : 'Productivity'),
       link(homeTitle, current === 'gaming' ? 'gamepad' : 'grid', showHome, 'home'),
-      ...(current === 'gaming' ? [link('Gaming Center', 'gamepad', open('gaming'), 'gaming'), link('Companion', 'monitor', run(() => bridge.call('shell.openApp', { name: 'companion' })))] : [
+      ...(current === 'gaming' ? [link('Gaming Center', 'gamepad', open('gaming'), 'gaming')] : [
         link('Documents', 'folder', run(() => bridge.call('fs.open', { path: '~/Documents' }))),
-        link('Office', 'edit', launch(/libreoffice.*startcenter|libreoffice-writer|onlyoffice/i)),
-        link('Mail', 'mail', launch(/thunderbird|evolution|geary/i)),
       ]),
-      link('Files', 'folder', run(() => bridge.call('fs.open', { path: '~' }))),
-      link('Browser', 'globe', launch(/firefox|chromium/i)),
+      ...(current === 'gaming' ? [link('Files', 'folder', run(() => bridge.call('fs.open', { path: '~' }))), link('Browser', 'globe', launch(/firefox|chromium/i))] : []),
       link('Settings', 'gear', open('settings'), 'settings'),
-      h('span', { class: 'gaming-nav-bottom gaming-meta' }, 'Super + Space', h('br'), 'Launch · Ask · Find'));
+      ...(current === 'productivity' && productivityCustomNav ? [productivityCustomNav] : []),
+      h('span', { class: 'gaming-nav-bottom gaming-meta' }, 'Super + Space'));
     const modes = h('div', { class: 'workspace-modes', role: 'group', 'aria-label': 'Desktop mode' }, ...(['gaming', 'productivity'] as const).map(m => h('button', {
       class: 'btn', 'aria-pressed': String(current === m), onclick: () => {
-        if (m !== mode()) store.updateLayout(l => { l.desktop.workspace = { mode: m, notes: l.desktop.workspace?.notes ?? '' }; });
+        if (m !== mode()) store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: m, notes: l.desktop.workspace?.notes ?? '' }; });
       },
     }, icon(m === 'gaming' ? 'gamepad' : 'grid', 14), m === 'gaming' ? 'Gaming' : 'Productivity')));
-    header.insertBefore(modes, header.querySelector('.appearance-controls'));
+    header.insertBefore(modes, header.querySelector('.header-actions'));
     showHome();
     return () => { alive = false; bridge.send('desktop.panel', { active: false }); systemDispose?.(); offs.forEach(off => off()); area.remove(); };
   }
@@ -143,42 +147,68 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
   return () => { dispose?.(); offs.forEach(off => off()); window.removeEventListener('desktop.open', localOpen); window.removeEventListener('desktop.title', appTitle); };
 }
 
-function renderProductivity(main: HTMLElement, rail: HTMLElement, output: string): () => void {
+function renderProductivity(main: HTMLElement, rail: HTMLElement, output: string, customNav: HTMLElement): () => void {
   let alive = true;
   const status = h('p', { class: 'play-status', role: 'status' });
   const run = (fn: () => Promise<unknown>) => () => { void fn().catch(e => { if (alive) status.textContent = String(e); }); };
   const card = (title: string, ...body: HTMLElement[]) => h('section', { class: 'gaming-rail-card work-card' }, h('header', { class: 'gaming-panel-title' }, h('h2', {}, title)), ...body);
-  const files = h('div', { class: 'work-files' }, h('p', { class: 'gaming-meta' }, 'Loading your documents…'));
-  async function refresh() {
-    try {
-      const list = await bridge.call<FsListing>('fs.list', { path: '~/Documents', hidden: false });
-      if (!alive) return;
-      files.replaceChildren(...list.entries.filter(f => !f.hidden).sort((a, b) => b.mtime - a.mtime).slice(0, 6).map(f => h('button', { class: 'work-file', onclick: run(() => bridge.call('fs.open', { path: f.path })) }, icon(f.dir ? 'folder' : 'file', 18), h('span', {}, f.name), h('small', {}, new Date(f.mtime * 1000).toLocaleDateString()))));
-      if (!files.children.length) files.append(h('p', { class: 'gaming-meta' }, 'Your Documents folder is empty.'));
-    } catch { if (alive) files.replaceChildren(h('p', { class: 'gaming-meta' }, 'Create a Documents folder in Files to keep your work here.')); }
-  }
-  const launch = (pattern: RegExp) => run(async () => {
-    const app = store.state.apps.find(a => pattern.test(a.id));
+  const launch = (appId: string) => run(async () => {
+    const app = store.state.apps.find(a => a.id === appId);
     if (app) await bridge.call('apps.launch', { id: app.id });
     else await bridge.call('shell.openApp', { name: 'settings', page: 'software' });
   });
-  const shortcuts = h('div', { class: 'work-shortcuts' }, ...[
-    ['Browser', 'globe', /firefox|chromium/i], ['Write', 'edit', /libreoffice-writer|onlyoffice/i], ['Spreadsheets', 'grid', /libreoffice-calc|onlyoffice/i], ['Mail', 'mail', /thunderbird|evolution|geary/i],
-  ].map(([label, glyph, pattern]) => h('button', { class: 'work-shortcut', onclick: launch(pattern as RegExp) }, icon(String(glyph), 24), h('strong', {}, String(label)))));
-  main.append(card('Home & work', h('div', { class: 'work-intro' }, shortcuts)),
-    card('Recent documents', files, h('div', { class: 'play-row' }, h('button', { class: 'btn', onclick: run(() => bridge.call('fs.open', { path: '~/Documents' })) }, 'Open Documents'), h('button', { class: 'btn', onclick: () => void refresh() }, 'Refresh'))), status);
+  const defaultShortcuts = (): WorkspaceShortcut[] => store.state.apps.filter(a => /firefox|chromium|libreoffice-writer|libreoffice-calc|onlyoffice|thunderbird|evolution|geary/i.test(a.id)).slice(0, 4).map(a => ({ id: `app-${a.id}`, appId: a.id, label: a.name, icon: /firefox|chromium/i.test(a.id) ? 'globe' : /mail|evolution|geary/i.test(a.id) ? 'mail' : 'edit' }));
+  const currentShortcuts = () => store.state.layout.desktop.workspace?.shortcuts ?? defaultShortcuts();
+  const saveShortcuts = (shortcuts: WorkspaceShortcut[]) => void store.updateLayout(l => { l.desktop.workspace = { mode: 'productivity', notes: l.desktop.workspace?.notes ?? '', shortcuts }; });
+  const shortcutGrid = h('div', { class: 'work-shortcuts' });
+  const addLabel = h('span', {}, 'Add shortcut');
+  const addButton = h('button', { class: 'work-shortcut-add', onclick: () => {
+    const installed = store.state.apps.filter(a => !currentShortcuts().some(s => s.appId === a.id)).sort((a, b) => a.name.localeCompare(b.name));
+    if (!installed.length) return;
+    const select = h('select', { class: 'select', 'aria-label': 'Application shortcut' }, ...installed.map(a => h('option', { value: a.id }, a.name))) as HTMLSelectElement;
+    const commit = h('button', { class: 'btn primary', onclick: () => { const app = installed.find(a => a.id === select.value); if (!app) return; saveShortcuts([...currentShortcuts(), { id: `app-${app.id}`, appId: app.id, label: app.name, icon: 'box' }]); renderShortcuts(); } }, 'Add');
+    addButton.replaceWith(h('span', { class: 'shortcut-add-form' }, select, commit));
+  } }, icon('plus', 15), addLabel);
+  const renderShortcuts = () => {
+    const shortcuts = currentShortcuts();
+    shortcutGrid.replaceChildren(...shortcuts.map(s => {
+      const app = store.state.apps.find(a => a.id === s.appId);
+      return h('div', { class: 'work-shortcut' }, h('button', { class: 'work-shortcut-main', onclick: launch(s.appId), 'aria-label': `Open ${s.label}` }, app?.icon ? h('img', { src: app.icon, alt: '', width: 48, height: 48, onerror: (e: Event) => (e.target as HTMLElement).replaceWith(icon('box', 48)) }) : icon('box', 48), h('span', {}, app?.name || s.label)), h('button', { class: 'work-shortcut-remove', title: `Remove ${s.label}`, 'aria-label': `Remove ${s.label}`, onclick: () => { saveShortcuts(shortcuts.filter(x => x.id !== s.id)); } }, icon('x', 14)));
+    }), addButton);
+    customNav.replaceChildren(...shortcuts.map(s => linkShortcut(s)));
+  };
+  const linkShortcut = (s: WorkspaceShortcut) => h('button', { class: 'gaming-nav-link', onclick: launch(s.appId), dataset: { shortcut: s.id } }, icon(s.icon || 'box', 18), h('span', {}, s.label));
+  main.setAttribute('aria-label', 'Desktop');
+  const desktopFiles = h('div', { class: 'desktop-icons home-desktop-files' });
+  main.append(shortcutGrid, desktopFiles, status);
+  const disposeFiles = renderDesktopIcons(main, desktopFiles, output);
   const notes = h('textarea', { class: 'work-notes', placeholder: 'Type a note…', 'aria-label': 'Desktop notes', value: store.state.layout.desktop.workspace?.notes ?? '' });
   notes.value = store.state.layout.desktop.workspace?.notes ?? '';
-  // Persist every edit. Switching modes cannot lose the last keystroke.
-  notes.addEventListener('input', () => store.updateLayout(l => { l.desktop.workspace = { mode: l.desktop.workspace?.mode ?? 'productivity', notes: notes.value }; }));
-  const windows = h('div', { class: 'work-windows' });
-  const renderWindows = () => {
-    const list = store.state.windows.filter(w => w.output === output || (!output && !w.output));
-    windows.replaceChildren(...list.map(w => h('button', { class: 'work-file', onclick: run(() => bridge.call('windows.focus', { id: w.id })) }, icon('window', 16), h('span', {}, w.title || w.app_id))));
-    if (!list.length) windows.append(h('p', { class: 'gaming-meta' }, 'No windows on this monitor.'));
+  // Every keystroke lands in the local layout at once, so a mode switch carries
+  // it; the file write and the broadcast to every other page wait for a pause
+  // in typing (or for this view to go away).
+  const workspaceNotes = (l: Layout) => { l.desktop.workspace = { ...l.desktop.workspace, mode: l.desktop.workspace?.mode ?? 'productivity', notes: notes.value }; };
+  let pendingNotes: ReturnType<typeof setTimeout> | undefined;
+  const flushNotes = () => {
+    if (pendingNotes === undefined) return;
+    clearTimeout(pendingNotes); pendingNotes = undefined;
+    void store.updateLayout(workspaceNotes);
   };
-  rail.append(card('Notes', notes), card('This monitor', windows), card('Mind', h('div', { class: 'gaming-rail-body' }, h('button', { class: 'btn primary', onclick: run(() => bridge.call('mind.open', { text: 'Help me plan my day.' })) }, 'Ask Mind'))));
-  renderWindows(); void refresh();
-  const off = store.on('windows', renderWindows);
-  return () => { alive = false; off(); };
+  notes.addEventListener('input', () => {
+    workspaceNotes(store.state.layout);
+    if (pendingNotes !== undefined) clearTimeout(pendingNotes);
+    pendingNotes = setTimeout(flushNotes, 400);
+  });
+  notes.addEventListener('blur', flushNotes);
+  rail.append(card('Notes', notes));
+  renderShortcuts();
+  let shortcutKey = JSON.stringify(currentShortcuts());
+  const offApps = store.on('apps', () => { shortcutKey = JSON.stringify(currentShortcuts()); renderShortcuts(); });
+  const offLayout = store.on('layout', () => {
+    // Layout events carry every change from every page; only the shortcuts matter here.
+    const key = JSON.stringify(currentShortcuts());
+    if (key === shortcutKey) return;
+    shortcutKey = key; renderShortcuts();
+  });
+  return () => { alive = false; flushNotes(); disposeFiles(); offApps(); offLayout(); };
 }

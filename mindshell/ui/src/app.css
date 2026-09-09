@@ -1367,6 +1367,18 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .gaming-meta {color:var(--fg-faint);font:400 10px/1.6 var(--mono);letter-spacing:.085em;text-transform:uppercase}
 .gaming-top-status {margin-left:auto;white-space:nowrap;color:var(--fg-dim)}
 .appearance-controls {display:flex;flex-wrap:wrap;gap:8px}
+.header-actions {display:flex;align-items:center;gap:8px;margin-left:auto}
+.system-menu {position:relative}
+.system-menu-trigger {display:inline-flex;align-items:center;justify-content:center;width:34px;padding:0}
+.system-menu-panel {position:absolute;z-index:20;top:calc(100% + 8px);right:0;display:flex;flex-direction:column;min-width:170px;padding:6px;background:var(--bg-1);border:1px solid var(--glass-border-strong);box-shadow:var(--shadow-2)}
+.system-menu-item {display:flex;align-items:center;gap:10px;width:100%;min-height:34px;padding:7px 10px;color:var(--fg-dim);background:transparent;border:0;text-align:left;font:500 12px/1 var(--ui)}
+.system-menu-item:hover {color:var(--fg);background:var(--surface-hover)}
+.system-menu-shutdown:hover {color:var(--danger)}
+.palette-tabs {display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.palette-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.palette-field {display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;padding:10px;background:var(--surface);border:1px solid var(--hairline);font:500 12px var(--ui)}
+.palette-field input[type=color] {width:30px;height:24px;padding:0;border:1px solid var(--hairline);background:transparent;cursor:pointer}
+.palette-field code {grid-column:1 / -1;color:var(--fg-dim);font:400 10px var(--mono);letter-spacing:.04em}
 .gaming-menubar .appearance-controls .btn {min-height:26px;padding:4px 8px;font:400 10px var(--mono);background:transparent;text-transform:uppercase}
 .gaming-menubar .appearance-controls .btn[aria-pressed=true] {color:var(--accent)}
 .gaming-nav {display:flex;flex-direction:column;align-items:stretch;padding:6px 0 0 26px;gap:3px}
@@ -1487,7 +1499,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
  .library-hidden .gaming-rail {display:flex;grid-column:2;max-width:340px;justify-self:end}.gaming-nav {padding-left:6px}
  .gaming-nav-link {flex-direction:column;padding:9px 2px;font-size:8px}.gaming-nav > .gaming-meta,.gaming-nav .gaming-nav-bottom,.gaming-top-status {display:none}
  .gaming-menubar {margin-right:-10px;padding:0 12px;gap:8px}.gaming-menubar .appearance-controls {margin-left:auto;gap:5px}
- .gaming-menubar .appearance-controls .btn {font-size:8px;padding:4px}.gaming-brand {font-size:12px}.gaming-feedback {left:76px;right:10px}
+.gaming-menubar .appearance-controls .btn {font-size:8px;padding:4px}.gaming-brand {font-size:12px}.gaming-feedback {left:76px;right:10px}
 }
 @media (max-width:480px) {
  .game-feature {grid-template-columns:1fr}.game-feature-art {display:none}.game-grid {grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -1526,16 +1538,10 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .play-card svg { width:100%; color:var(--accent); }
 .gaming-app .btn { border-radius:0; white-space:normal; }
 .gaming-app[aria-busy=true] button { opacity:.6; pointer-events:none; }
-.companion-app { padding:14px; display:flex; flex-direction:column; gap:12px; }
-.companion-app .play-header { flex-wrap:wrap; gap:8px; padding-bottom:12px; }
-.companion-app .play-header h1 { font-size:22px; }
-.companion-app .play-status { margin:0; }
-.companion-video { width:100%; aspect-ratio:16/9; background:#111; flex-shrink:0; }
-.companion-notes { min-height:160px; resize:vertical; line-height:1.6; }
 .play-controller-focus { outline:3px solid var(--accent)!important; outline-offset:3px; }
 .play-osk { position:fixed; z-index:100000; bottom:18px; left:50%; transform:translateX(-50%); width:min(640px,94vw); padding:14px; background:var(--surface); border:1px solid var(--border); box-shadow:0 10px 50px #0009; display:flex; gap:6px; flex-wrap:wrap; }
 .play-osk button { flex:1 0 8%; padding:12px 5px; border:1px solid var(--border); background:var(--surface-raised,var(--surface)); color:var(--text); }
-.app-window[data-app="gaming"], .app-window[data-app="companion"] { display:block; overflow:hidden; }
+.app-window[data-app="gaming"] { display:block; overflow:hidden; }
 .gaming-app { width:100%; }
 
 /* One shelf: launcher, applications and system controls share the desktop chrome. */
@@ -1603,13 +1609,27 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .desktop-system-body .app-settings {display:grid;grid-template-columns:220px minmax(0,1fr)}
 .desktop-system-body .gaming-app {width:100%;min-height:0;overflow:auto}
 .productivity-main {display:flex;flex-direction:column;gap:22px;overflow:auto;min-height:0}
+.productivity-main {position:relative;background:transparent;border:0;box-shadow:none;padding:12px;gap:8px}
+.productivity-main .home-desktop-files {position:relative;inset:auto;flex:1;min-height:120px;padding:0!important;visibility:visible}
+.productivity-main .shortcut-add-form {grid-column:1 / -1;display:flex;gap:8px;max-width:420px}
 .work-card {padding-bottom:18px}
 .work-card > :not(header) {margin-left:18px;margin-right:18px}
 .work-intro h1 {font-size:clamp(24px,3vw,42px);letter-spacing:-.04em;margin:26px 0 8px}
 .work-intro p {color:var(--fg-dim)}
-.work-shortcuts {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:25px}
-.work-shortcut {display:flex;flex-direction:column;align-items:flex-start;gap:20px;padding:18px;border:1px solid var(--hairline);background:var(--surface);color:var(--fg)}
-.work-shortcut:hover {border-color:var(--accent);box-shadow:var(--glow-accent)}
+.work-shortcuts {display:grid;grid-template-columns:repeat(auto-fill,104px);gap:16px;padding:12px 0}
+.work-shortcut {position:relative;color:var(--fg);border:0;background:transparent}
+.work-shortcut-main,.work-shortcut-add {display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;width:104px;min-height:112px;padding:12px 6px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:center;font:500 12px/1.4 var(--ui)}
+.work-shortcut-main img {object-fit:contain;filter:drop-shadow(0 2px 3px #0004)}
+.work-shortcut-main span {overflow-wrap:anywhere}
+.work-shortcut-add svg {width:48px;height:48px;padding:12px}
+.work-shortcut-main:hover,.work-shortcut-add:hover {background:var(--surface-hover)}
+.work-shortcut-remove {position:absolute;top:0;right:0;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:3px;border:0;border-radius:50%;color:var(--fg-faint);background:var(--bg-1);opacity:0}
+.work-shortcut:hover .work-shortcut-remove,.work-shortcut:focus-within .work-shortcut-remove {opacity:1}
+.work-shortcut-remove:hover {color:var(--danger)}
+.shortcut-add-form {display:flex;align-items:center;gap:8px;grid-column:1 / -1}
+.shortcut-add-form .select {min-width:220px}
+.workspace-custom-nav {display:contents}
+.work-shortcut:hover {box-shadow:none}
 .work-shortcut svg {color:var(--accent)}
 .work-files,.work-windows {padding-top:12px}
 .work-file {display:flex;align-items:center;gap:12px;width:100%;padding:12px 4px;text-align:left;border-bottom:1px solid var(--hairline);background:transparent;color:var(--fg)}

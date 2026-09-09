@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Local game library for the MindOS shell. No accounts, network or DLL scans."""
 
-import argparse
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
-import subprocess
 import sys
-from urllib.parse import urlencode
+
+# argparse, subprocess, tempfile and urllib are imported where they are used:
+# the compositor and the shell run this every minute, and a scan served from
+# the cache needs none of them.
 
 
 def read_json(path, fallback):
@@ -28,17 +29,113 @@ def fields(path):
             re.findall(r'"([^"\n]+)"\s+"((?:[^"\\]|\\.)*)"', text)}
 
 
-def scan(home=None):
+class Inputs:
+    """Every file a scan read and every path it probed, with what it found.
+
+    The shell and the compositor ask for the library far more often than it
+    changes. A later call replays these probes (stat calls only, no parsing);
+    while they all give the same answers, the cached result is the result.
+    """
+
+    def __init__(self):
+        self.items = []
+
+    def stat(self, path):
+        """(mtime, size) of a file that is read or a directory that is listed."""
+        try:
+            st = os.stat(path)
+            value = [st.st_mtime_ns, st.st_size]
+        except (OSError, ValueError):
+            value = None
+        self.items.append(["stat", str(path), value])
+        return value
+
+    def is_dir(self, path):
+        value = Path(path).is_dir()
+        self.items.append(["dir", str(path), value])
+        return value
+
+    def is_file(self, path):
+        value = Path(path).is_file()
+        self.items.append(["file", str(path), value])
+        return value
+
+    PROBES = {"stat": stat, "dir": is_dir, "file": is_file}
+
+
+def unchanged(items):
+    """True when every recorded probe still gives the recorded answer."""
+    probe = Inputs()
+    for item in items:
+        if (not isinstance(item, list) or len(item) != 3 or item[0] not in Inputs.PROBES
+                or not isinstance(item[1], str)):
+            return False
+        if Inputs.PROBES[item[0]](probe, item[1]) != item[2]:
+            return False
+    return True
+
+
+def locations(home=None):
     home = Path(home) if home else Path.home()
     cfg = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
     data = Path(os.environ.get("XDG_DATA_HOME", home / ".local/share"))
+    cache = Path(os.environ.get("XDG_CACHE_HOME", home / ".cache")) / "mindos/games.json"
+    return home, cfg, data, cache
+
+
+def cached_library(home=None):
+    """The last scan result if the library has not changed since, else None."""
+    home, cfg, data, cache = locations(home)
+    try:
+        entry = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(entry, dict) or entry.get("context") != [str(home), str(cfg), str(data)]:
+        return None
+    result, inputs = entry.get("result"), entry.get("inputs")
+    if (not isinstance(result, dict) or not isinstance(result.get("games"), list)
+            or not isinstance(result.get("warnings"), list) or not isinstance(inputs, list)):
+        return None
+    return result if unchanged(inputs) else None
+
+
+def save_cache(cache, entry):
+    """Best effort: a library that cannot be cached is simply scanned again next time."""
+    import tempfile
+    tmp = None
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=cache.parent, prefix=".games-")
+        with os.fdopen(fd, "w") as out:
+            json.dump(entry, out)
+        os.replace(tmp, cache)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def scan(home=None):
+    cached = cached_library(home)
+    if cached is not None:
+        return cached
+    home, cfg, data, cache = locations(home)
+    from urllib.parse import urlencode
+    inputs = Inputs()
+    # A newer scanner must not serve a result an older one produced.
+    inputs.stat(os.path.abspath(__file__))
     games, warnings, seen = [], [], set()
 
     def add(gid, name, source, path, uri, **extra):
         if not isinstance(path, (str, Path)) or not str(path) or '\x00' in str(path):
             return
         path = Path(path).expanduser()
-        if gid in seen or not path.is_dir():
+        if gid in seen or not inputs.is_dir(path):
             return
         seen.add(gid)
         games.append(dict(id=gid, name=str(name), source=source, path=str(path),
@@ -48,10 +145,11 @@ def scan(home=None):
              home / ".var/app/com.valvesoftware.Steam/.local/share/Steam"]
     libs = {}
     for seed in seeds:
-        if not (seed / "steamapps").is_dir():
+        if not inputs.is_dir(seed / "steamapps"):
             continue
         libs[seed.resolve()] = seed
         vdf = seed / "steamapps/libraryfolders.vdf"
+        inputs.stat(vdf)
         try:
             paths = re.findall(r'"path"\s+"((?:[^"\\]|\\.)*)"', vdf.read_text())
             for p in paths:
@@ -60,7 +158,9 @@ def scan(home=None):
         except OSError:
             pass
     for lib in libs.values():
+        inputs.stat(lib / "steamapps")
         for acf in sorted((lib / "steamapps").glob("appmanifest_*.acf")):
+            inputs.stat(acf)
             f = fields(acf)
             appid, name, directory = (f.get(k, "") for k in ("appid", "name", "installdir"))
             if not appid.isdigit() or not name or not directory:
@@ -74,10 +174,10 @@ def scan(home=None):
                 continue
             art = None
             for seed in seeds:
-                cache = seed / "appcache/librarycache"
-                candidates = [cache / f"{appid}_library_600x900.jpg", cache / f"{appid}_header.jpg",
-                              cache / appid / "library_600x900.jpg", cache / appid / "header.jpg"]
-                art = next((str(p) for p in candidates if p.is_file()), art)
+                art_cache = seed / "appcache/librarycache"
+                candidates = [art_cache / f"{appid}_library_600x900.jpg", art_cache / f"{appid}_header.jpg",
+                              art_cache / appid / "library_600x900.jpg", art_cache / appid / "header.jpg"]
+                art = next((str(p) for p in candidates if inputs.is_file(p)), art)
                 if art:
                     break
             add(f"steam:{appid}", name, "steam", path, f"steam://rungameid/{appid}",
@@ -86,6 +186,7 @@ def scan(home=None):
     heroic_configs = [cfg, home / ".var/app/com.heroicgameslauncher.hgl/config"]
     for base in heroic_configs:
         for installed in [base / "legendary/installed.json", base / "heroic/legendaryConfig/legendary/installed.json"]:
+            inputs.stat(installed)
             entries = read_json(installed, {})
             if not isinstance(entries, dict):
                 continue
@@ -93,8 +194,11 @@ def scan(home=None):
                 if isinstance(game, dict) and game.get("install_path"):
                     add(f"heroic:{slug}", game.get("title") or slug, "heroic", game["install_path"],
                         "heroic://launch?" + urlencode(dict(appName=slug, runner="legendary")))
-        installed = read_json(base / "heroic/gog_store/installed.json", {})
-        library = read_json(base / "heroic/store_cache/gog_library.json", {})
+        installed_file, library_file = base / "heroic/gog_store/installed.json", base / "heroic/store_cache/gog_library.json"
+        inputs.stat(installed_file)
+        inputs.stat(library_file)
+        installed = read_json(installed_file, {})
+        library = read_json(library_file, {})
         cached = library.get("games", []) if isinstance(library, dict) else []
         titles = {str(g.get("app_name")): g.get("title") for g in cached
                   if isinstance(g, dict)} if isinstance(cached, list) else {}
@@ -108,8 +212,10 @@ def scan(home=None):
                     "heroic://launch?" + urlencode(dict(appName=slug, runner="gog")))
 
     for db in [data / "lutris/pga.db", home / ".var/app/net.lutris.Lutris/data/lutris/pga.db"]:
-        if not db.is_file():
+        if not inputs.is_file(db):
             continue
+        inputs.stat(db)
+        inputs.stat(db.with_name(db.name + "-wal"))
         try:
             con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=1)
             try:
@@ -121,30 +227,54 @@ def scan(home=None):
         except (sqlite3.Error, ValueError) as e:
             warnings.append(f"Could not read Lutris library: {e}")
     games.sort(key=lambda g: (-g.get("lastPlayed", 0), g["name"].casefold()))
-    return dict(games=games, warnings=warnings)
+    result = dict(games=games, warnings=warnings)
+    # A launcher that could not be read may read fine next time: never remember that.
+    if not warnings:
+        save_cache(cache, dict(context=[str(home), str(cfg), str(data)], inputs=inputs.items, result=result))
+    return result
 
 
 def launch(gid):
-    game = next((g for g in scan()["games"] if g["id"] == gid), None)
-    if not game:
+    """Open the game through its launcher. The last scan knows the URI while
+    the library is unchanged; otherwise (or for a game it does not list) the
+    library is scanned again first."""
+    def find(library):
+        return next((g for g in library["games"]
+                     if isinstance(g, dict) and g.get("id") == gid and isinstance(g.get("uri"), str)), None)
+    cached = cached_library()
+    game = find(cached) if cached is not None else None
+    if game is None:
+        game = find(scan())
+    if game is None:
         raise ValueError("This game is no longer installed. Refresh your library.")
+    uri = game["uri"]
     # Argument arrays only. The launcher retains its own Proton, GameMode,
     # launch-option and cloud-save configuration.
-    result = subprocess.run(["gio", "open", game["uri"]], capture_output=True, text=True, timeout=15)
+    import subprocess
+    try:
+        result = subprocess.run(["gio", "open", uri], capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired as e:
+        raise ValueError(str(e)) from None
     if result.returncode:
         raise ValueError(result.stderr.strip() or "The game launcher could not be opened.")
     return dict(id=gid, dispatched=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("scan")
-    sub.add_parser("launch").add_argument("id")
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if argv == ["scan"] or (len(argv) == 2 and argv[0] == "launch" and not argv[1].startswith("-")):
+        command, gid = argv[0], argv[-1]
+    else:
+        import argparse
+        parser = argparse.ArgumentParser(description=__doc__)
+        sub = parser.add_subparsers(dest="command", required=True)
+        sub.add_parser("scan")
+        sub.add_parser("launch").add_argument("id")
+        args = parser.parse_args()
+        command, gid = args.command, getattr(args, "id", None)
     try:
-        print(json.dumps(scan() if args.command == "scan" else launch(args.id)))
-    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        print(json.dumps(scan() if command == "scan" else launch(gid)))
+    except (OSError, ValueError) as e:
         print(json.dumps(dict(error=str(e))))
         return 1
     return 0

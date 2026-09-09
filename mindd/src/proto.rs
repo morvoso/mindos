@@ -103,7 +103,7 @@ pub enum Request {
 /// Something the Mind wants the user to know: an update assessment, a
 /// health finding, a report after an update. Shown by the desktop shell as
 /// a notification and kept until dismissed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Notice {
     /// Stable id: "updates:available", "health:failed-units", ...
@@ -128,7 +128,7 @@ impl Default for Notice {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct NoticeAction {
     pub label: String,

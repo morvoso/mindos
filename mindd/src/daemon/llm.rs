@@ -37,6 +37,11 @@ impl Message {
     pub fn user(s: impl Into<String>) -> Message {
         Message { role: "user".into(), content: Some(s.into()), tool_calls: None, tool_call_id: None, name: None }
     }
+    /// A user-role message the daemon writes itself (the status block, the
+    /// clock line); the name tells it from what the user typed.
+    pub fn named_user(name: &str, s: impl Into<String>) -> Message {
+        Message { role: "user".into(), content: Some(s.into()), tool_calls: None, tool_call_id: None, name: Some(name.to_string()) }
+    }
     pub fn assistant(text: &str, calls: &[ToolCall]) -> Message {
         let tool_calls = if calls.is_empty() {
             None

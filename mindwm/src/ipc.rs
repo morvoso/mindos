@@ -592,7 +592,12 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             let (request_id, request) = parse_request(&line);
             let subscribing = matches!(request, Ok(Request::Subscribe));
             let reply = match request {
-                Ok(request) => self.ipc_request(id, request),
+                Ok(request) => {
+                    // Most requests change something on screen (focus, a
+                    // layout, the bar); one frame covers the whole line.
+                    self.request_repaint();
+                    self.ipc_request(id, request)
+                }
                 Err(err) => Reply::Err(err),
             };
             if !self.ipc.send(id, &reply_line(request_id.as_ref(), &reply)) {

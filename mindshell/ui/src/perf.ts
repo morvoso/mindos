@@ -3,6 +3,8 @@
 // Settings › Performance.
 
 import * as bridge from './bridge';
+import { every } from './dom';
+import { isQuiet } from './quiet';
 import type { PerfMode, PerfStatus, RunResult } from './types';
 
 export interface PerfModeInfo {
@@ -44,12 +46,23 @@ export async function setPerfConfig(key: string, value: string): Promise<void> {
 export const perfCache: { status?: PerfStatus; at: number; listeners: Set<(s: PerfStatus | undefined) => void> } = { at: 0, listeners: new Set() };
 
 let watching = false;
+let stale = false;
 
 export function perfSubscribe(el: Element, cb: (s: PerfStatus | undefined) => void): () => void {
   if (!watching) {
-    // Another window switched the mode (or GameMode did): read it again.
+    // Another window switched the mode (or GameMode did): read it again. The
+    // host's broadcast is what keeps every page current; a hidden page waits
+    // until it is shown, so a change costs one helper run per visible page.
     watching = true;
-    bridge.on('perf_changed', () => void perfRefresh(true));
+    bridge.on('perf_changed', () => {
+      if (document.hidden) stale = true;
+      else void perfRefresh(true);
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden || !stale) return;
+      stale = false;
+      void perfRefresh(true);
+    });
   }
   const wrapped = (s: PerfStatus | undefined) => {
     if (!el.isConnected) return perfCache.listeners.delete(wrapped);
@@ -81,6 +94,18 @@ export async function perfRefresh(force = false): Promise<PerfStatus | undefined
     return perfCache.status;
   })().finally(() => { pending = undefined; });
   return pending;
+}
+
+/** The safety net behind the `perf_changed` broadcast: a rare poll that is
+ *  skipped while the page is hidden, while a game runs, or when the status was
+ *  read recently anyway. The first call is immediate (it is the mount-time
+ *  read; a refresh already in flight is shared, not repeated). */
+export function perfWatch(el: Element, ms = 60_000): () => void {
+  return every(el, ms, () => {
+    if (document.hidden || isQuiet()) return;
+    if (perfCache.status && Date.now() - perfCache.at < ms / 2) return;
+    void perfRefresh();
+  });
 }
 
 /** Show the confirmed state, including a saved preference while gaming. */

@@ -320,7 +320,7 @@ to greetd's login screen; a root shell stays available on tty2 on the live ISO.
 ### mindos-install (packages/mindos-install)
 
 A guided installer run as root from the live ISO. GPT with a BIOS boot
-partition, a 1 GiB EFI system partition on `/boot` and btrfs with `@`,
+partition, a 4 GiB EFI system partition on `/boot` and btrfs with `@`,
 `@home`, `@log`, `@pkg` and `@snapshots` subvolumes; installs from the
 bundled `[mindos]` repository plus the Arch mirrors; asks for disk, hostname,
 user, password, timezone and whether to add the gaming and development

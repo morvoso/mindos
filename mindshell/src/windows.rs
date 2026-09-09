@@ -140,6 +140,10 @@ impl ShellWindow {
             window.set_monitor(Some(monitor));
             window.set_decorated(false);
             window.add_css_class("mindshell");
+            if matches!(kind, Kind::Desktop | Kind::Lock | Kind::Greeter) {
+                // Painted edge to edge by the page: an opaque surface.
+                window.add_css_class("opaque");
+            }
         }
         window.set_child(Some(&view));
         Rc::new(ShellWindow {
@@ -413,7 +417,8 @@ pub fn install_css() {
     let Some(display) = gdk::Display::default() else { return };
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        "window.mindshell, window.mindshell.background, window.mindshell.csd { background: transparent; background-color: transparent; box-shadow: none; border: none; }",
+        "window.mindshell, window.mindshell.background, window.mindshell.csd { background: transparent; background-color: transparent; box-shadow: none; border: none; } \
+         window.mindshell.opaque, window.mindshell.opaque.background { background: #000; background-color: #000; }",
     );
     gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
 }

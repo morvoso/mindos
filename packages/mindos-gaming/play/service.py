@@ -26,6 +26,12 @@ def metadata(gid, patch=None):
     return value
 
 
+def metadata_all(ids):
+    """metadata() for every game the Library shows, under one lock."""
+    with lock('metadata'):
+        return {gid:read(DATA/'games'/(key(gid)+'.json')) for gid in ids}
+
+
 def boot():
     p = run(['systemd-analyze','--no-pager','time'],check=False)
     q = run(['systemd-analyze','--no-pager','blame'],check=False)
@@ -37,20 +43,17 @@ def dispatch(p):
     gid=p.get('game','')
     if action=='config.get': return public_config()
     if action=='config.set': return update_config(p.get('settings',{}))
-    if action=='config.disconnect':
-        with lock():
-            cfg=config()
-            for k in ('steam_key','steam_id'): cfg.pop(k,None)
-            write(CONFIG,cfg)
-            (DATA/'steam-friends.json').unlink(missing_ok=True)
-        return public_config()
     if action=='sessions': return sessions.list_sessions()
     if action=='library.state':
-        extra = p.get('games', [])
-        if not isinstance(extra, list) or len(extra)>2000 or any(not isinstance(g, str) or not g.startswith('desktop:') or len(g)>512 for g in extra):
-            raise ValueError('Invalid desktop game list')
-        ids = {g['id'] for g in games()} | set(extra)
-        return dict(metadata={gid:metadata(gid) for gid in ids}, storage=storage.index(), sessions=sessions.list_sessions())
+        # With "scanned": the caller already ran mindos-games and lists every game it shows;
+        # without it, the ids are desktop games added to a scan made here.
+        ids = p.get('games', [])
+        scanned = p.get('scanned', False)
+        if not isinstance(scanned, bool) or not isinstance(ids, list) or len(ids)>2000 or any(
+                not isinstance(g, str) or len(g)>512 or (not scanned and not g.startswith('desktop:')) for g in ids):
+            raise ValueError('Invalid game list' if scanned else 'Invalid desktop game list')
+        ids = set(ids) if scanned else {g['id'] for g in games()} | set(ids)
+        return dict(metadata=metadata_all(ids), storage=storage.index(), sessions=sessions.list_sessions())
     if action=='session.setup': return sessions.setup(gid)
     if action=='session.suspend': return sessions.change(gid,True)
     if action=='session.resume': return sessions.change(gid,False)
@@ -60,8 +63,6 @@ def dispatch(p):
     if action=='analyze': return telemetry.recommendations(gid)
     if action=='compare': return telemetry.compare(p.get('before'),p.get('after'))
     if action=='downloads': return providers.downloads()
-    if action=='friends': return providers.friends(bool(p.get('refresh')))
-    if action=='achievements': return providers.achievements(gid)
     if action=='storage.list': return storage.index()
     if action=='storage.plan': return storage.plan(gid,bool(p.get('restore')))
     if action=='storage.move': return storage.relocate(gid,bool(p.get('restore')))

@@ -1,5 +1,6 @@
 //! System helpers: power, statistics, audio (WirePlumber), network, battery.
 
+use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -13,12 +14,26 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Whether `cmd` is on the PATH. The answer is kept for ten minutes: the
+/// samplers ask many times a minute between them, and a helper installed
+/// or removed meanwhile shows up on the next check.
 fn have(cmd: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|p| {
-            std::env::split_paths(&p).any(|d| d.join(cmd).is_file())
-        })
-        .unwrap_or(false)
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static KNOWN: OnceLock<Mutex<HashMap<String, (Instant, bool)>>> = OnceLock::new();
+    let known = KNOWN.get_or_init(Default::default);
+    if let Some((at, found)) = known.lock().ok().and_then(|m| m.get(cmd).copied()) {
+        if at.elapsed() < Duration::from_secs(600) {
+            return found;
+        }
+    }
+    let found = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
+        .unwrap_or(false);
+    if let Ok(mut m) = known.lock() {
+        m.insert(cmd.to_string(), (Instant::now(), found));
+    }
+    found
 }
 
 pub fn power(action: &str) -> Result<(), String> {
@@ -60,6 +75,9 @@ pub fn logout_fallback() -> Result<(), String> {
 pub struct Stats {
     last_cpu: Option<(u64, u64)>,
     gpu: Option<(Instant, Value)>,
+    /// The last snapshot, handed out again for half a second so every
+    /// widget that asks in the same moment shows the same numbers.
+    snapshot: Option<(Instant, Value)>,
 }
 
 impl Stats {
@@ -122,6 +140,11 @@ impl Stats {
     }
 
     pub fn snapshot(&mut self) -> Value {
+        if let Some((at, v)) = &self.snapshot {
+            if at.elapsed() < Duration::from_millis(500) {
+                return v.clone();
+            }
+        }
         let cpu = self.cpu_percent();
         let mut mem_total = 0.0;
         let mut mem_avail = 0.0;
@@ -144,7 +167,7 @@ impl Stats {
             .and_then(|t| t.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
             .unwrap_or(0.0);
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        json!({
+        let v = json!({
             "cpu": (cpu * 10.0).round() / 10.0,
             "cores": cores,
             "memUsed": mem_total - mem_avail,
@@ -152,7 +175,9 @@ impl Stats {
             "gpu": self.gpu.as_ref().map(|(_, v)| v.clone()),
             "load": load,
             "uptime": uptime,
-        })
+        });
+        self.snapshot = Some((Instant::now(), v.clone()));
+        v
     }
 }
 
@@ -173,6 +198,37 @@ pub fn audio_get() -> Option<Audio> {
         volume,
         muted: out.contains("MUTED"),
     })
+}
+
+/// PipeWire's own change feed, `pactl subscribe` (part of pipewire-pulse):
+/// one line per event. `None` when it is not available.
+pub fn audio_events() -> Option<std::process::Child> {
+    if !have("pactl") {
+        return None;
+    }
+    let mut cmd = Command::new("pactl");
+    cmd.arg("subscribe")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    unsafe {
+        // The feed ends with the shell, whichever way the shell ends.
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    cmd.spawn().ok()
+}
+
+/// Whether a `pactl subscribe` line ("Event 'change' on sink #48") concerns
+/// a sink or the server (the default sink changing): the only events that
+/// can move the volume the bar shows. Streams, clients and sources are not.
+pub fn audio_event_matters(line: &str) -> bool {
+    line.rsplit(" on ")
+        .next()
+        .map(|what| what.starts_with("sink #") || what.starts_with("server"))
+        .unwrap_or(false)
 }
 
 pub fn audio_value(a: &Option<Audio>) -> Value {
@@ -469,12 +525,16 @@ pub fn home_dir() -> Option<std::path::PathBuf> {
 }
 
 pub fn host_name() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "mindos".into())
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        std::fs::read_to_string("/etc/hostname")
+            .map(|s| s.trim().to_string())
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("HOSTNAME").ok())
+            .unwrap_or_else(|| "mindos".into())
+    })
+    .clone()
 }
 
 #[cfg(test)]
@@ -486,6 +546,15 @@ mod tests {
         assert_eq!(nmcli_fields("office:33b8:wireguard:office:yes:yes"), ["office", "33b8", "wireguard", "office", "yes", "yes"]);
         assert_eq!(nmcli_fields(r"Home\: VPN:1:wireguard::no:no"), ["Home: VPN", "1", "wireguard", "", "no", "no"]);
         assert_eq!(nmcli_fields(""), [""]);
+    }
+
+    #[test]
+    fn audio_feed_lines() {
+        assert!(audio_event_matters("Event 'change' on sink #48"));
+        assert!(audio_event_matters("Event 'change' on server"));
+        assert!(!audio_event_matters("Event 'new' on sink-input #12"));
+        assert!(!audio_event_matters("Event 'change' on client #3"));
+        assert!(!audio_event_matters(""));
     }
 
     #[test]

@@ -70,7 +70,7 @@ use smithay::{
     reexports::{
         calloop::{
             timer::{TimeoutAction, Timer},
-            EventLoop, RegistrationToken,
+            EventLoop, LoopHandle, RegistrationToken,
         },
         drm::{
             control::{connector, crtc, Device, Mode as DrmMode, ModeTypeFlags},
@@ -356,6 +356,45 @@ impl Backend for UdevData {
     /// Switch every display off with DPMS, or light them again. Clearing a
     /// DRM surface stops its page flips, so the render loop for that output
     /// stops with it; lighting up has to kick a frame to start it again.
+    fn request_repaint(state: &mut AnvilState<Self>) {
+        for (node, device) in state.backend_data.backends.iter_mut() {
+            for (crtc, surface) in device.surfaces.iter_mut() {
+                surface.dirty = true;
+                if surface.repaint_timer.as_ref().is_some_and(|armed| armed.idle) {
+                    // Idle: draw at the next turn of the loop, once this batch
+                    // of events has been handled, rather than at the tick.
+                    arm_repaint(&state.handle, surface, *node, *crtc, Timer::immediate(), None, false);
+                }
+            }
+        }
+    }
+
+    fn repaint_now(state: &mut AnvilState<Self>, output: &Output) {
+        let Some(id) = output.user_data().get::<UdevOutputId>().copied() else {
+            return;
+        };
+        let Some(surface) = state
+            .backend_data
+            .backends
+            .get_mut(&id.device_id)
+            .and_then(|device| device.surfaces.get_mut(&id.crtc))
+        else {
+            return;
+        };
+        surface.dirty = true;
+        // A timer is only ever armed once the previous flip completed, so
+        // drawing now cannot queue a second frame behind one in flight.
+        let Some(armed) = surface.repaint_timer.take() else {
+            return;
+        };
+        state.handle.remove(armed.token);
+        let (node, crtc) = (id.device_id, id.crtc);
+        state.handle.insert_idle(move |data| {
+            let target = armed.target.unwrap_or_else(|| data.repaint_target(node, crtc));
+            data.render(node, Some(crtc), target);
+        });
+    }
+
     fn set_blanked(state: &mut AnvilState<Self>, blanked: bool) {
         if blanked {
             for device in state.backend_data.backends.values_mut() {
@@ -791,8 +830,12 @@ pub fn run_udev() {
      * And run our loop
      */
 
+    // Every producer is an event source (client sockets, libinput, vblanks,
+    // timers, channels), so the loop sleeps until one of them has something;
+    // the refresh below then runs once per batch of events, the only time it
+    // can have work.
     while state.running.load(Ordering::SeqCst) {
-        let result = event_loop.dispatch(Some(Duration::from_millis(16)), &mut state);
+        let result = event_loop.dispatch(None, &mut state);
         if result.is_err() {
             state.running.store(false, Ordering::SeqCst);
         } else {
@@ -919,6 +962,65 @@ struct SurfaceData {
     dmabuf_feedback: Option<SurfaceDmabufFeedback>,
     last_presentation_time: Option<Time<Monotonic>>,
     vblank_throttle_timer: Option<RegistrationToken>,
+    /// What the last repaint aimed at, so one kicked off while the output
+    /// is idle aims at the next vblank rather than at "now".
+    frame_target: Option<Time<Monotonic>>,
+    /// The armed repaint timer, if any. Nothing is armed while a frame is
+    /// in flight: the vblank arms the next one.
+    repaint_timer: Option<RepaintTimer>,
+    /// Something changed since the last repaint began.
+    dirty: bool,
+}
+
+/// A timer that will repaint one CRTC: the one 0.6 frames after a flip,
+/// the retry a frame after an empty repaint, or the slow idle tick.
+struct RepaintTimer {
+    token: RegistrationToken,
+    /// The presentation time the repaint aims at; `None` for the idle tick,
+    /// which works it out when it fires.
+    target: Option<Time<Monotonic>>,
+    /// The idle tick of an output with nothing to draw. A change replaces
+    /// it with an immediate repaint instead of waiting for it.
+    idle: bool,
+}
+
+/// How often an output with nothing to draw looks again. Frame callbacks of
+/// surfaces that are not on screen (covered, or on another output) are only
+/// sent when they are this overdue, and a change that slipped past
+/// `request_repaint` gets drawn at the latest by the next tick.
+const IDLE_REPAINT: Duration = Duration::from_secs(1);
+
+/// Arm `timer` to repaint `crtc`, replacing whatever was armed before, and
+/// remember it so a fullscreen commit or a change while idle can pull the
+/// repaint forward.
+fn arm_repaint(
+    handle: &LoopHandle<'static, AnvilState<UdevData>>,
+    surface: &mut SurfaceData,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    timer: Timer,
+    target: Option<Time<Monotonic>>,
+    idle: bool,
+) {
+    if let Some(armed) = surface.repaint_timer.take() {
+        handle.remove(armed.token);
+    }
+    let token = handle
+        .insert_source(timer, move |_, _, data| {
+            if let Some(surface) = data
+                .backend_data
+                .backends
+                .get_mut(&node)
+                .and_then(|device| device.surfaces.get_mut(&crtc))
+            {
+                surface.repaint_timer = None;
+            }
+            let target = target.unwrap_or_else(|| data.repaint_target(node, crtc));
+            data.render(node, Some(crtc), target);
+            TimeoutAction::Drop
+        })
+        .expect("failed to schedule frame timer");
+    surface.repaint_timer = Some(RepaintTimer { token, target, idle });
 }
 
 impl Drop for SurfaceData {
@@ -1410,6 +1512,9 @@ impl AnvilState<UdevData> {
                 dmabuf_feedback,
                 last_presentation_time: None,
                 vblank_throttle_timer: None,
+                frame_target: None,
+                repaint_timer: None,
+                dirty: true,
             };
 
             device.surfaces.insert(crtc, surface);
@@ -1732,13 +1837,54 @@ impl AnvilState<UdevData> {
                 Timer::from_duration(repaint_delay)
             };
 
-            self.handle
-                .insert_source(timer, move |_, _, data| {
-                    data.render(dev_id, Some(crtc), next_frame_target);
-                    TimeoutAction::Drop
-                })
-                .expect("failed to schedule frame timer");
+            arm_repaint(&self.handle, surface, dev_id, crtc, timer, Some(next_frame_target), false);
         }
+    }
+
+    /// The presentation time a repaint started now should aim at: the next
+    /// vblank after the last target, or now when there was none yet.
+    fn repaint_target(&self, node: DrmNode, crtc: crtc::Handle) -> Time<Monotonic> {
+        let now = self.clock.now();
+        let last = self
+            .backend_data
+            .backends
+            .get(&node)
+            .and_then(|device| device.surfaces.get(&crtc))
+            .and_then(|surface| surface.frame_target);
+        let (Some(last), Some(refresh)) = (last, self.output_refresh(node, crtc)) else {
+            return now;
+        };
+        now + crate::timing::next_repaint(now.into(), last.into(), refresh).saturating_sub(now.into())
+    }
+
+    fn output_refresh(&self, node: DrmNode, crtc: crtc::Handle) -> Option<i32> {
+        self.space
+            .outputs()
+            .find(|o| {
+                o.user_data().get::<UdevOutputId>()
+                    == Some(&UdevOutputId {
+                        device_id: node,
+                        crtc,
+                    })
+            })
+            .and_then(|o| o.current_mode())
+            .map(|mode| mode.refresh)
+    }
+
+    /// Something on screen moves by itself, so the next frame is wanted even
+    /// though nothing asked for one: the columns sliding into place, the Mind
+    /// bar's spinner, a fading feedback card, the start-up backdrop, an
+    /// animated cursor, or a commit a client timed for a later frame.
+    fn wants_frame(&mut self) -> bool {
+        if self.layout.animating() || self.mindbar.animating() {
+            return true;
+        }
+        if let CursorImageStatus::Named(icon) = self.cursor_status {
+            if self.backend_data.pointer_image.animated(icon, 1 /*scale*/) {
+                return true;
+            }
+        }
+        self.commit_timers_pending()
     }
 
     // If crtc is `Some()`, render it, else render all crtcs
@@ -1796,6 +1942,15 @@ impl AnvilState<UdevData> {
         } else {
             return;
         };
+
+        // A repaint kicked off from elsewhere (the displays lighting up, the
+        // session resuming) supersedes whatever timer was armed.
+        if let Some(armed) = surface.repaint_timer.take() {
+            self.handle.remove(armed.token);
+        }
+        // Changes from here on belong to the next frame.
+        surface.dirty = false;
+        surface.frame_target = Some(frame_target);
 
         let start = Instant::now();
 
@@ -1855,11 +2010,18 @@ impl AnvilState<UdevData> {
             &mut self.capture,
             self.clock.now().into(),
         );
-        let reschedule = match result {
+        let next = match result {
             Ok((has_rendered, states)) => {
                 let dmabuf_feedback = surface.dmabuf_feedback.clone();
                 self.post_repaint(&output, frame_target, dmabuf_feedback, &states);
-                !has_rendered
+                if has_rendered {
+                    // The frame is queued: its vblank arms the next repaint.
+                    Repaint::Wait
+                } else if self.surface_dirty(node, crtc) || self.wants_frame() {
+                    Repaint::NextFrame
+                } else {
+                    Repaint::Idle
+                }
             }
             Err(err) => {
                 let inactive = matches!(
@@ -1873,7 +2035,7 @@ impl AnvilState<UdevData> {
                 } else {
                     warn!("Error during rendering: {:#?}", err);
                 }
-                match err {
+                let retry = match err {
                     SwapBuffersError::AlreadySwapped => false,
                     SwapBuffersError::TemporaryFailure(err) => match err.downcast_ref::<DrmError>() {
                         Some(DrmError::DeviceInactive) => false,
@@ -1896,44 +2058,88 @@ impl AnvilState<UdevData> {
                         }
                         _ => panic!("Rendering loop lost: {}", err),
                     },
-                }
+                };
+                if retry { Repaint::NextFrame } else { Repaint::Wait }
             }
         };
 
-        if reschedule {
-            let output_refresh = match output.current_mode() {
-                Some(mode) => mode.refresh,
-                None => return,
-            };
+        match next {
+            Repaint::Wait => {
+                let elapsed = start.elapsed();
+                tracing::trace!(?elapsed, "rendered surface");
+            }
+            Repaint::NextFrame => {
+                let output_refresh = match output.current_mode() {
+                    Some(mode) => mode.refresh,
+                    None => return,
+                };
 
-            // If reschedule is true we either hit a temporary failure or more likely rendering
-            // did not cause any damage on the output. In this case we just re-schedule a repaint
-            // after approx. one frame to re-test for damage.
-            let now = self.clock.now();
-            let next_frame_target = now + crate::timing::next_repaint(
-                now.into(), frame_target.into(), output_refresh,
-            ).saturating_sub(now.into());
-            let reschedule_timeout =
-                Duration::from(next_frame_target).saturating_sub(now.into());
-            trace!(
-                "reschedule repaint timer with delay {:?} on {:?}",
-                reschedule_timeout,
-                crtc,
-            );
-            let timer = Timer::from_duration(reschedule_timeout);
-            self.handle
-                .insert_source(timer, move |_, _, data| {
-                    data.render(node, Some(crtc), next_frame_target);
-                    TimeoutAction::Drop
-                })
-                .expect("failed to schedule frame timer");
-        } else {
-            let elapsed = start.elapsed();
-            tracing::trace!(?elapsed, "rendered surface");
+                // Either a temporary failure, or more likely nothing changed on
+                // screen while something else still wants a frame (an animation,
+                // a change that came in during the repaint). Look again after
+                // approx. one frame.
+                let now = self.clock.now();
+                let next_frame_target = now + crate::timing::next_repaint(
+                    now.into(), frame_target.into(), output_refresh,
+                ).saturating_sub(now.into());
+                let reschedule_timeout =
+                    Duration::from(next_frame_target).saturating_sub(now.into());
+                trace!(
+                    "reschedule repaint timer with delay {:?} on {:?}",
+                    reschedule_timeout,
+                    crtc,
+                );
+                let timer = Timer::from_duration(reschedule_timeout);
+                self.arm_surface_repaint(node, crtc, timer, Some(next_frame_target), false);
+            }
+            Repaint::Idle => {
+                // Nothing to draw and nothing moving: stop repainting every
+                // frame. The next change (`request_repaint`) starts the loop
+                // again at once; the slow tick catches the rest.
+                trace!("output idle, ticking every {:?} on {:?}", IDLE_REPAINT, crtc);
+                self.arm_surface_repaint(node, crtc, Timer::from_duration(IDLE_REPAINT), None, true);
+            }
         }
 
         profiling::finish_frame!();
     }
+
+    fn surface_dirty(&self, node: DrmNode, crtc: crtc::Handle) -> bool {
+        self.backend_data
+            .backends
+            .get(&node)
+            .and_then(|device| device.surfaces.get(&crtc))
+            .is_some_and(|surface| surface.dirty)
+    }
+
+    fn arm_surface_repaint(
+        &mut self,
+        node: DrmNode,
+        crtc: crtc::Handle,
+        timer: Timer,
+        target: Option<Time<Monotonic>>,
+        idle: bool,
+    ) {
+        if let Some(surface) = self
+            .backend_data
+            .backends
+            .get_mut(&node)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
+        {
+            arm_repaint(&self.handle, surface, node, crtc, timer, target, idle);
+        }
+    }
+}
+
+/// What to do once a repaint is over.
+enum Repaint {
+    /// A frame was queued (its vblank continues the loop), or the loop is
+    /// stopped on purpose until the session resumes.
+    Wait,
+    /// Look again after about one frame.
+    NextFrame,
+    /// Nothing changes on its own: wait for a change.
+    Idle,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2059,10 +2265,13 @@ fn render_surface<'a>(
             |e| matches!(e, OutputRenderElements::Custom(CustomRenderElements::Pointer(_))));
     }
 
+    // A game hands over 8-bit buffers while the swapchain is 10-bit: without
+    // ALLOW_PRIMARY_PLANE_SCANOUT_ANY they never match the plane's current
+    // format and every frame gets composited instead of scanned out.
     let frame_mode = if surface.disable_direct_scanout {
         FrameFlags::empty()
     } else {
-        FrameFlags::DEFAULT
+        FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
     };
     let (rendered, states) = surface
         .drm_output

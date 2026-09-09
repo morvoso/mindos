@@ -482,6 +482,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         let Some(area) = usable_area(&self.space, output) else {
             return;
         };
+        self.request_repaint();
         let mode = self.layout.mode;
         let gap = self.layout.gap;
         let outer = self.layout.outer_gap;

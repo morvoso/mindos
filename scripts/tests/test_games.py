@@ -12,6 +12,18 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 helper = runpy.run_path(str(ROOT / 'packages/mindos-gaming/mindos-games'))
+# run_path hands back a copy; the scanner's functions look names up here.
+G = helper['scan'].__globals__
+
+
+def parsed_again(*args, **kwargs):
+    raise AssertionError('the library was parsed again')
+
+
+def without_parsing():
+    """Fail any scan that reads a manifest, launcher JSON or the Lutris database."""
+    return patch.dict(G, {'fields': parsed_again, 'read_json': parsed_again,
+                          'sqlite3': type('sqlite3', (), {'connect': staticmethod(parsed_again), 'Error': sqlite3.Error})})
 
 
 class GamesTest(unittest.TestCase):
@@ -113,6 +125,84 @@ class GamesTest(unittest.TestCase):
         with patch('subprocess.run', return_value=subprocess.CompletedProcess([], 1, '', 'No URI handler')):
             with self.assertRaisesRegex(ValueError, 'No URI handler'):
                 helper['launch']('steam:42')
+
+    def full_library(self):
+        self.manifest()
+        epic = self.home / 'Epic game'
+        epic.mkdir()
+        self.write(self.home / '.config/legendary/installed.json', json.dumps({'ep&ic': {'title': 'Epic', 'install_path': str(epic)}}))
+        self.write(self.home / '.config/heroic/gog_store/installed.json', json.dumps({'installed': [{'appName': '123', 'install_path': str(epic)}]}))
+        db = self.home / '.local/share/lutris/pga.db'
+        db.parent.mkdir(parents=True)
+        with sqlite3.connect(db) as con:
+            con.execute('CREATE TABLE games (id INTEGER, name TEXT, directory TEXT, installed INTEGER)')
+            con.execute('INSERT INTO games VALUES (7, "Lutris game", ?, 1)', (str(self.home),))
+        return db
+
+    def test_unchanged_library_is_served_from_the_cache_without_parsing(self):
+        db = self.full_library()
+        first = json.dumps(helper['scan']())
+        self.assertEqual({g['source'] for g in json.loads(first)['games']}, {'steam', 'heroic', 'gog', 'lutris'})
+        self.assertTrue((self.home / '.cache/mindos/games.json').is_file())
+        with without_parsing():
+            self.assertEqual(json.dumps(helper['scan']()), first)
+        # Every input the scan depends on is watched: manifests, art, install
+        # folders, launcher JSON and the Lutris database.
+        self.manifest(name='Game', flags='4')
+        self.write(self.steam / 'steamapps/appmanifest_42.acf', (self.steam / 'steamapps/appmanifest_42.acf').read_text().replace('1234', '5678'))
+        self.assertEqual(next(g['lastPlayed'] for g in self.scan() if g['id'] == 'steam:42'), 5678)
+        art = self.steam / 'appcache/librarycache/42/header.jpg'
+        self.write(art, 'cover')
+        self.assertEqual(next(g['art'] for g in self.scan() if g['id'] == 'steam:42'), str(art))
+        (self.home / 'Epic game').rmdir()
+        self.assertEqual({g['source'] for g in self.scan()}, {'steam', 'lutris'})
+        with sqlite3.connect(db) as con:
+            con.execute('INSERT INTO games VALUES (8, "Second", ?, 1)', (str(self.home),))
+        self.assertIn('lutris:8', {g['id'] for g in self.scan()})
+        self.write(self.home / '.config/legendary/installed.json', '{}')
+        (self.steam / 'steamapps/appmanifest_42.acf').unlink()
+        self.assertEqual({g['id'] for g in self.scan()}, {'lutris:7', 'lutris:8'})
+        with without_parsing():
+            self.assertEqual({g['id'] for g in self.scan()}, {'lutris:7', 'lutris:8'})
+
+    def test_cache_location_damage_and_unreadable_launchers(self):
+        cache = self.home / 'elsewhere/mindos/games.json'
+        with patch.dict(os.environ, {'XDG_CACHE_HOME': str(self.home / 'elsewhere')}):
+            self.manifest()
+            expected = json.dumps(helper['scan']())
+            self.assertTrue(cache.is_file())
+            self.assertFalse((self.home / '.cache').exists())
+            cache.write_text('{"context": [], "result": {"games": [{"id": "steam:1"}], "warnings": []}, "inputs": []}')
+            self.assertEqual(json.dumps(helper['scan']()), expected)
+            cache.write_text('not json')
+            self.assertEqual(json.dumps(helper['scan']()), expected)
+            with without_parsing():
+                self.assertEqual(json.dumps(helper['scan']()), expected)
+            # A launcher that could not be read is asked again next time, not remembered.
+            self.write(self.home / '.local/share/lutris/pga.db', 'not a database')
+            self.assertEqual(len(helper['scan']()['warnings']), 1)
+            self.assertIsNone(helper['cached_library']())
+
+    def test_launch_needs_no_scan_while_the_cached_library_holds_the_game(self):
+        self.full_library()
+        self.scan()
+        with without_parsing(), patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            self.assertTrue(helper['launch']('steam:42')['dispatched'])
+            self.assertEqual(run.call_args.args[0], ['gio', 'open', 'steam://rungameid/42'])
+            helper['launch']('heroic:ep&ic')
+            self.assertEqual(run.call_args.args[0], ['gio', 'open', 'heroic://launch?appName=ep%26ic&runner=legendary'])
+            helper['launch']('lutris:7')
+            self.assertEqual(run.call_args.args[0], ['gio', 'open', 'lutris:rungameid/7'])
+        # A game the cache does not know is looked for once more before it is refused.
+        with patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            with self.assertRaisesRegex(ValueError, 'no longer installed'):
+                helper['launch']('steam:7')
+            run.assert_not_called()
+            self.manifest('7', 'New game', directory='New')
+            self.assertTrue(helper['launch']('steam:7')['dispatched'])
+            (self.home / '.cache/mindos/games.json').unlink()
+            self.assertTrue(helper['launch']('steam:42')['dispatched'])
+            self.assertTrue((self.home / '.cache/mindos/games.json').is_file())
 
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
-import { every, h } from '../dom';
+import { h } from '../dom';
 import { icon } from '../icons';
-import { modeInfo, perfRefresh, perfSubscribe } from '../perf';
+import { modeInfo, perfSubscribe, perfWatch } from '../perf';
 import { registerWidget } from './registry';
 import { panelItem } from './common';
 
@@ -20,9 +20,14 @@ registerWidget({
     let cfg = ctx.config;
     let current = '';
     let game = false;
+    let shown = '';
     const render = () => {
       const m = modeInfo(current);
-      ic.replaceChildren(icon(current ? m.icon : 'gauge', 18));
+      const glyph = current ? m.icon : 'gauge';
+      if (glyph !== shown) {
+        shown = glyph;
+        ic.replaceChildren(icon(glyph, 18));
+      }
       label.textContent = current ? m.label : '…';
       label.hidden = !cfg.label || !!ctx.panel?.vertical;
       el.dataset.mode = current;
@@ -35,8 +40,8 @@ registerWidget({
       game = !!s && s.game > 0;
       render();
     });
-    void perfRefresh();
-    every(el, 10000, () => void perfRefresh());
+    // The host says when the mode changes; this is only the safety net.
+    perfWatch(el);
     el.addEventListener('click', () => ctx.togglePopup('perf', {}, { anchor: ctx.anchorOf(el) }));
     ctx.store.bind(el, 'popups', () => el.classList.toggle('open', ctx.store.popups.has('perf')));
     return {

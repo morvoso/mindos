@@ -7,7 +7,6 @@ import { store } from '../state';
 import { renderGameLibrary } from '../game-library';
 import { renderSettings } from './settings';
 import { renderGaming } from './gaming';
-import { renderCompanion } from './companion';
 
 export function renderApp(root: HTMLElement, name: string, arg: unknown): void {
   root.classList.add('app-window');
@@ -16,9 +15,6 @@ export function renderApp(root: HTMLElement, name: string, arg: unknown): void {
   switch (name) {
     case 'gaming':
       renderGaming(root, a.page, a.arg);
-      break;
-    case 'companion':
-      renderCompanion(root, a.arg);
       break;
     case 'library':
       renderGameLibrary(root);

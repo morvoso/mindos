@@ -79,7 +79,7 @@ function pointerCard(note: ReturnType<typeof notice>): HTMLElement {
 export function shellPage(el: HTMLElement): () => void {
   const note = notice();
   const cfg = store.state.config;
-  // The icon theme follows the desktop's icon pack, so it can change while the page is open.
+  // The configured icon theme is shown here; the shell falls back safely if its package is absent.
   const themeName = h('span', { class: 'mono' }, cfg.icon_theme ?? 'default');
   const resetBtn = h('button', { class: 'btn danger' }, icon('refresh', 14), 'Reset the layout');
   let armed = false;

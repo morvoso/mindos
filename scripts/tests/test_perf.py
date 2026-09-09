@@ -179,6 +179,80 @@ esac
         self.run_perf("set", "performance")
         self.assertEqual(self.read("sys/kernel/mm/transparent_hugepage/defrag"), "defer")
 
+    @staticmethod
+    def former_status(**raw):
+        """The JSON and text mindos-perf produced with python before it printed them itself.
+
+        mindshell parses the JSON and the Mind reads the text; both must stay byte-identical."""
+        s = dict(raw)
+        s['game'] = int(s['game'])
+        s['mindSleeps'] = s['mindSleeps'] == '1'
+        s['boost'] = None if s['boost'] == '' else s['boost'] == '1'
+        for k in ('nvidia', 'persistence'):
+            s[k] = s[k] == 'true'
+        text = [f"mode:        {s['mode']}" + (f"  (game running: {s['effective']})" if s['game'] else ""),
+                f"cpu:         {s['cpu']}",
+                f"governor:    {s['governor']} / epp {s['epp'] or '-'} / boost {'on' if s['boost'] else 'off'} ({s['driver']})",
+                f"scheduler:   {s['scheduler']}",
+                f"huge pages:  {s['thp']}"]
+        if s['platformProfile']: text.append(f"platform:    {s['platformProfile']}")
+        if s['nvidia']: text.append(f"gpu:         {s['gpu']} (power limit {s['powerLimit']} W)")
+        text.append(f"while gaming: {s['gameMode'] or 'unchanged'}" + (", Mind sleeps" if s['mindSleeps'] else ""))
+        return json.dumps(s, separators=(',', ':')) + "\n", "\n".join(text) + "\n"
+
+    def test_status_keeps_the_exact_former_json_and_text(self):
+        cpu = 'Tëst "CPU" \\ \U0001F600 tab\t bell\x07 del\x7f end'
+        self.write("proc/cpuinfo", f"processor : 0\nmodel name\t: {cpu}\n")
+        self.write(self.policy + "scaling_driver", "amd-pstate-epp\n")
+        self.write("sys/firmware/acpi/platform_profile", "balanced\n")
+        self.write("sys/kernel/sched_ext/root/ops", "scx_lavd\n")
+        self.run_perf("set", "performance")
+        self.run_perf("game-start")
+        self.write("sys/kernel/mm/transparent_hugepage/enabled", "always [madvise] never\n")
+        base = dict(mode="performance", effective="performance", game="1", gameMode="performance", mindSleeps="1",
+                    cpu=cpu, driver="amd-pstate-epp", governor="performance", epp="performance", boost="1",
+                    platformProfile="balanced", thp="madvise", scheduler="scx_lavd", scx="",
+                    nvidia="true", gpu="Test GPU", powerLimit="150.00", powerLimitPolicy="default", persistence="false")
+
+        def check(**changes):
+            expected_json, expected_text = self.former_status(**{**base, **changes})
+            self.assertEqual(self.run_perf("status", "--json").stdout, expected_json)
+            self.assertEqual(self.run_perf("status").stdout, expected_text)
+        check()
+        self.write("proc/cpuinfo", "model name\t: Brand: Model: X\n")
+        check(cpu="X")  # everything up to the last ": " goes, as before
+        (self.root / self.policy / "boost").unlink()
+        self.write("sys/devices/system/cpu/intel_pstate/no_turbo", "1\n")
+        check(cpu="X", boost="0")
+        (self.root / "sys/devices/system/cpu/intel_pstate/no_turbo").unlink()
+        check(cpu="X", boost="")
+        self.write(self.policy + "energy_performance_preference", "")
+        check(cpu="X", boost="", epp="")
+        (self.root / "dev/nvidiactl").unlink()
+        check(cpu="X", boost="", epp="", nvidia="false", gpu="", powerLimit="")
+        self.write("dev/nvidiactl", "")
+        self.write("var/lib/mindos/perf/mode", "  quiet \n")
+        self.write("etc/mindos/perf.conf", 'SCX_SCHEDULER=""\nGAME_MODE=""\nMIND_SLEEPS_WHILE_GAMING=0\n')
+        check(cpu="X", boost="", epp="", mode="quiet", gameMode="", mindSleeps="0")
+        self.run_perf("game-end")  # re-applies quiet: governor, epp, huge pages and the GPU line change with it
+        check(cpu="X", boost="", game="0", mode="quiet", effective="quiet", gameMode="", mindSleeps="0",
+              governor="powersave", epp="power", thp="")
+
+    def test_status_spawns_neither_python_nor_nvidia_smi(self):
+        for name in ("python", "python3"):
+            self.command(name, f"printf 'python %s\\n' \"$*\" >> {shlex.quote(str(self.log))}\n")
+        self.write("proc/cpuinfo", "model name\t: CPU\n")
+        self.run_perf("set", "balanced")  # remembers the GPU's name, persistence mode and power limit
+        self.assertEqual(self.read("run/mindos/perf/nvidia"), "Test GPU, Disabled, 150.00")
+        self.log.write_text("")
+        status = json.loads(self.run_perf("status", "--json").stdout)
+        self.run_perf("status")
+        self.assertEqual(self.log.read_text(), "")
+        self.assertEqual((status["gpu"], status["powerLimit"], status["nvidia"]), ("Test GPU", "150.00", True))
+        (self.root / "run/mindos/perf/nvidia").unlink()  # nothing applied yet this boot
+        self.run_perf("status", "--json")
+        self.assertEqual(self.log.read_text(), "nvidia --query-gpu=name,persistence_mode,power.limit --format=csv,noheader,nounits\n")
+
     def test_status_separates_configuration_from_applied_state(self):
         self.write("proc/cpuinfo", 'model name : Test "CPU"\n')
         self.run_perf("config", "NVIDIA_POWER_LIMIT", "max")

@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 use std::process::Command;
+use std::sync::OnceLock;
 
 pub fn read(p: &str) -> String {
     std::fs::read_to_string(p).unwrap_or_default()
@@ -29,8 +30,23 @@ pub fn mem_total_gib() -> f64 {
     read("/proc/meminfo").lines().find_map(|l| l.strip_prefix("MemTotal:")).and_then(|v| v.trim().split_whitespace().next()?.parse::<f64>().ok()).map(|kib| kib / 1024.0 / 1024.0).unwrap_or(0.0)
 }
 
+/// The running kernel (what `uname -r` prints). Fixed until the next boot,
+/// which restarts the daemon.
+pub fn kernel() -> String {
+    static KERNEL: OnceLock<String> = OnceLock::new();
+    KERNEL
+        .get_or_init(|| {
+            let k = read("/proc/sys/kernel/osrelease");
+            if k.trim().is_empty() { cmd("uname", &["-r"]).unwrap_or_default() } else { k.trim().to_string() }
+        })
+        .clone()
+}
+
+/// The graphics adapters (lspci), probed once: the cards do not change
+/// while the daemon runs, and the health checks ask every half hour.
 pub fn gpus() -> Vec<String> {
-    cmd("lspci", &["-d", "::0300"]).into_iter().chain(cmd("lspci", &["-d", "::0302"]).into_iter()).flat_map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<_>>()).collect()
+    static GPUS: OnceLock<Vec<String>> = OnceLock::new();
+    GPUS.get_or_init(|| cmd("lspci", &["-d", "::0300"]).into_iter().chain(cmd("lspci", &["-d", "::0302"]).into_iter()).flat_map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<_>>()).collect()).clone()
 }
 
 pub fn nvidia_driver() -> Option<String> {
@@ -47,7 +63,7 @@ pub fn summary() -> Value {
     json!({
         "os": pretty,
         "os_version": ver,
-        "kernel": cmd("uname", &["-r"]).unwrap_or_default(),
+        "kernel": kernel(),
         "hostname": read("/etc/hostname").trim(),
         "cpu": cpu_model(),
         "cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),

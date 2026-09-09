@@ -11,23 +11,58 @@ def unit(gid):
     return 'mindos-game-' + key(gid) + '.scope'
 
 
-def state(gid):
-    p = run(['systemctl', '--user', 'show', unit(gid), '--property=ActiveState,FreezerState,ControlGroup'], check=False)
-    props = dict(line.split('=', 1) for line in p.stdout.splitlines() if '=' in line)
+def unit_state(props):
     active = props.get('ActiveState') == 'active'
     return dict(active=active, suspended=active and props.get('FreezerState') == 'frozen', managed=active)
 
 
-def list_sessions():
+def state(gid):
+    p = run(['systemctl', '--user', 'show', unit(gid), '--property=ActiveState,FreezerState,ControlGroup'], check=False)
+    props = dict(line.split('=', 1) for line in p.stdout.splitlines() if '=' in line)
+    return unit_state(props)
+
+
+def states(gids):
+    """state() for several games from one systemctl call, keyed by game."""
+    gids = list(dict.fromkeys(gids))
+    if len(gids) < 2:
+        return {gid: state(gid) for gid in gids}
+    units = [unit(gid) for gid in gids]
+    p = run(['systemctl', '--user', 'show', *units, '--property=Id,ActiveState,FreezerState,ControlGroup'], check=False)
+    blocks = [dict(line.split('=', 1) for line in block.splitlines() if '=' in line) for block in p.stdout.split('\n\n')]
+    by_id = {props['Id']: props for props in blocks if 'Id' in props}
+    result = {}
+    for i, (gid, name) in enumerate(zip(gids, units)):
+        props = by_id.get(name)
+        if props is None and len(blocks) == len(units):
+            props = blocks[i]  # printed in the order asked
+        result[gid] = unit_state(props or {})
+    return result
+
+
+def records():
+    """Session records newest first, each with the recording summary kept at game end (never part of a response)."""
     result = []
     for path in sorted((DATA / 'sessions').glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
         item = read(path)
+        result.append((item, item.pop('telemetry', None)))
+    return result
+
+
+def load_sessions():
+    """Records with their live state; one systemctl call covers every session not marked ended."""
+    loaded = records()
+    live = states([item['game'] for item, _ in loaded if not item.get('ended')])
+    for item, _ in loaded:
         if not item.get('ended'):
-            item.update(state(item['game']))
+            item.update(live[item['game']])
         else:
             item.update(active=False, suspended=False, managed=True)
-        result.append(item)
-    return result
+    return loaded
+
+
+def list_sessions():
+    return [item for item, _ in load_sessions()]
 
 
 def change(gid, suspend):
@@ -78,6 +113,17 @@ def execute(gid, argv):
         data.setdefault('ended', time.time())
         write(record, data)
         audit('game-end', game=gid, session=session)
+        remember_recording(record, data, directory)
+
+
+def remember_recording(record, data, directory):
+    """Keep the recording's summary in the record, so History reads it instead of parsing the CSV again."""
+    try:
+        from .telemetry import summarize
+        data['telemetry'] = summarize(directory)
+        write(record, data)
+    except Exception:  # a summary that cannot be kept now is computed from the CSV later
+        pass
 
 
 def setup(gid):

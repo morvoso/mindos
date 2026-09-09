@@ -87,18 +87,12 @@ def safe_dir(value):
 
 
 def update_config(p):
-    allowed = {'steam_id', 'steam_key', 'cloud_folder', 'cold_folder'}
+    allowed = {'cloud_folder', 'cold_folder'}
     if set(p) - allowed:
         raise ValueError('Unknown connection setting')
     with lock():
         cfg = config()
         for k, v in p.items():
-            if k == 'steam_key' and v == '':
-                continue  # Blank password fields leave existing credentials intact.
-            if k == 'steam_id' and v and (not str(v).isdigit() or len(str(v)) != 17):
-                raise ValueError('Steam ID must be the 17-digit SteamID64')
-            if k == 'steam_key' and v and (len(v) != 32 or any(c not in '0123456789abcdefABCDEF' for c in v)):
-                raise ValueError('Steam Web API key must be 32 hexadecimal characters')
             if k in ('cloud_folder', 'cold_folder') and v:
                 v = str(safe_dir(v))
             cfg[k] = v
@@ -108,8 +102,7 @@ def update_config(p):
 
 def public_config():
     cfg = config()
-    return {**{k: v for k, v in cfg.items() if k not in ('steam_key', 'obs_password', 'obs_port')},
-            'steam_connected': bool(cfg.get('steam_key') and cfg.get('steam_id'))}
+    return {k: v for k, v in cfg.items() if k not in ('steam_key', 'steam_id', 'obs_password', 'obs_port')}
 
 
 def audit(action, **data):

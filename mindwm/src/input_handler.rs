@@ -613,6 +613,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 #[cfg(feature = "winit")]
 impl<BackendData: Backend> AnvilState<BackendData> {
     pub fn process_input_event_windowed<B: InputBackend>(&mut self, event: InputEvent<B>, output_name: &str) {
+        self.request_repaint();
         if is_activity(&event) && self.note_activity() {
             return;
         }
@@ -722,6 +723,9 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 #[cfg(feature = "udev")]
 impl AnvilState<UdevData> {
     pub fn process_input_event<B: InputBackend>(&mut self, dh: &DisplayHandle, event: InputEvent<B>) {
+        // Whatever the event does (move the pointer, open the bar, switch
+        // windows) shows on screen: ask for a frame once, up front.
+        self.request_repaint();
         // The first key or click after the screen went to sleep only wakes it:
         // it must not reach the window (or the password field) underneath.
         if is_activity(&event) && self.note_activity() {

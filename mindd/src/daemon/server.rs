@@ -305,12 +305,18 @@ async fn handle(d: Arc<Daemon>, stream: UnixStream) -> Result<()> {
 }
 
 fn trim_session(s: &mut Session, max_messages: usize) {
-    if s.messages.len() <= max_messages {
+    // The daemon's own lines (the status block, the clock lines) are not
+    // conversation: they do not count, and once the cap is hit they all go.
+    // The next turn posts a fresh status before its question; the prompt
+    // cache is refilled at that point anyway, the front of the conversation
+    // having moved.
+    let conversation = s.messages.iter().filter(|m| !agent::is_status(m)).count();
+    if conversation <= max_messages {
         return;
     }
     let head: Vec<_> = s.messages.iter().take_while(|m| m.role == "system").cloned().collect();
-    let keep = s.messages.len() - max_messages;
-    let mut rest: Vec<_> = s.messages.drain(head.len()..).collect();
+    let keep = conversation - max_messages;
+    let mut rest: Vec<_> = s.messages.drain(head.len()..).filter(|m| !agent::is_status(m)).collect();
     rest.drain(..keep.min(rest.len()));
     // never start with a tool result whose call was dropped
     while rest.first().map(|m| m.role == "tool").unwrap_or(false) {

@@ -168,20 +168,25 @@ impl WindowElement {
 
     /// The window's title as the client last set it.
     pub fn title(&self) -> String {
+        self.with_title(str::to_owned)
+    }
+
+    /// The window's title handed to `f` in place: no copy for a comparison.
+    pub fn with_title<T>(&self, f: impl FnOnce(&str) -> T) -> T {
         if let Some(toplevel) = self.0.toplevel() {
             return with_states(toplevel.wl_surface(), |states| {
-                states
+                let data = states
                     .data_map
                     .get::<XdgToplevelSurfaceData>()
-                    .and_then(|d| d.lock().ok().and_then(|d| d.title.clone()))
-            })
-            .unwrap_or_default();
+                    .and_then(|d| d.lock().ok());
+                f(data.as_ref().and_then(|d| d.title.as_deref()).unwrap_or(""))
+            });
         }
         #[cfg(feature = "xwayland")]
         if let Some(surface) = self.0.x11_surface() {
-            return surface.title();
+            return f(&surface.title());
         }
-        String::new()
+        f("")
     }
 
     /// The window's app id (xdg) or class (X11).
@@ -203,29 +208,33 @@ impl WindowElement {
     }
 
     pub fn is_fullscreen(&self) -> bool {
-        if let Some(toplevel) = self.0.toplevel() {
-            return toplevel
-                .current_state()
-                .states
-                .contains(xdg_toplevel::State::Fullscreen);
-        }
-        #[cfg(feature = "xwayland")]
-        if let Some(surface) = self.0.x11_surface() {
-            return surface.is_fullscreen();
-        }
-        false
+        self.has_state(xdg_toplevel::State::Fullscreen)
     }
 
     pub fn is_maximized(&self) -> bool {
+        self.has_state(xdg_toplevel::State::Maximized)
+    }
+
+    /// One flag of the current (acknowledged and committed) toplevel state,
+    /// read in place: `current_state()` would copy the whole state, and this
+    /// is asked for every geometry and hit test.
+    fn has_state(&self, state: xdg_toplevel::State) -> bool {
         if let Some(toplevel) = self.0.toplevel() {
-            return toplevel
-                .current_state()
-                .states
-                .contains(xdg_toplevel::State::Maximized);
+            return with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|d| d.lock().ok())
+                    .is_some_and(|d| d.current.states.contains(state))
+            });
         }
         #[cfg(feature = "xwayland")]
         if let Some(surface) = self.0.x11_surface() {
-            return surface.is_maximized();
+            return match state {
+                xdg_toplevel::State::Fullscreen => surface.is_fullscreen(),
+                xdg_toplevel::State::Maximized => surface.is_maximized(),
+                _ => false,
+            };
         }
         false
     }

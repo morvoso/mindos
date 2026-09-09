@@ -53,11 +53,19 @@ export function debounce<A extends unknown[]>(fn: (...a: A) => void, ms: number)
 }
 
 /** A repeating timer that stops when the element leaves the document. It ticks
- *  slower (or not at all) while a game runs — see quiet.ts. */
+ *  slower (or not at all) while a game runs — see quiet.ts — and not at all
+ *  while the page is hidden: a tick missed that way runs as soon as the page
+ *  is visible again. The first call is immediate. */
 export function every(el: Element, ms: number, fn: () => void): () => void {
   let id: ReturnType<typeof setInterval> | undefined;
+  let missed = false;
   const tick = () => {
     if (!el.isConnected) return stop();
+    if (document.hidden) {
+      missed = true;
+      return;
+    }
+    missed = false;
     fn();
   };
   const arm = () => {
@@ -69,16 +77,33 @@ export function every(el: Element, ms: number, fn: () => void): () => void {
   const offQuiet = onQuiet(() => {
     if (!el.isConnected) return stop();
     arm();
-    if (!isQuiet()) fn();
+    if (!isQuiet()) tick();
   });
+  const shown = () => {
+    if (!el.isConnected) return stop();
+    if (!document.hidden && missed) tick();
+  };
+  document.addEventListener('visibilitychange', shown);
   const stop = () => {
     if (id !== undefined) clearInterval(id);
     id = undefined;
     offQuiet();
+    document.removeEventListener('visibilitychange', shown);
   };
   fn();
   arm();
   return stop;
+}
+
+/** Mark `el` with `offscreen` while it is scrolled out of view (or the page is
+ *  hidden), so an endless animation on it can hold still — see app.css. */
+let onScreen: IntersectionObserver | undefined;
+export function watchOnScreen(el: Element): void {
+  if (typeof IntersectionObserver !== 'function') return;
+  onScreen ??= new IntersectionObserver((entries) => {
+    for (const e of entries) e.target.classList.toggle('offscreen', !e.isIntersecting);
+  });
+  onScreen.observe(el);
 }
 
 let uid = 0;

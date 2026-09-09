@@ -138,11 +138,18 @@ fn special(kind: glib::UserDirectory) -> Option<PathBuf> {
 /// The folder shown as icons on the desktop: the XDG Desktop directory,
 /// `~/Desktop` when none is configured; created if missing.
 pub fn desktop_dir() -> PathBuf {
+    static CREATED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    if let Some(path) = CREATED.get() {
+        return path.clone();
+    }
     let path = glib::user_special_dir(glib::UserDirectory::Desktop)
         .filter(|p| p != &home())
         .unwrap_or_else(|| home().join("Desktop"));
-    if let Err(e) = std::fs::create_dir_all(&path) {
-        tracing::warn!(path = %path.display(), %e, "cannot create the Desktop folder");
+    match std::fs::create_dir_all(&path) {
+        Ok(()) => {
+            let _ = CREATED.set(path.clone());
+        }
+        Err(e) => tracing::warn!(path = %path.display(), %e, "cannot create the Desktop folder"),
     }
     path
 }

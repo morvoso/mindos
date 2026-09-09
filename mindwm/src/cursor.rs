@@ -94,6 +94,16 @@ impl Cursor {
         frame(time.as_millis() as u32, size, images)
     }
 
+    /// Whether `icon` is an animation (a turning "wait", say): the frame
+    /// after this one is wanted while it shows.
+    pub fn animated(&mut self, icon: CursorIcon, scale: u32) -> bool {
+        let size = self.size * scale;
+        let images = self.images(icon);
+        let images = if images.is_empty() { &self.fallback } else { images };
+        let total: u32 = nearest_images(size, images).map(|image| image.delay).sum();
+        total > 0 && nearest_images(size, images).nth(1).is_some()
+    }
+
     /// The shapes of one icon, loading it the first time it is asked for.
     /// Empty when the theme has nothing for it (the caller draws the arrow).
     fn images(&mut self, icon: CursorIcon) -> &Vec<Image> {

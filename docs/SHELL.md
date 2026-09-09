@@ -307,7 +307,7 @@ data so the UI can be developed in Chromium/Firefox.
 | `shell.exec` | `{ cmd }` runs a command line in the session (`sh -c`) |
 | `shell.reload` | reloads every view (development) |
 | `layout.get` | → `layout` |
-| `layout.save` | `{ layout }` → validates, writes the user file, rebuilds windows, broadcasts `layout` |
+| `layout.save` | `{ layout }` → validates, applies it (windows are rebuilt only when the panels changed), broadcasts `layout`; the user file is written once the changes settle (half a second; at once from an `--app` window) |
 | `layout.reset` | back to the default layout |
 | `popup.open` | `{ name, keyboard?, anchor?: {x,y,w,h,edge}, arg? }` → opens (or moves) the popup on the calling window's output |
 | `popup.close` | `{ name }` (or none = the calling popup) |

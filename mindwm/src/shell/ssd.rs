@@ -134,6 +134,11 @@ impl HeaderBar {
         }
     }
 
+    /// Something changed since the bar was last drawn.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     pub fn set_focused(&mut self, focused: bool) {
         if self.focused != focused {
             self.focused = focused;

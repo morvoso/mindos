@@ -192,7 +192,7 @@ pub fn theme_for(configured: &str) -> String {
 /// The best installed theme among the preferred ones (directory names, as
 /// `Icon=` lookups use them; `freedesktop_icons::list_themes` reports display names).
 pub fn pick_theme(preferred: &str) -> String {
-    let candidates = [preferred, "breeze-dark", "breeze", "Papirus-Dark", "Papirus", "Adwaita", "hicolor"];
+    let candidates = [preferred, "Papirus-Maia", "breeze-dark", "breeze", "Papirus-Dark", "Papirus", "Adwaita", "hicolor"];
     for c in candidates {
         if theme_installed(c) {
             return c.to_string();

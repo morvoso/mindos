@@ -252,6 +252,11 @@ pub fn game_running() -> bool {
     std::fs::read_to_string("/run/mindos/perf/game").map(|s| s.trim() != "0" && !s.trim().is_empty()).unwrap_or(false)
 }
 
+/// What an assessment is about: the packages and their target versions.
+fn package_key(packages: &[PackageUpdate]) -> Vec<String> {
+    packages.iter().map(|p| format!("{}={}", p.name, p.to)).collect()
+}
+
 /// One full check: packages, news, rules, model. Posts the notice.
 pub async fn check(d: &Daemon, assess: bool) -> UpdateStatus {
     {
@@ -267,7 +272,7 @@ pub async fn check(d: &Daemon, assess: bool) -> UpdateStatus {
     let pkgs = check_packages().await;
     let news = fetch_news().await;
     let mut s = d.updates.lock().unwrap().clone();
-    let previous: Vec<String> = s.packages.iter().map(|p| format!("{}={}", p.name, p.to)).collect();
+    let previous = package_key(&s.packages);
     match pkgs {
         Ok(p) => s.packages = p,
         Err(e) => s.error = e.to_string(),
@@ -277,29 +282,44 @@ pub async fn check(d: &Daemon, assess: bool) -> UpdateStatus {
     }
     s.checked_at = now();
     s.checking = false;
-    let current: Vec<String> = s.packages.iter().map(|p| format!("{}={}", p.name, p.to)).collect();
-    let changed = previous != current || s.risk.is_empty();
+    let changed = package_key(&s.packages) != previous || s.risk.is_empty();
     if changed || !s.assessed_by_model {
         rule_assessment(&mut s, last_time);
     }
     s.last_update = health::load_last_update(&d.config.updates.last_update);
     s.auto_apply = d.auto_update();
+    // The model's verdict costs up to three minutes of GPU: only for a list
+    // it has not rated yet, and one at a time. A check that arrives while
+    // one runs (Check now during the scheduled one) leaves the verdict to
+    // land below, matched by package list.
+    let assess_now = assess && d.config.updates.assess && (changed || !s.assessed_by_model) && !s.packages.is_empty() && !s.assessing;
+    if assess_now {
+        s.assessing = true;
+    }
     *d.updates.lock().unwrap() = s.clone();
-    save(&d.config.daemon.state_dir, &s);
+    if !assess_now {
+        // the file is written once per check: here, or with the verdict
+        save(&d.config.daemon.state_dir, &s);
+    }
     d.notify_updates();
-    if assess && d.config.updates.assess && (changed || !s.assessed_by_model) && !s.packages.is_empty() {
-        d.updates.lock().unwrap().assessing = true;
-        d.notify_updates();
+    if assess_now {
         model_assessment(d, &mut s).await;
-        s.assessing = false;
         let mut cur = d.updates.lock().unwrap();
-        // keep fields that changed meanwhile (an apply may have run)
-        if cur.checked_at == s.checked_at {
-            *cur = s.clone();
-        } else {
-            cur.assessing = false;
+        // The verdict is about the list that was rated: keep it while that
+        // is still the pending list (an apply or another check may have run
+        // meanwhile); otherwise rate the new list soon.
+        if package_key(&cur.packages) == package_key(&s.packages) && cur.manual_intervention == s.manual_intervention {
+            cur.risk = s.risk.clone();
+            cur.summary = s.summary.clone();
+            cur.warnings = s.warnings.clone();
+            cur.reboot = s.reboot;
+            cur.assessed_by_model = s.assessed_by_model;
+        } else if !cur.packages.is_empty() && !cur.assessed_by_model {
+            d.check_now.notify_one();
         }
+        cur.assessing = false;
         save(&d.config.daemon.state_dir, &cur);
+        s = cur.clone();
         drop(cur);
         d.notify_updates();
     }

@@ -14,7 +14,12 @@ Environment=LC_ALL=C.UTF-8
 # Inference yields to games and interactive work. The model is read from disk
 # the moment the daemon starts, which is also when the desktop is starting:
 # the lower I/O priority keeps those gigabytes out of the session's way.
+# Nice and the I/O class rank the processes inside this unit's cgroup; the
+# weights rank the unit against the user's session, which cgroup v2 schedules
+# slice by slice (default weight 100).
 Nice=10
+CPUWeight=20
+IOWeight=20
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 KillMode=mixed
