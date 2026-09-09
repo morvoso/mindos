@@ -1,6 +1,6 @@
 [Plymouth Theme]
 Name=MindOS
-Description=MindOS boot: the dark void, a glowing wordmark and a cyan progress line
+Description=MindOS boot: the dark void, the wordmark and a thin progress line
 ModuleName=script
 
 [script]

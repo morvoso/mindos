@@ -1,7 +1,7 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-theme
 pkgver=0.5.0
-pkgrel=2
+pkgrel=3
 pkgdesc="MindOS look: white-on-red boot menu and console (boot stage), modernist Plymouth boot trace, fonts and font rendering, wallpaper and icon"
 arch=(any)
 url="https://github.com/morvoso/mindos"

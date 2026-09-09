@@ -1,65 +1,58 @@
-# MindOS: a quiet, modernist boot trace. Times and progress come from Plymouth.
-Window.SetBackgroundTopColor(0.94, 0.93, 0.90);
-Window.SetBackgroundBottomColor(0.94, 0.93, 0.90);
+# MindOS boot splash: the same dark ground the desktop uses, a wordmark and a
+# thin progress line. Nothing bright ever reaches the screen between the
+# firmware and the login screen, and no unit names scroll past: the boot is
+# quiet by design, and anything that goes wrong is on tty2 and in the journal.
+Window.SetBackgroundTopColor(0.020, 0.027, 0.039);
+Window.SetBackgroundBottomColor(0.051, 0.063, 0.086);
 screen.x = Window.GetX(); screen.y = Window.GetY();
 screen.w = Window.GetWidth(); screen.h = Window.GetHeight();
 s = screen.h / 900;
 if (s < 0.5) s = 0.5;
 left = screen.x + 65*s;
-right = screen.x + screen.w*0.72;
-fun label(text, x, y, size, red)
+# text kinds: 0 = wordmark, 1 = the highlight, 2 = quiet grey
+fun label(text, x, y, size, kind)
 {
-  if (red) image = Image.Text(text, 0.93, 0.17, 0.07, 1, "Sans Bold " + size);
-  else if (size > 50) image = Image.Text(text, 0.12, 0.12, 0.12, 1, "Sans Bold " + size);
-  else image = Image.Text(text, 0.12, 0.12, 0.12, 1, "Monospace " + size);
+  if (kind == 1) image = Image.Text(text, 0.21, 0.75, 0.36, 1, "Sans Bold " + size);
+  else if (kind == 2) image = Image.Text(text, 0.42, 0.47, 0.53, 1, "Monospace " + size);
+  else image = Image.Text(text, 0.92, 0.94, 0.96, 1, "Sans Bold " + size);
   sprite = Sprite(image); sprite.SetPosition(x, y, 10); return sprite;
 }
 brand = label("MIND\nOS", left, screen.y + screen.h*0.40, Math.Int(110*s), 0);
-edition = label("MINDOS / BUILT FOR PLAY", left, screen.y+70*s, Math.Int(12*s), 0);
-trace.title = label("BOOT TRACE", right+26*s, screen.y+70*s, Math.Int(11*s), 0);
+edition = label("MINDOS / BUILT FOR PLAY", left, screen.y+70*s, Math.Int(12*s), 2);
 # Scale a text glyph into a solid rule; no screen-sized bitmap or animation.
-rule.image = Image.Text("█", 0.65, 0.64, 0.62);
-accent.image = Image.Text("█", 0.93, 0.17, 0.07);
-rule = Sprite(rule.image.Scale(1, screen.h-100*s)); rule.SetPosition(right, screen.y+50*s, 2);
+rule.image = Image.Text("█", 0.13, 0.15, 0.18);
+accent.image = Image.Text("█", 0.21, 0.75, 0.36);
 bar.x = left; bar.y = screen.y + screen.h-100*s;
-bar.w = Math.Int(right-left-45*s); bar.h = Math.Int(5*s);
+bar.w = Math.Int(screen.w*0.42); bar.h = Math.Int(4*s);
 bar.track = Sprite(rule.image.Scale(bar.w, bar.h)); bar.track.SetPosition(bar.x,bar.y,5);
 bar.fill = Sprite(); bar.fill.SetPosition(bar.x,bar.y,6);
 bar.progress = 0; elapsed = 0;
-time.sprite = label("STARTING", left,bar.y-40*s,Math.Int(18*s),1);
-trace.count = 0;
 fun progress_callback(duration, progress)
 {
   global.elapsed = duration;
   if (progress > bar.progress) bar.progress = progress;
   w = Math.Int(bar.w*bar.progress); if (w < 1) w = 1;
   bar.fill.SetImage(accent.image.Scale(w,bar.h));
-  global.time.sprite = label("BOOT / " + Math.Int(duration*10)/10 + " s", left,bar.y-40*s,Math.Int(18*s),1);
 }
 Plymouth.SetBootProgressFunction(progress_callback);
-fun status_callback(status)
-{
-  # A rolling list of actual status updates, not a scripted hardware checklist.
-  line = Math.Int(trace.count % 14);
-  trace.lines[line] = label(Math.Int(elapsed*10)/10 + " / " + status, right+26*s,screen.y+(110+line*27)*s,Math.Int(10*s),0);
-  trace.count++;
-}
+# Systemd keeps sending unit names; the splash stays quiet and ignores them.
+fun status_callback(status) { }
 Plymouth.SetUpdateStatusFunction(status_callback);
 message = Sprite();
-fun display_message(text) { global.message = label(text,left,screen.y+screen.h-48*s,Math.Int(12*s),0); }
+fun display_message(text) { global.message = label(text,left,screen.y+screen.h-48*s,Math.Int(12*s),2); }
 fun hide_message(text) { global.message = Sprite(); }
 Plymouth.SetDisplayMessageFunction(display_message);
 Plymouth.SetHideMessageFunction(hide_message);
 prompt = Sprite(); bullets = Sprite();
 fun display_password(text, count)
 {
-  global.prompt = label(text,left,screen.y+screen.h*0.27,Math.Int(15*s),0);
+  global.prompt = label(text,left,screen.y+screen.h*0.27,Math.Int(15*s),2);
   value = ""; for (i=0;i<count;i++) value = value + "● ";
   global.bullets = label(value,left,screen.y+screen.h*0.33,Math.Int(18*s),1);
 }
 fun display_question(text, entry)
 {
-  global.prompt = label(text,left,screen.y+screen.h*0.27,Math.Int(15*s),0);
+  global.prompt = label(text,left,screen.y+screen.h*0.27,Math.Int(15*s),2);
   global.bullets = label(entry,left,screen.y+screen.h*0.33,Math.Int(18*s),0);
 }
 fun normal() { global.prompt = Sprite(); global.bullets = Sprite(); }
