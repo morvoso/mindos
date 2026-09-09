@@ -25,18 +25,19 @@ use crate::mind::{Event, MindEvent};
 use crate::text::{alpha, hex, Canvas, Face, Rgba, TextRenderer, ALL_CORNERS};
 
 // MindOS design tokens (see docs/SHELL.md); the accent and foreground come
-// from the config and default to these.
-pub const VOID: Rgba = hex(0x18191b);
-pub const BG0: Rgba = hex(0x242527);
-pub const BG1: Rgba = hex(0x2d2e30);
-pub const HAIRLINE: Rgba = hex(0x484a4e);
-pub const LINE_STRONG: Rgba = hex(0x64666a);
-pub const FG_DIM: Rgba = hex(0xc1c3c6);
-pub const FG_FAINT: Rgba = hex(0xa0a3a7);
-pub const MIND: Rgba = hex(0x3ddc97);
-pub const WARN: Rgba = hex(0xffb454);
-pub const DANGER: Rgba = hex(0xff5d8f);
-pub const OK: Rgba = hex(0x3ddc97);
+// from the config and default to these. They are the shell's palette, so the
+// bar and the desktop are plainly the same piece of software.
+pub const VOID: Rgba = hex(0x0f1114);
+pub const BG0: Rgba = hex(0x16181c);
+pub const BG1: Rgba = hex(0x1c1f24);
+pub const HAIRLINE: Rgba = hex(0x333941);
+pub const LINE_STRONG: Rgba = hex(0x434a54);
+pub const FG_DIM: Rgba = hex(0x9aa4b0);
+pub const FG_FAINT: Rgba = hex(0x6f7883);
+pub const MIND: Rgba = hex(0x35bf5c);
+pub const WARN: Rgba = hex(0xe0a34a);
+pub const DANGER: Rgba = hex(0xe0606e);
+pub const OK: Rgba = hex(0x35bf5c);
 
 // The startup screen (`backdrop_elements`): the boot splash carried on by the
 // compositor until the shell puts the desktop up.
@@ -55,7 +56,13 @@ const STARTUP_HINTS: [(&str, &str); 5] = [
 const PANEL_BG: Rgba = alpha(BG0, 0.92);
 const INPUT_BG: Rgba = alpha(VOID, 0.55);
 const WHITE: Rgba = hex(0xffffff);
-const RADIUS: i32 = 0;
+const RADIUS: i32 = 14;
+/// Corner radius of the things inside the card (input box, rows, buttons).
+const INNER_R: i32 = 9;
+/// The header's close button: a square at the top right of the card.
+const CLOSE_W: i32 = 22;
+/// The per-line copy button, at the right-hand end of a conversation line.
+const COPY_W: i32 = 20;
 /// Reach of the panel's drop shadow (logical px), around the card.
 const SHADOW: i32 = 36;
 
@@ -99,6 +106,26 @@ fn runs(owned: &[(String, Face)]) -> Vec<(&str, Face)> {
     owned.iter().map(|(t, f)| (t.as_str(), *f)).collect()
 }
 
+/// The copy button at the right-hand end of a conversation line: two stacked
+/// outlines, or a tick for a moment after it has been used.
+fn draw_copy_button(canvas: &mut Canvas, x: i32, y: i32, s: i32, done: bool, color: Rgba) {
+    let t = s.max(1);
+    if done {
+        canvas.line(x + 3 * s, y + 9 * s, x + 8 * s, y + 14 * s, t, color);
+        canvas.line(x + 8 * s, y + 14 * s, x + 17 * s, y + 4 * s, t, color);
+        return;
+    }
+    canvas.stroke_rounded_rect(x + 6 * s, y + 2 * s, 11 * s, 11 * s, 2 * s, ALL_CORNERS, color);
+    canvas.fill_rounded_rect(x + 2 * s, y + 6 * s, 11 * s, 11 * s, 2 * s, ALL_CORNERS, PANEL_BG);
+    canvas.stroke_rounded_rect(x + 2 * s, y + 6 * s, 11 * s, 11 * s, 2 * s, ALL_CORNERS, color);
+}
+
+/// Whether a line of the conversation is worth a copy button: the answers, the
+/// questions and the errors are; the spinner and the running commentary are not.
+fn copyable(kind: LineKind) -> bool {
+    matches!(kind, LineKind::Mind | LineKind::User | LineKind::Error | LineKind::Tool)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineKind {
     User,
@@ -126,6 +153,8 @@ pub enum BarAction {
     Confirm { id: String, approve: bool },
     Cancel,
     Close,
+    /// Put a line of the conversation on the clipboard.
+    Copy(String),
 }
 
 struct Cached {
@@ -133,6 +162,33 @@ struct Cached {
     size: Size<i32, Logical>,
     scale: i32,
 }
+
+/// Something you can click inside the card. Coordinates are card-local and
+/// unscaled, so a click maps to one whatever the display scale is.
+#[derive(Debug, Clone)]
+struct Hit {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    what: HitKind,
+}
+
+#[derive(Debug, Clone)]
+enum HitKind {
+    Close,
+    /// Copy this text; the index identifies the button for the tick.
+    Copy(usize, String),
+}
+
+impl Hit {
+    fn contains(&self, x: f64, y: f64) -> bool {
+        x >= self.x as f64 && x < (self.x + self.w) as f64 && y >= self.y as f64 && y < (self.y + self.h) as f64
+    }
+}
+
+/// How long a copy button shows its tick.
+const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1400);
 
 impl std::fmt::Debug for MindBar {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -161,6 +217,13 @@ pub struct MindBar {
     busy: bool,
     /// When the request in flight started (the thinking animation's clock).
     busy_since: Option<Instant>,
+    /// Clickable regions inside the card, in card-local logical pixels: the
+    /// close button, and one copy button per conversation line. Rebuilt on
+    /// every draw, because that is where the geometry is decided.
+    hits: Vec<Hit>,
+    /// The copy button that was just used, and when: it shows a tick for a
+    /// moment so a click is never silent.
+    copied: Option<(usize, Instant)>,
     /// The animation frame drawn last (a new one marks the panel dirty).
     phase: u32,
     session: Option<String>,
@@ -206,6 +269,8 @@ impl MindBar {
             thinking: String::new(),
             busy: false,
             busy_since: None,
+            hits: Vec::new(),
+            copied: None,
             phase: 0,
             session: None,
             pending: None,
@@ -260,34 +325,53 @@ impl MindBar {
         action
     }
 
+    /// A click anywhere on the screen while the bar is open. The bar stays up:
+    /// only Escape or the close button in its corner puts it away, so an
+    /// answer cannot be lost by clicking next to it.
     pub fn click(&mut self, output: &str, position: Point<f64, Logical>, size: Size<i32, Logical>) -> BarAction {
-        if self.output.as_deref() == Some(output) {
-            if let Some(panel) = &self.panel {
-                let left = (size.w - panel.size.w) / 2;
-                let top = (size.h as f64 * 0.10) as i32;
-                let x = position.x - left as f64;
-                let y = position.y - (top + PAD + HEADER_H + INPUT_H + GAP) as f64;
-                if x >= PAD as f64 && x < (panel.size.w - PAD) as f64 && y >= 0.0 {
-                    let row = (y / ROW_H as f64) as usize;
-                    if row < self.results.len() {
-                        self.selected = row;
-                        return self.launch_selected();
-                    }
+        if self.output.as_deref() != Some(output) {
+            return BarAction::None;
+        }
+        let Some(panel) = &self.panel else { return BarAction::None };
+        let left = (size.w - panel.size.w) / 2;
+        let top = (size.h as f64 * 0.10) as i32;
+        let x = position.x - left as f64;
+        let y = position.y - top as f64;
+        for hit in self.hits.clone() {
+            if !hit.contains(x, y) {
+                continue;
+            }
+            self.dirty = true;
+            return match hit.what {
+                HitKind::Close => {
+                    self.close();
+                    BarAction::Close
                 }
-                if x >= 0.0 && x < panel.size.w as f64 && position.y >= top as f64
-                    && position.y < (top + panel.size.h) as f64 {
-                    return BarAction::None;
+                HitKind::Copy(index, text) => {
+                    self.copied = Some((index, Instant::now()));
+                    BarAction::Copy(text)
                 }
+            };
+        }
+        // The application results: a click picks a row and launches it.
+        let row_y = y - (PAD + HEADER_H + INPUT_H + GAP) as f64;
+        if x >= PAD as f64 && x < (panel.size.w - PAD) as f64 && row_y >= 0.0 {
+            let row = (row_y / ROW_H as f64) as usize;
+            if row < self.results.len() {
+                self.selected = row;
+                return self.launch_selected();
             }
         }
-        self.close();
-        BarAction::Close
+        BarAction::None
     }
 
     /// The bar draws something that moves on its own right now: the
     /// thinking spinner, a fading feedback card or the start-up backdrop.
     pub fn animating(&self) -> bool {
-        (self.open && self.busy) || self.osd.active() || self.backdrop_since.is_some()
+        (self.open && self.busy)
+            || self.osd.active()
+            || self.backdrop_since.is_some()
+            || self.copied.is_some_and(|(_, at)| at.elapsed() < COPIED_FOR)
     }
 
     pub fn show_osd(&mut self, message: crate::media::Feedback) { self.osd.show(message); }
@@ -484,6 +568,29 @@ impl MindBar {
                 self.refresh_results();
                 BarAction::None
             }
+            Keysym::c | Keysym::C if mods.ctrl => {
+                // Ctrl+C takes the last answer, Ctrl+Shift+C the conversation.
+                let text = if mods.shift {
+                    self.lines
+                        .iter()
+                        .filter(|l| copyable(l.kind))
+                        .map(|l| l.text.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                } else {
+                    self.lines
+                        .iter()
+                        .rev()
+                        .find(|l| l.kind == LineKind::Mind)
+                        .map(|l| l.text.clone())
+                        .unwrap_or_default()
+                };
+                if text.trim().is_empty() {
+                    return BarAction::None;
+                }
+                self.push(LineKind::Info, if mods.shift { "conversation copied" } else { "answer copied" });
+                BarAction::Copy(text)
+            }
             Keysym::l if mods.ctrl => {
                 self.lines.clear();
                 self.streaming.clear();
@@ -612,7 +719,7 @@ impl MindBar {
             return 0;
         }
         let max = (output_h as f32 * 0.55) as i32;
-        let text_w = Some(width - 2 * PAD - 16);
+        let text_w = Some(width - 2 * PAD - 16 - COPY_W - 8);
         let mut needed = 4;
         if !self.streaming.trim().is_empty() {
             let owned = rich_runs(LineKind::Mind, &self.streaming).unwrap_or_default();
@@ -693,6 +800,8 @@ impl MindBar {
         let accent = self.accent;
         let font = |px: f32| px * s as f32;
         let mut canvas = Canvas::new(w, h);
+        // The clickable regions are decided here, so they are rebuilt here.
+        self.hits.clear();
 
         // The card: glass (translucent dark, blended over the desktop by the
         // compositor), a light hairline, an accent glow along the top edge.
@@ -700,54 +809,65 @@ impl MindBar {
         canvas.stroke_rounded_rect(0, 0, w, h, r, ALL_CORNERS, alpha(WHITE, 0.14));
         canvas.hline_glow(r, 0, w - 2 * r, s, 5 * s, alpha(accent, 0.85));
 
-        // Header: ◈ MIND · status dot · status · model            hints
+        // Header, left to right: a state dot, the wordmark, the model, then the
+        // one hint that matters and the close button. Nothing else -- the card
+        // is read at a glance or it is in the way.
         let hy = pad;
         let mut x = pad;
-        self.text
-            .draw(&mut canvas, x, hy - 2 * s, None, "◈", font(14.0), accent, Face::Body);
-        x += 20 * s;
-        x += self
-            .text
-            .draw_spaced(&mut canvas, x, hy, "MIND", font(14.0), accent, Face::LabelBold, 3 * s);
-        x += 16 * s;
         let pulse = self.pulse();
         if self.busy {
             // The dot breathes in the accent while the Mind works.
-            canvas.fill_circle(x + 3 * s, hy + 8 * s, 5 * s, alpha(accent, 0.25 * pulse));
-            canvas.fill_circle(x + 3 * s, hy + 8 * s, 3 * s, alpha(accent, 0.45 + 0.55 * pulse));
+            canvas.fill_circle(x + 4 * s, hy + 8 * s, 6 * s, alpha(accent, 0.25 * pulse));
+            canvas.fill_circle(x + 4 * s, hy + 8 * s, 3 * s, alpha(accent, 0.45 + 0.55 * pulse));
         } else {
-            canvas.fill_circle(x + 3 * s, hy + 8 * s, 3 * s, self.status_color());
+            canvas.fill_circle(x + 4 * s, hy + 8 * s, 3 * s, self.status_color());
         }
-        x += 12 * s;
-        let status = if self.busy { "THINKING".to_string() } else { self.status.to_uppercase() };
+        x += 16 * s;
         x += self
             .text
-            .draw_spaced(&mut canvas, x, hy, &status, font(13.0), FG_DIM, Face::Label, s);
-        if self.connected && !self.model.is_empty() {
-            x += 10 * s;
-            let model = format!("· {}", self.model);
-            self.text
-                .draw(&mut canvas, x, hy, Some(w / 2), &model, font(13.0), FG_FAINT, Face::Mono);
-        }
+            .draw_spaced(&mut canvas, x, hy, "MIND", font(14.0), accent, Face::LabelBold, 3 * s);
+        x += 14 * s;
+        let state = if self.busy {
+            "thinking".to_string()
+        } else if self.connected && !self.model.is_empty() {
+            self.model.clone()
+        } else {
+            self.status.clone()
+        };
+        self.text
+            .draw(&mut canvas, x, hy + s, Some(w / 2), &state, font(13.0), FG_FAINT, Face::Mono);
+
+        // The close button, then the hint to the left of it.
+        let cw = CLOSE_W * s;
+        let cx = w - pad - cw;
+        canvas.stroke_rounded_rect(cx, hy - 3 * s, cw, cw, INNER_R * s / 2, ALL_CORNERS, alpha(WHITE, 0.14));
+        let inset = 7 * s;
+        let (x0, y0) = (cx + inset, hy - 3 * s + inset);
+        let (x1, y1) = (cx + cw - inset, hy - 3 * s + cw - inset);
+        canvas.line(x0, y0, x1, y1, s.max(1), FG_DIM);
+        canvas.line(x0, y1, x1, y0, s.max(1), FG_DIM);
+        self.hits.push(Hit { x: (w - pad - cw) / s, y: (hy - 3 * s) / s, w: CLOSE_W, h: CLOSE_W, what: HitKind::Close });
+
         let hint = if self.pending.is_some() {
-            "Y allow   N deny"
+            "Y allow · N deny"
         } else if self.busy {
             "Esc cancel"
         } else if !self.results.is_empty() {
-            "Enter launch   Shift+Enter ask Mind   ↑↓ select   Esc close"
+            "Enter open · Shift+Enter ask · Esc close"
         } else {
-            "Enter ask Mind   Esc close"
+            "Enter ask · Esc close"
         };
-        let (hw, _) = self.text.measure(hint, font(14.0), None, Face::Label);
+        let (hw, _) = self.text.measure(hint, font(13.0), None, Face::Label);
         self.text
-            .draw(&mut canvas, w - pad - hw, hy, None, hint, font(14.0), FG_FAINT, Face::Label);
+            .draw(&mut canvas, cx - 14 * s - hw, hy + s, None, hint, font(13.0), FG_FAINT, Face::Label);
 
         // Input row: inset box with an accent bar and a caret.
         let iy = pad + HEADER_H * s;
         let ih = INPUT_H * s;
-        canvas.fill_rounded_rect(pad, iy, w - 2 * pad, ih, 0, ALL_CORNERS, INPUT_BG);
-        canvas.stroke_rounded_rect(pad, iy, w - 2 * pad, ih, 0, ALL_CORNERS, alpha(WHITE, 0.10));
-        canvas.fill_rounded_rect(pad, iy + 10 * s, 3 * s, ih - 20 * s, s, ALL_CORNERS, accent);
+        let ir = INNER_R * s;
+        canvas.fill_rounded_rect(pad, iy, w - 2 * pad, ih, ir, ALL_CORNERS, INPUT_BG);
+        canvas.stroke_rounded_rect(pad, iy, w - 2 * pad, ih, ir, ALL_CORNERS, alpha(WHITE, 0.10));
+        canvas.fill_rounded_rect(pad + 5 * s, iy + 10 * s, 3 * s, ih - 20 * s, s, ALL_CORNERS, accent);
         let prompt_x = pad + 16 * s;
         self.text
             .draw(&mut canvas, prompt_x, iy + 7 * s, None, "›", font(24.0), accent, Face::BodyBold);
@@ -786,8 +906,8 @@ impl MindBar {
                 let y = body_y + i as i32 * row_h;
                 let selected = i == self.selected;
                 let name_color = if selected {
-                    canvas.fill_rounded_rect(pad, y, w - 2 * pad, row_h - 2 * s, 0, ALL_CORNERS, alpha(accent, 0.12));
-                    canvas.stroke_rounded_rect(pad, y, w - 2 * pad, row_h - 2 * s, 0, ALL_CORNERS, alpha(accent, 0.35));
+                    canvas.fill_rounded_rect(pad, y, w - 2 * pad, row_h - 2 * s, INNER_R * s, ALL_CORNERS, alpha(accent, 0.12));
+                    canvas.stroke_rounded_rect(pad, y, w - 2 * pad, row_h - 2 * s, INNER_R * s, ALL_CORNERS, alpha(accent, 0.35));
                     accent
                 } else {
                     fg
@@ -844,7 +964,7 @@ impl MindBar {
         if let Some((_, desc)) = &self.pending {
             entries.push((LineKind::Info, format!("Mind wants to: {desc}   —   Y allow · N deny")));
         }
-        let max_w = w - 2 * pad - 16 * s;
+        let max_w = w - 2 * pad - 16 * s - (COPY_W + 8) * s;
         let px_of = |kind: LineKind| match kind {
             LineKind::Thinking | LineKind::Busy => font(15.0),
             LineKind::Tool => font(15.0),
@@ -871,6 +991,7 @@ impl MindBar {
             y -= block;
             placed.push((kind, text, y, th));
         }
+        let mut copy_index = 0usize;
         for (kind, text, y, th) in placed.into_iter().rev() {
             let confirm = kind == LineKind::Info && self.pending.is_some() && text.starts_with("Mind wants to");
             let color = match kind {
@@ -904,12 +1025,24 @@ impl MindBar {
                 continue;
             }
             if confirm {
-                canvas.fill_rect(pad, y, w - 2 * pad, th + 14 * s, alpha(WARN, 0.10));
-                canvas.stroke_rect(pad, y, w - 2 * pad, th + 14 * s, alpha(WARN, 0.55));
-                canvas.fill_rect(pad, y, 3 * s, th + 14 * s, WARN);
+                canvas.fill_rounded_rect(pad, y, w - 2 * pad, th + 14 * s, INNER_R * s, ALL_CORNERS, alpha(WARN, 0.10));
+                canvas.stroke_rounded_rect(pad, y, w - 2 * pad, th + 14 * s, INNER_R * s, ALL_CORNERS, alpha(WARN, 0.55));
+                canvas.fill_rect(pad, y + 4 * s, 3 * s, th + 6 * s, WARN);
                 self.text
                     .draw(&mut canvas, text_x, y + 7 * s, Some(max_w), &text, px_of(kind), color, face_of(kind));
                 continue;
+            }
+            // Every real line gets a copy button: an answer you cannot take
+            // with you is only half an answer.
+            if copyable(kind) {
+                let index = copy_index;
+                copy_index += 1;
+                let bx = w - pad - COPY_W * s;
+                let done = matches!(self.copied, Some((i, at)) if i == index && at.elapsed() < COPIED_FOR);
+                draw_copy_button(&mut canvas, bx, y, s, done, if done { accent } else { alpha(FG_FAINT, 0.75) });
+                // The plain text, without the streaming caret or the markers.
+                let plain = text.trim_end_matches('▍').trim().to_string();
+                self.hits.push(Hit { x: bx / s, y: y / s, w: COPY_W, h: (COPY_W * s).min(th).max(18 * s) / s, what: HitKind::Copy(index, plain) });
             }
             match kind {
                 LineKind::User => canvas.fill_rect(pad, y, 3 * s, th, accent),

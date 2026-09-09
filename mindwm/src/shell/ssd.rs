@@ -382,8 +382,10 @@ impl HeaderBar {
         let r = if self.maximized { 0 } else { RADIUS * s };
         let corners = if self.maximized { 0 } else { TOP_LEFT | TOP_RIGHT };
         let mut c = Canvas::new(w, h);
-        // Neutral charcoal chrome lets a little of the desktop show through.
-        c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, 0.92));
+        // Neutral charcoal chrome with only a hint of the desktop behind it: at
+        // 0.92 the desktop's own headings and buttons stayed legible through the
+        // bar, which reads as a rendering fault rather than as glass.
+        c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, 0.985));
         c.fill_rect(0, h - s, w, s, if self.focused { ACCENT } else { alpha(WHITE, 0.12) });
 
         // Title.
