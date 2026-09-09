@@ -29,6 +29,10 @@ pub struct Prefs {
     pub thinking: Option<bool>,
     /// Install low-risk updates automatically (Settings › Updates).
     pub auto_update: Option<bool>,
+    /// Let the Mind change the system, not only look at it (Settings › Mind).
+    pub system_changes: Option<bool>,
+    /// Let the Mind build packages from the AUR (Settings › Mind).
+    pub aur: Option<bool>,
 }
 
 pub fn prefs_path(state_dir: &Path) -> PathBuf {
@@ -366,8 +370,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mind-prefs-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(load_prefs(&dir).thinking, None);
-        save_prefs(&dir, &Prefs { thinking: Some(true), auto_update: None }).unwrap();
+        save_prefs(&dir, &Prefs { thinking: Some(true), auto_update: None, system_changes: Some(true), aur: None }).unwrap();
         assert_eq!(load_prefs(&dir).thinking, Some(true));
+        assert_eq!(load_prefs(&dir).system_changes, Some(true));
+        assert_eq!(load_prefs(&dir).aur, None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -48,6 +48,11 @@ pub struct Daemon {
     pub last_health: std::sync::Mutex<(u64, Vec<crate::proto::Finding>)>,
     /// The model is unloaded on purpose (a game needs the GPU).
     pub sleeping: AtomicBool,
+    /// The Mind may change the system, not only look at it (config, overridden
+    /// by prefs). Off, it can still read everything and advise.
+    pub system_changes: AtomicBool,
+    /// The Mind may build packages from the AUR when they are nowhere else.
+    pub aur: AtomicBool,
 }
 
 impl Daemon {
@@ -56,6 +61,8 @@ impl Daemon {
         let prefs = models::load_prefs(&config.daemon.state_dir);
         let thinking = prefs.thinking.unwrap_or(config.model.thinking);
         let auto_update = prefs.auto_update.unwrap_or(config.updates.auto_apply);
+        let system_changes = prefs.system_changes.unwrap_or(config.policy.allow_system_changes);
+        let aur = prefs.aur.unwrap_or(config.policy.allow_aur);
         let notices = notices::Notices::open(&config.daemon.state_dir);
         let mut updates = updates::load(&config.daemon.state_dir);
         updates.auto_apply = auto_update;
@@ -79,7 +86,36 @@ impl Daemon {
             auto_update: AtomicBool::new(auto_update),
             last_health: std::sync::Mutex::new((0, vec![])),
             sleeping: AtomicBool::new(false),
+            system_changes: AtomicBool::new(system_changes),
+            aur: AtomicBool::new(aur),
         })
+    }
+
+    /// May the Mind change the system? (Settings › Mind.)
+    pub fn system_changes(&self) -> bool {
+        self.system_changes.load(Ordering::Relaxed)
+    }
+
+    /// May the Mind build a package from the AUR? (Settings › Mind.)
+    pub fn aur(&self) -> bool {
+        self.aur.load(Ordering::Relaxed)
+    }
+
+    pub fn set_permissions(&self, system_changes: Option<bool>, aur: Option<bool>) -> anyhow::Result<()> {
+        let mut prefs = models::load_prefs(&self.config.daemon.state_dir);
+        if let Some(v) = system_changes {
+            self.system_changes.store(v, Ordering::Relaxed);
+            prefs.system_changes = Some(v);
+        }
+        if let Some(v) = aur {
+            self.aur.store(v, Ordering::Relaxed);
+            prefs.aur = Some(v);
+        }
+        models::save_prefs(&self.config.daemon.state_dir, &prefs)
+    }
+
+    pub fn permissions_event(&self) -> crate::proto::Event {
+        crate::proto::Event::Permissions { system_changes: self.system_changes(), aur: self.aur() }
     }
     pub fn auto_update(&self) -> bool {
         self.auto_update.load(Ordering::Relaxed)

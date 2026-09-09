@@ -8,7 +8,9 @@
 # its choice is kept in <state_dir>/mind-prefs.json, which overrides this.
 path = "auto"
 models_dir = "/var/lib/mindos/models"
-context = 8192
+# Tokens the model can hold at once: the conversation, the system prompt and
+# whatever a tool returns (a wiki page, a log, a package list) all live here.
+context = 32768
 # -1 = offload every layer to the GPU, 0 = CPU only.
 gpu_layers = -1
 # 0 = let llama-server pick the thread count.
@@ -18,7 +20,7 @@ host = "127.0.0.1"
 port = 8642
 extra_args = []
 temperature = 0.3
-max_tokens = 2048
+max_tokens = 4096
 # Let the model reason before answering (Qwen3 "thinking"). Slower; off by
 # default. Settings › Mind or `mind thinking on` toggles it at runtime.
 thinking = false
@@ -43,6 +45,15 @@ autopilot = false
 autopilot_categories = []
 # Extra read-only commands allowed through run_command without confirmation.
 extra_observe_commands = []
+# Let the Mind change the system at all: install packages, edit configuration,
+# control services, run commands as root. Each change is still confirmed
+# unless autopilot says otherwise, and the ruinous ones are refused outright.
+# false leaves the Mind able to look and to advise, and nothing else.
+# Settings › Mind toggles this at runtime (mind-prefs.json overrides it).
+allow_system_changes = true
+# Let install_packages fall back to the AUR for packages that are in neither
+# the repositories nor Flathub. See /etc/mindos/pkg.conf.
+allow_aur = true
 
 [updates]
 # The update watcher: checks the repositories and Arch news this often

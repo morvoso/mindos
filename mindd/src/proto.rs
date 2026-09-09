@@ -58,6 +58,15 @@ pub enum Request {
     SetModel { path: String },
     /// Let the model think before answering (restarts llama-server).
     SetThinking { enabled: bool },
+    /// What the Mind is allowed to do on its own (answered with `Permissions`).
+    Permissions,
+    /// Change one or both permissions; omitted fields are left alone.
+    SetPermissions {
+        #[serde(default)]
+        system_changes: Option<bool>,
+        #[serde(default)]
+        aur: Option<bool>,
+    },
     /// Download `url` into models_dir as `file`; progress arrives as `Download`
     /// events. `use_after` switches to it when it is complete.
     DownloadModel {
@@ -331,6 +340,8 @@ pub enum Event {
         notices: usize,
     },
     History { entries: Vec<Value> },
+    /// Answer to `Permissions` and `SetPermissions`.
+    Permissions { system_changes: bool, aur: bool },
     /// Answer to `Models` (and after `SetModel` / `SetThinking`).
     Models {
         /// Path of the model in use (or about to load), if any.

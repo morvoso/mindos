@@ -107,6 +107,15 @@ pub struct PolicyConfig {
     pub autopilot_categories: Vec<String>,
     /// Extra read-only commands allowed through run_command without confirmation.
     pub extra_observe_commands: Vec<String>,
+    /// Let the Mind change the system at all: install packages, edit files,
+    /// control services, run commands as root. Off leaves it able to look and
+    /// to advise, and nothing else. Settings > Mind overrides this at runtime
+    /// (mind-prefs.json); the forbidden list applies either way.
+    pub allow_system_changes: bool,
+    /// Let install_packages fall back to the AUR when a package is in neither
+    /// the repositories nor Flathub. AUR packages are user-submitted and build
+    /// from source; the build is still shown to the user for confirmation.
+    pub allow_aur: bool,
 }
 
 impl Default for Config {
@@ -137,7 +146,7 @@ impl Default for ModelConfig {
         ModelConfig {
             path: "auto".into(),
             models_dir: PathBuf::from("/var/lib/mindos/models"),
-            context: 8192,
+            context: 32768,
             gpu_layers: -1,
             threads: 0,
             llama_server: PathBuf::from("/usr/bin/llama-server"),
@@ -146,7 +155,7 @@ impl Default for ModelConfig {
             extra_args: vec![],
             external_url: None,
             temperature: 0.3,
-            max_tokens: 2048,
+            max_tokens: 4096,
             thinking: false,
             catalog: PathBuf::from("/etc/mindos/model-catalog.json"),
         }
@@ -168,7 +177,7 @@ impl Default for DaemonConfig {
 
 impl Default for PolicyConfig {
     fn default() -> Self {
-        PolicyConfig { autopilot: false, autopilot_categories: vec![], extra_observe_commands: vec![] }
+        PolicyConfig { autopilot: false, autopilot_categories: vec![], extra_observe_commands: vec![], allow_system_changes: true, allow_aur: true }
     }
 }
 

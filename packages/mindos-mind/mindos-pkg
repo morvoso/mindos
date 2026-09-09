@@ -7,14 +7,15 @@
 #   mindos-pkg info NAME         source, installation state and details
 #   mindos-pkg where NAME        one word: installed | flatpak-installed | repo | flatpak | aur | none
 #
-#   install --repo-only          repositories only; Flathub and the AUR are not used
-#   install --aur                permit the AUR for this command only
+#   --repo-only                  repositories only; Flathub and the AUR are not used
+#   --aur / --no-aur             force the AUR on or off for this command
 #
-# The AUR is disabled by default. Its packages are user-submitted and
-# unreviewed, and their build scripts run on this system during installation.
-# It is used only when enabled with `aur = yes` in /etc/mindos/pkg.conf or
-# with --aur on the command line. The Mind never passes --aur, and Settings
-# installs with --repo-only.
+# The AUR is the last source tried, after the repositories and Flathub, and
+# only for packages that are in neither (google-chrome, for instance). Its
+# packages are user-submitted and their build scripts run on this system, so
+# `aur = no` in /etc/mindos/pkg.conf turns it off, as does --no-aur. Settings
+# installs with --repo-only. The Mind passes --aur or --no-aur to match the
+# user's choice in Settings > Mind.
 #
 # Output is plain sentences so the Mind (mindd) can relay them. The exit
 # status is 0 only when every requested package succeeded. Installing and
@@ -25,17 +26,20 @@ BUILD_USER=mindos-build
 FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
 CONF=${MINDOS_PKG_CONF:-/etc/mindos/pkg.conf}
 refreshed=0
-# install flags
-repo_only=0 allow_aur=0
+# flags: allow_aur is -1 until --aur or --no-aur says otherwise
+repo_only=0 allow_aur=-1
 
-# The AUR is opt-in: `aur = yes` in /etc/mindos/pkg.conf, or --aur for one
-# command. Any other value, or a missing file, means disabled.
+# The AUR is on unless it is turned off: --no-aur for one command, or
+# `aur = no` in /etc/mindos/pkg.conf for good.
 aur_enabled() {
   [[ $allow_aur == 1 ]] && return 0
-  [[ -r $CONF ]] || return 1
+  [[ $allow_aur == 0 ]] && return 1
+  [[ -r $CONF ]] || return 0
   local v
   v=$(sed -nE 's/^[[:space:]]*aur[[:space:]]*=[[:space:]]*([A-Za-z01]+).*/\1/p' "$CONF" | tail -n1)
-  [[ ${v,,} =~ ^(yes|true|on|1)$ ]]
+  [[ -z $v ]] && return 0
+  [[ ${v,,} =~ ^(no|false|off|0)$ ]] && return 1
+  return 0
 }
 
 has() { command -v "$1" >/dev/null 2>&1; }
@@ -139,12 +143,12 @@ install_one() {
     fi
   fi
 
-  # 3. AUR, built locally as an unprivileged user. Only when enabled.
+  # 3. AUR, built locally as an unprivileged user. The last resort.
   if aur_has "$n"; then
     if ! aur_enabled; then
-      echo "$n: available only from the AUR, which is disabled. AUR packages are user-submitted and"
+      echo "$n: available only from the AUR, which is turned off. AUR packages are user-submitted and"
       echo "    unreviewed, and their build scripts run on this system during installation. To permit it,"
-      echo "    run 'mindos-pkg install --aur $n' for this command only, or set 'aur = yes' in $CONF."
+      echo "    turn it back on in Settings > Mind, or run 'mindos-pkg install --aur $n' for this one."
       return 1
     fi
     echo "$n: not available in the repositories or on Flathub. Building from the AUR (user-submitted package, compiled on this system)..."
@@ -182,7 +186,7 @@ search_cmd() {
   fi
   if has paru; then
     if aur_enabled; then echo "AUR (built from source):"
-    else echo "AUR (built from source; disabled. Use 'mindos-pkg install --aur NAME' to permit it for one command):"; fi
+    else echo "AUR (built from source; turned off. Use 'mindos-pkg install --aur NAME' for one command):"; fi
     paru_run -Ssa -- "$q" 2>/dev/null | paste - - | sed -E 's#^aur/([^ ]+) ([^ ]+)[^\t]*\t\s*#  \1 \2  —  #' | head -10
   fi
 }
@@ -195,36 +199,38 @@ info_one() {
     flatpak-installed)  echo "$n is installed as the Flatpak $(flatpak_installed_id "$n")."; flatpak info --system "$(flatpak_installed_id "$n")" 2>/dev/null | head -8 ;;
     repo)               echo "$n is available from the $(repo_name "$n") repository, not installed."; pacman -Si -- "$n" | grep -E '^(Description|Version|Download Size|Installed Size)' ;;
     flatpak)            echo "$n is available on Flathub as $(flatpak_match "$n"), not installed." ;;
-    aur)                echo "$n is available only from the AUR (user-submitted, built locally) and is not installed.$(aur_enabled || echo ' The AUR is disabled. Use --aur, or set aur = yes in /etc/mindos/pkg.conf.')"; paru_run -Sia -- "$n" 2>/dev/null | grep -E '^(Description|Version|Votes|Out-of-date)' ;;
+    aur)                echo "$n is available only from the AUR (user-submitted, built locally) and is not installed.$(aur_enabled || echo ' The AUR is turned off here. Use --aur, or remove aur = no from /etc/mindos/pkg.conf.')"; paru_run -Sia -- "$n" 2>/dev/null | grep -E '^(Description|Version|Votes|Out-of-date)' ;;
     *)                  echo "$n: not found in the repositories, on Flathub, or in the AUR."; return 1 ;;
   esac
 }
 
 cmd=${1:-}; shift || true
-[[ -n $cmd && $# -gt 0 ]] || { sed -n '2,10p' "$0"; exit 2; }
+# The flags mean the same thing wherever they appear, so they are taken out
+# of the argument list once, before the command decides what to do.
+args=()
+for a in "$@"; do
+  case $a in
+    --repo-only) repo_only=1 ;;
+    --aur)       allow_aur=1 ;;
+    --no-aur)    allow_aur=0 ;;
+    -*)          echo "mindos-pkg: unknown option $a"; exit 2 ;;
+    *)           args+=("$a") ;;
+  esac
+done
+[[ -n $cmd && ${#args[@]} -gt 0 ]] || { sed -n '2,11p' "$0"; exit 2; }
 rc=0
 case $cmd in
   install) [[ $EUID -eq 0 ]] || { echo "mindos-pkg install needs root (sudo)"; exit 1; }
-           args=()
-           for a in "$@"; do
-             case $a in
-               --repo-only) repo_only=1 ;;
-               --aur)       allow_aur=1 ;;
-               -*)          echo "mindos-pkg install: unknown option $a"; exit 2 ;;
-               *)           args+=("$a") ;;
-             esac
-           done
-           [[ ${#args[@]} -gt 0 ]] || { echo "mindos-pkg install: no package named"; exit 2; }
            if [[ $repo_only == 1 ]]; then
              install_repo "${args[@]}" || rc=1
            else
              for n in "${args[@]}"; do install_one "$n" || rc=1; done
            fi ;;
   remove)  [[ $EUID -eq 0 ]] || { echo "mindos-pkg remove needs root (sudo)"; exit 1; }
-           for n in "$@"; do remove_one "$n" || rc=1; done ;;
-  search)  search_cmd "$*" ;;
-  info)    for n in "$@"; do info_one "$n" || rc=1; done ;;
-  where)   for n in "$@"; do where_one "$n"; done ;;
-  *)       sed -n '2,10p' "$0"; exit 2 ;;
+           for n in "${args[@]}"; do remove_one "$n" || rc=1; done ;;
+  search)  search_cmd "${args[*]}" ;;
+  info)    for n in "${args[@]}"; do info_one "$n" || rc=1; done ;;
+  where)   for n in "${args[@]}"; do where_one "$n"; done ;;
+  *)       sed -n '2,11p' "$0"; exit 2 ;;
 esac
 exit $rc

@@ -21,20 +21,31 @@ pub fn system_prompt() -> String {
 You administer the machine for its user through tools: updating, installing packages and drivers, \
 managing services, reading logs, diagnosing hardware and configuring the system.
 
+You are the reason the user does not have to search the web or read the Arch Wiki themselves. When they hit a \
+problem, find the answer and apply it. Do not hand back a list of things they could try.
+
 Rules:
 - Use tools to look before you act; never guess package names or file contents.
+- Research first, then act. If you are not certain how something works on this system -- an error message, a \
+driver, a package that is not where you expected, a setting you have not seen -- look it up (arch_wiki first, \
+then web_search and web_fetch) before you answer. An answer from a page you actually read beats one from memory.
+- Solve it, do not delegate it. Read the logs, find the cause, make the change (with confirmation) and verify it. \
+Escalate to the user only when the fix needs a decision that is theirs -- their data, their money, their hardware \
+-- or when you have looked and genuinely cannot find the cause. Then say precisely what you tried, what you \
+found, and what you would try next.
+- When something you tried does not work, try the next approach rather than stopping. Two or three well-chosen \
+attempts, then report.
 - Prefer the dedicated tools (check_updates, install_packages, journal, ...) over run_command.
 - Changes to the system are shown to the user for confirmation. If a change is declined, do not retry it; \
 explain what you would have done instead.
 - Be concise and concrete. Report what you did and what you found. Use plain sentences, short lists when listing.
 - Do not invent results. If a tool fails, say so and suggest the next step.
-- Packages come from the MindOS and Arch repositories and from Flathub (flatpak). install_packages tries \
-them in that order and says which one it used; a not-found answer from it means the name exists in neither, so \
-suggest search_packages, never 'install it first'.
-- The AUR is disabled by default: its packages are unreviewed and run their own build scripts. install_packages \
-does not use it. If a package is available only from the AUR, say so and tell the user they can permit it \
-themselves with 'sudo mindos-pkg install --aur NAME' or 'aur = yes' in /etc/mindos/pkg.conf. Never claim to \
-have installed something from the AUR, and never offer to enable the AUR on the user's behalf.
+- Packages come from the MindOS and Arch repositories, then Flathub (flatpak), then the AUR, built from source \
+on this machine. install_packages tries them in that order and says which one it used; a not-found answer means \
+the name is in none of them, so use search_packages, never 'install it first'. Chrome, many game tools and many \
+drivers are AUR-only and install perfectly well -- try, do not refuse. An AUR build is shown to the user for \
+confirmation like any other change, and it takes minutes rather than seconds; say so before you start one. If \
+install_packages reports the AUR is turned off, say the package needs it and that Settings > Mind can turn it on.
 - Package names are plain lower-case names (discord, octopi, steam), never descriptions or hardware names.
 - For updates: check Arch news for manual interventions first, apply the update, then report pacnew files \
 and whether a reboot is needed (new kernel or NVIDIA driver).
@@ -308,6 +319,15 @@ async fn run_tool(d: &Daemon, conn: &mut Conn, session: &Session, defs: &[tools:
         conn.send(Event::ToolResult { id: call.id.clone(), name: call.name.clone(), ok: false, summary: "forbidden by policy".into() });
         d.audit.record("tool_denied", &session.id, conn.uid, json!({"name": call.name, "reason": "forbidden"}));
         return Err(anyhow!("this action is forbidden by MindOS policy"));
+    }
+    // The user can take the Mind's hands away entirely (Settings > Mind >
+    // Let Mind change this system). It keeps its eyes either way.
+    if pol == Policy::Change && !d.system_changes() {
+        conn.send(Event::ToolResult { id: call.id.clone(), name: call.name.clone(), ok: false, summary: "changes are turned off".into() });
+        d.audit.record("tool_denied", &session.id, conn.uid, json!({"name": call.name, "reason": "changes disabled"}));
+        return Err(anyhow!(
+            "changing the system is turned off for the Mind (Settings › Mind › Let Mind change this system). Explain what you would have done and let the user run it or turn the setting on."
+        ));
     }
     if needs {
         let approved = conn.wait_confirm(&call.id, Duration::from_secs(600)).await;

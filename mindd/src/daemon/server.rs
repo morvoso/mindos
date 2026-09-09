@@ -258,6 +258,14 @@ async fn handle(d: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 Ok(()) => conn.send(d.models_event()),
                 Err(e) => conn.send(Event::Error { message: format!("{:#}", e) }),
             },
+            Request::Permissions => conn.send(d.permissions_event()),
+            Request::SetPermissions { system_changes, aur } => match d.set_permissions(system_changes, aur) {
+                Ok(()) => {
+                    d.audit.record("permissions", "", conn.uid, serde_json::json!({"system_changes": d.system_changes(), "aur": d.aur(), "client": conn.client}));
+                    conn.send(d.permissions_event());
+                }
+                Err(e) => conn.send(Event::Error { message: format!("{:#}", e) }),
+            },
             Request::DownloadModel { url, file, size, use_after } => {
                 match d.start_download(url.clone(), file.clone(), size, use_after, conn.tx.clone()) {
                     Ok(()) => d.audit.record("download", "", conn.uid, serde_json::json!({"url": url, "file": file, "client": conn.client})),

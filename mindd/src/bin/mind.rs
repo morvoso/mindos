@@ -403,7 +403,7 @@ async fn chat(client: &mut Client, text: String, session: Option<String>, autopi
                 return Err(anyhow!("{}", message));
             }
             Event::Welcome { .. } | Event::Status { .. } | Event::History { .. } | Event::Models { .. } | Event::Download(_) => {}
-            Event::Notices { .. } | Event::Notice(_) | Event::NoticeGone { .. } | Event::Updates(_) | Event::Health { .. } | Event::Sleep { .. } => {}
+            Event::Notices { .. } | Event::Notice(_) | Event::NoticeGone { .. } | Event::Updates(_) | Event::Health { .. } | Event::Sleep { .. } | Event::Permissions { .. } => {}
         }
     }
 }
