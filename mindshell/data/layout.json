@@ -31,7 +31,6 @@
               "firefox.desktop",
               "org.gnome.Nautilus.desktop",
               "kitty.desktop",
-              "octopi.desktop",
               "mindos-settings.desktop"
             ]
           }
@@ -51,6 +50,16 @@
         {
           "id": "audio",
           "type": "audio",
+          "config": {}
+        },
+        {
+          "id": "net",
+          "type": "network",
+          "config": {}
+        },
+        {
+          "id": "vpn",
+          "type": "vpn",
           "config": {}
         },
         {

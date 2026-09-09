@@ -431,12 +431,16 @@ select option { background: var(--bg-1); color: var(--fg); }
 .w-vpn.busy .w-ic { animation: blink 1.2s ease-in-out infinite; }
 .w-battery.low { color: var(--warn); }
 .w-battery.charging .w-ic { color: var(--ok); }
-.w-mind { gap: 6px; }
-.w-mind[data-state=ready] { color: var(--mind); }
-.w-mind[data-state=ready] .w-ic { filter: drop-shadow(0 0 5px rgb(var(--mind-a) / .7)); }
-.mind-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-faint); }
-.w-mind[data-state=ready] .mind-dot { background: var(--ok); box-shadow: 0 0 8px rgb(var(--ok-a) / .9); }
-.w-mind[data-state=loading] .mind-dot { background: var(--warn); animation: blink 1s ease-in-out infinite; }
+/* The Mind: one icon whose colour is the state. Grey off, amber loading,
+   dim while asleep, the highlight colour with a soft glow when it is ready. */
+.w-mind { gap: 7px; }
+.w-mind .w-ic { transition: color var(--fast), filter var(--fast); }
+.w-mind[data-state=off] .w-ic { color: var(--fg-faint); }
+.w-mind[data-state=asleep] .w-ic { color: var(--fg-dim); opacity: .75; }
+.w-mind[data-state=loading] .w-ic { color: var(--warn); animation: mind-pulse 1.4s ease-in-out infinite; }
+.w-mind[data-state=ready] .w-ic { color: var(--accent); filter: drop-shadow(0 0 7px rgb(var(--accent-a) / .55)); }
+.w-mind[data-state=ready] { color: var(--fg); }
+@keyframes mind-pulse { 50% { opacity: .4; } }
 
 /* sysmon meters */
 .w-sysmon { gap: 10px; padding: 0 10px; }
@@ -530,7 +534,7 @@ select option { background: var(--bg-1); color: var(--fg); }
 }
 .di:hover { background: rgb(255 255 255 / .08); border-color: rgb(255 255 255 / .1); }
 .di.sel { background: rgb(var(--accent-a) / .16); border-color: rgb(var(--accent-a) / .45); }
-.di-frame { display: flex; width: 56px; height: 56px; align-items: center; justify-content: center; overflow: hidden; border-radius: var(--r-sm); filter: drop-shadow(0 3px 6px rgb(0 0 0 / .5)); }
+.di-frame { position: relative; display: flex; width: 56px; height: 56px; align-items: center; justify-content: center; overflow: hidden; border-radius: var(--r-sm); filter: drop-shadow(0 3px 6px rgb(0 0 0 / .5)); }
 .di-ic { width: 48px; height: 48px; object-fit: contain; }
 .di.img .di-frame { background: rgb(0 0 0 / .3); border: 1px solid var(--glass-border); filter: none; }
 .di.img .di-ic { width: 100%; height: 100%; object-fit: cover; }
@@ -657,17 +661,25 @@ select option { background: var(--bg-1); color: var(--fg); }
 .aud.muted .vol-val { color: var(--fg-faint); }
 
 /* power */
-.power-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 12px; }
-.power-btn {
-  display: flex; flex-direction: column; align-items: center; gap: 10px; border-radius: var(--r);
-  padding: 16px 4px 12px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--glass-border);
-  transition: color var(--fast), border-color var(--fast), background var(--fast), transform var(--fast);
+/* system menu (power popup) */
+.sysmenu-list { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
+.sysmenu-item {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 9px 10px; border: 0; border-radius: var(--r-sm); background: transparent;
+  color: var(--fg); text-align: left;
+  transition: background var(--fast), color var(--fast);
 }
-.power-btn:hover { color: var(--fg); border-color: var(--glass-border-strong); background: var(--surface-hover); transform: translateY(-1px); }
-.power-btn.power-shutdown:hover { color: var(--danger); border-color: rgb(var(--danger-a) / .5); }
-.power-btn.power-lock:hover { color: var(--accent); border-color: rgb(var(--accent-a) / .5); }
-.power-btn.armed { color: var(--void); background: var(--danger); border-color: var(--danger); box-shadow: 0 0 20px rgb(var(--danger-a) / .45); }
-.power-label { font: var(--t-label); font-size: 12.5px; }
+.sysmenu-item:hover { background: var(--surface-hover); }
+.sysmenu-ic { display: inline-flex; width: 26px; justify-content: center; color: var(--fg-dim); }
+.sysmenu-item:hover .sysmenu-ic { color: var(--accent); }
+.sysmenu-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sysmenu-text strong { font: var(--t-label); font-weight: 500; }
+.sysmenu-note { font: var(--t-caption); color: var(--fg-faint); }
+.sysmenu-shutdown:hover, .sysmenu-reboot:hover { color: var(--danger); }
+.sysmenu-shutdown:hover .sysmenu-ic, .sysmenu-reboot:hover .sysmenu-ic { color: var(--danger); }
+.sysmenu-item.armed, .sysmenu-item.armed:hover { color: var(--void); background: var(--danger); }
+.sysmenu-item.armed .sysmenu-ic, .sysmenu-item.armed .sysmenu-note { color: inherit; opacity: .85; }
+.system-menu { position: relative; display: inline-flex; }
 
 /* widget catalog */
 .catalog { height: 100%; }
@@ -969,6 +981,19 @@ html[data-kind=lock], html[data-kind=lock] body { background: #000; }
   border: 1px solid rgb(var(--accent-a) / .35); background: rgb(var(--accent-a) / .1); color: var(--accent);
   font: var(--t-eyebrow); letter-spacing: var(--track); text-transform: uppercase;
 }
+
+/* ---------- the application picker popup ---------- */
+.pop-body.picker { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.picker .input { width: 100%; }
+.picker-grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; padding: 2px; }
+.picker-item { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--fg); font: 500 11.5px/1.3 var(--ui); text-align: center; transition: background var(--fast), border-color var(--fast); }
+.picker-item:hover { background: rgb(255 255 255 / .06); border-color: var(--glass-border); }
+.picker-item.on { background: rgb(var(--accent-a) / .14); border-color: rgb(var(--accent-a) / .45); }
+.picker-item:focus-visible { box-shadow: var(--ring); outline: 0; }
+.picker-art { position: relative; display: flex; width: 40px; height: 40px; align-items: center; justify-content: center; }
+.picker-art img, .picker-art svg { width: 40px; height: 40px; object-fit: contain; }
+.picker-check { position: absolute; right: -6px; bottom: -4px; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: var(--accent-fg); }
+.picker-name { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 
 /* ---------- the screensaver picker (Settings > Screen) ---------- */
 .saver-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin: 4px 0 2px; }
@@ -1330,36 +1355,30 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
   .nav-group .nav-item { overflow-wrap: anywhere; }
 }
 
-/* Gaming desktop: square chrome, charcoal surfaces and the MindOS green. */
+/* The desktop shell's own layer. Every colour here comes from the palette
+   (src/appearance.ts writes the tokens as inline custom properties on :root),
+   so only the shapes, depths and the few states the palette does not name
+   live in this block. Rounded, translucent, one soft shadow and a highlight
+   glow that never shouts. */
 :root[data-theme] {
- --void:#18191b; --bg-0:#242527; --bg-1:#2d2e30; --bg-2:#353638; --bg-3:#414244;
- --hairline:#484a4e; --line-strong:#64666a; --fg:#eff0f1; --fg-dim:#c1c3c6; --fg-faint:#a0a3a7;
- --accent:#3ddc97; --accent-dim:#29b67a; --accent-a:61 220 151; --mind:#3ddc97; --mind-a:61 220 151; --action:#3ddc97; --action-fg:#082419;
- --glass:36 37 39; --glass-a:.70; --glass-border:rgb(230 232 235 / .16); --glass-border-strong:rgb(230 232 235 / .28); --glass-hi:rgb(255 255 255 / .045);
- --surface:rgb(230 232 235 / .035); --surface-hover:rgb(230 232 235 / .08); --surface-strong:rgb(230 232 235 / .13);
- --r-xs:1px; --r-sm:2px; --r:2px; --r-md:2px; --r-lg:2px; --r-xl:2px;
- --shadow-1:0 12px 28px rgb(0 0 0 / .30),0 0 20px rgb(var(--accent-a) / .07); --shadow-2:0 20px 60px rgb(0 0 0 / .4),0 0 28px rgb(var(--accent-a) / .12); --glow-accent:0 0 18px rgb(var(--accent-a) / .22);
- --aurora:radial-gradient(ellipse at 20% 5%,rgb(255 255 255 / .055),transparent 65%),repeating-linear-gradient(115deg,transparent 0 159px,rgb(255 255 255 / .045) 160px 161px,transparent 162px 320px),linear-gradient(135deg,#303134,#1c1d1f 70%,#252628);
+ --r-xs:7px; --r-sm:10px; --r:13px; --r-md:13px; --r-lg:18px; --r-xl:24px;
+ --shadow-1:0 1px 2px rgb(0 0 0 / .28),0 10px 26px rgb(0 0 0 / .30);
+ --shadow-2:0 2px 6px rgb(0 0 0 / .34),0 26px 64px rgb(0 0 0 / .46);
+ --blur:blur(22px) saturate(1.25);
+ --ring:0 0 0 1px rgb(var(--accent-a) / .45);
 }
 :root[data-theme=light] {
- --action:#c73718; --action-fg:white;
- color-scheme:light; --void:#e5e2dc; --bg-0:#f3f2ef; --bg-1:#eeece7; --bg-2:#e3dfd9; --bg-3:#d4cec6;
- --hairline:#c4bdb4; --line-strong:#978b7f; --fg:#22201e; --fg-dim:#544e48; --fg-faint:#6e6257;
- --accent:#b62e13; --accent-dim:#a42b15; --accent-a:182 46 19; --mind:#a73922; --mind-a:167 57 34;
- --glass:244 242 238; --glass-border:rgb(42 33 24 / .25); --glass-border-strong:rgb(42 33 24 / .4);
- --surface:rgb(42 33 24 / .04); --surface-hover:rgb(42 33 24 / .08); --surface-strong:rgb(42 33 24 / .12);
- --ok:#237747; --ok-a:35 119 71; --danger:#b51e35; --danger-a:181 30 53; --warn:#905000; --warn-a:144 80 0;
- --shadow-1:0 8px 20px rgb(42 33 24 / .07); --shadow-2:0 20px 60px rgb(42 33 24 / .14);
- --aurora:radial-gradient(ellipse at 25% 10%,rgb(255 255 255 / .25),transparent 65%),repeating-linear-gradient(105deg,#dedbd6 0 22px,#e6e3de 22px 43px);
+ color-scheme:light;
+ --ok:#1f7a45; --ok-a:31 122 69; --danger:#c02a48; --danger-a:192 42 72; --warn:#9a5b00; --warn-a:154 91 0;
+ --shadow-1:0 1px 2px rgb(20 25 30 / .06),0 8px 22px rgb(20 25 30 / .10);
+ --shadow-2:0 2px 6px rgb(20 25 30 / .08),0 22px 54px rgb(20 25 30 / .16);
 }
-:root[data-theme] .btn.primary {background:var(--action);color:var(--action-fg);border-color:var(--action);box-shadow:none}
-:root[data-theme] .btn,:root[data-theme] .input,:root[data-theme] .select {border-radius:1px}
+:root[data-theme] .btn.primary {background:var(--action);color:var(--action-fg);border-color:transparent;box-shadow:var(--glow-accent)}
+:root[data-theme] .btn.primary:hover {filter:brightness(1.06);box-shadow:var(--glow-accent),0 0 0 1px rgb(var(--accent-a) / .5)}
 :root[data-theme] .wallpaper.builtin::before,:root[data-theme] .wallpaper.builtin::after {display:none}
-:root[data-theme] .panel-bg {border-radius:2px}
-:root[data-theme] .wordmark {display:none}
-:root[data-theme] button:focus-visible,:root[data-theme] input:focus-visible,:root[data-theme] select:focus-visible {outline:2px solid var(--accent);outline-offset:3px}
+:root[data-theme] button:focus-visible,:root[data-theme] input:focus-visible,:root[data-theme] select:focus-visible {outline:2px solid rgb(var(--accent-a) / .8);outline-offset:2px}
 .gaming-active > .desktop-icons,.gaming-active > .desktop-widgets {visibility:hidden}
-.gaming-workspace {position:absolute;inset:var(--gaming-top,0px) var(--gaming-right,0px) var(--gaming-bottom,80px) var(--gaming-left,0px);display:grid;grid-template-columns:144px minmax(0,1fr) 306px;grid-template-rows:44px minmax(0,1fr);gap:24px;padding:0 28px 26px 0;pointer-events:none}
+.gaming-workspace {position:absolute;inset:var(--gaming-top,0px) var(--gaming-right,0px) var(--gaming-bottom,80px) var(--gaming-left,0px);display:grid;grid-template-columns:180px minmax(0,1fr) 306px;grid-template-rows:44px minmax(0,1fr);gap:24px;padding:0 28px 26px 0;pointer-events:none}
 .gaming-workspace > * {pointer-events:auto;min-width:0}
 .gaming-menubar {grid-column:1 / -1;display:flex;align-items:center;gap:24px;height:44px;margin-right:-28px;padding:0 22px;background:var(--bg-0);border-bottom:1px solid var(--hairline)}
 .gaming-brand {display:flex;align-items:center;gap:12px;font-size:14px;letter-spacing:.04em}
@@ -1368,42 +1387,52 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .gaming-top-status {margin-left:auto;white-space:nowrap;color:var(--fg-dim)}
 .appearance-controls {display:flex;flex-wrap:wrap;gap:8px}
 .header-actions {display:flex;align-items:center;gap:8px;margin-left:auto}
-.system-menu {position:relative}
-.system-menu-trigger {display:inline-flex;align-items:center;justify-content:center;width:34px;padding:0}
-.system-menu-panel {position:absolute;z-index:20;top:calc(100% + 8px);right:0;display:flex;flex-direction:column;min-width:170px;padding:6px;background:var(--bg-1);border:1px solid var(--glass-border-strong);box-shadow:var(--shadow-2)}
-.system-menu-item {display:flex;align-items:center;gap:10px;width:100%;min-height:34px;padding:7px 10px;color:var(--fg-dim);background:transparent;border:0;text-align:left;font:500 12px/1 var(--ui)}
-.system-menu-item:hover {color:var(--fg);background:var(--surface-hover)}
-.system-menu-shutdown:hover {color:var(--danger)}
 .palette-tabs {display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+/* Colour schemes: a preset or a saved palette, shown as its own three colours. */
+.swatch-row {display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.swatch-wrap {position:relative;display:inline-flex}
+.swatch {display:flex;align-items:center;gap:9px;padding:7px 12px 7px 7px;border:1px solid var(--glass-border);border-radius:var(--r-sm);background:var(--surface);color:var(--fg-dim);font:500 12px var(--ui);cursor:pointer;transition:background var(--fast),border-color var(--fast),color var(--fast)}
+.swatch:hover {background:var(--surface-hover);color:var(--fg);border-color:var(--glass-border-strong)}
+.swatch.on {color:var(--fg);border-color:rgb(var(--accent-a) / .55);background:rgb(var(--accent-a) / .1)}
+.swatch-chip {position:relative;width:34px;height:24px;border-radius:5px;border:1px solid var(--glass-border);overflow:hidden;flex:none}
+.swatch-chip i {position:absolute;inset:auto 0 0 0;height:9px}
+.swatch-chip i + i {inset:auto 0 0 auto;width:9px;height:9px;border-radius:2px;margin:0 3px 3px 0}
+.swatch-del {position:absolute;top:-6px;right:-6px;display:none;place-items:center;width:18px;height:18px;padding:0;border:1px solid var(--glass-border-strong);border-radius:50%;background:var(--bg-2);color:var(--fg-dim);cursor:pointer}
+.swatch-wrap:hover .swatch-del, .swatch-del:focus-visible {display:grid}
+.swatch-del:hover {color:var(--danger);border-color:rgb(var(--danger-a) / .6)}
 .palette-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .palette-field {display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;padding:10px;background:var(--surface);border:1px solid var(--hairline);font:500 12px var(--ui)}
 .palette-field input[type=color] {width:30px;height:24px;padding:0;border:1px solid var(--hairline);background:transparent;cursor:pointer}
 .palette-field code {grid-column:1 / -1;color:var(--fg-dim);font:400 10px var(--mono);letter-spacing:.04em}
-.gaming-menubar .appearance-controls .btn {min-height:26px;padding:4px 8px;font:400 10px var(--mono);background:transparent;text-transform:uppercase}
-.gaming-menubar .appearance-controls .btn[aria-pressed=true] {color:var(--accent)}
+.gaming-menubar .appearance-controls .tool {width:32px;height:32px}
+.gaming-menubar .appearance-controls .tool[aria-pressed=true] {color:var(--accent)}
 .gaming-nav {display:flex;flex-direction:column;align-items:stretch;padding:6px 0 0 26px;gap:3px}
 .gaming-nav > .gaming-meta {margin:0 0 15px 10px}
-.gaming-nav-link {display:flex;align-items:center;gap:10px;min-height:43px;padding:10px;background:transparent;border:0;border-left:2px solid transparent;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.035em}
-.gaming-nav-link:hover {background:var(--surface-hover)}
-.gaming-nav-link[aria-pressed=true] {color:var(--accent);border-left-color:var(--accent);background:var(--surface-hover)}
-.gaming-nav-link .ic {opacity:.7}
+.gaming-nav-link {display:flex;align-items:center;gap:11px;min-height:40px;padding:9px 12px;margin-right:4px;background:transparent;border:0;border-radius:var(--r-sm);text-align:left;font:500 13px/1.2 var(--ui);color:var(--fg-dim);transition:background var(--fast),color var(--fast)}
+/* One line each: a two-word entry shortens rather than growing a second row. */
+.gaming-nav-link > span {min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.gaming-nav-link .ic {flex:none}
+.gaming-nav-link:hover {background:var(--surface-hover);color:var(--fg)}
+.gaming-nav-link[aria-pressed=true] {color:var(--accent);background:rgb(var(--accent-a) / .14);box-shadow:inset 2px 0 0 var(--accent)}
+.gaming-nav-link .ic {opacity:.85}
 .gaming-nav .gaming-nav-bottom {margin:auto 0 0 10px;padding-top:30px;font-size:9px}
 .gaming-main {min-height:0;align-self:stretch}
-.game-library {display:flex;flex-direction:column;background:var(--bg-0);border:1px solid var(--line-strong);box-shadow:var(--shadow-1);min-width:0}
+.game-library {display:flex;flex-direction:column;min-width:0;overflow:hidden}
 .app-window.game-library {display:flex;height:100%;padding:0}
-.gaming-panel-title {display:flex;align-items:center;gap:14px;min-height:36px;padding:8px 14px;border-bottom:1px solid var(--hairline)}
-.gaming-panel-title h2 {margin:0;font-size:11px;line-height:1.3;font-weight:700;text-transform:uppercase;letter-spacing:.075em}
+.gaming-panel-title {display:flex;align-items:center;gap:14px;min-height:42px;padding:9px 16px;border-bottom:1px solid var(--glass-border)}
+.gaming-panel-title h2 {margin:0;font:600 13px/1.3 var(--ui);letter-spacing:.005em}
 .gaming-panel-title > .gaming-meta {font-size:9px}
-.gaming-close {display:grid;place-items:center;width:22px;height:22px;padding:0;margin-left:auto;border:1px solid var(--hairline);background:transparent}
+.gaming-close {display:grid;place-items:center;width:26px;height:26px;padding:0;margin-left:auto;border:0;border-radius:var(--r-xs);color:var(--fg-dim);background:transparent;transition:background var(--fast),color var(--fast)}
+.gaming-close:hover {background:var(--surface-hover);color:var(--fg)}
 .game-library-body {flex:1;min-height:0;padding:18px;overflow-y:auto}
 .game-toolbar {display:flex;align-items:center;gap:8px;margin-bottom:18px}
 .game-search {flex:1;min-width:80px}
 .game-toolbar .input,.game-toolbar .select {min-height:34px;font-size:12px}
 .game-toolbar .select {max-width:150px}
 .game-toolbar .btn {min-height:34px}
-.gaming-message {margin:0 0 14px;padding:10px 12px;border-left:2px solid var(--accent);background:var(--surface);color:var(--fg-dim);font-size:12px;overflow-wrap:anywhere}
+.gaming-message {margin:0 0 14px;padding:11px 14px;border-radius:var(--r-sm);border-left:2px solid var(--accent);background:var(--surface);color:var(--fg-dim);font-size:13px;overflow-wrap:anywhere}
 .gaming-message[data-error=true] {border-color:var(--danger);color:var(--danger)}
-.game-feature {display:grid;grid-template-columns:31% minmax(0,1fr);min-height:230px;border:1px solid var(--hairline);margin-bottom:24px}
+.game-feature {display:grid;grid-template-columns:31% minmax(0,1fr);min-height:230px;border:1px solid var(--glass-border);border-radius:var(--r-lg);overflow:hidden;margin-bottom:24px;background:var(--surface)}
 .game-art {position:relative;overflow:hidden;isolation:isolate;color:#e5ddd6;background:linear-gradient(145deg,hsl(var(--art-hue) 12% 33%),hsl(var(--art-hue) 20% 15%))}
 .game-art::before {content:'';position:absolute;inset:-30%;transform:rotate(-30deg);background:repeating-linear-gradient(90deg,transparent 0 36px,rgb(244 236 220 / .075) 36px 37px)}
 .game-art::after {content:'';position:absolute;border:1px solid rgb(255 232 208 / .2);width:140px;height:140px;transform:rotate(45deg);left:20%;top:14%}
@@ -1413,22 +1442,22 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .game-art-cross {position:absolute;right:14px;bottom:18px;color:#ffad89;font:20px var(--mono)}
 .game-feature-copy {display:flex;flex-direction:column;align-items:flex-start;padding:24px;min-width:0}
 .game-feature-state {display:flex;align-items:center;gap:9px;color:var(--accent);font-size:9px}
-.game-feature-copy h1 {font:700 clamp(26px,2.65vw,49px)/1.05 var(--ui);letter-spacing:-.045em;text-transform:uppercase;margin:17px 0 4px;overflow-wrap:anywhere}
+.game-feature-copy h1 {font:700 clamp(26px,2.65vw,46px)/1.06 var(--ui);letter-spacing:-.03em;margin:16px 0 4px;overflow-wrap:anywhere}
 .game-feature-copy > p {margin:7px 0 24px}
 .game-feature-actions {display:flex;flex-wrap:wrap;gap:7px;margin-top:auto}
-.game-feature-actions .btn {min-height:36px;font-size:11px;font-weight:700;text-transform:uppercase}
+.game-feature-actions .btn {min-height:36px;font-size:13px;font-weight:600}
 .game-feature-actions .game-play {min-width:128px;justify-content:center}
 .game-favorite[aria-pressed=true] {color:var(--accent);border-color:var(--accent)}
 .game-section-title {display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-bottom:1px solid var(--hairline)}
 .game-tabs {display:flex;gap:20px}
-.game-tab {padding:0 0 10px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--fg-faint);font-size:11px;font-weight:700;text-transform:uppercase}
+.game-tab {padding:0 0 10px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--fg-faint);font:600 13px/1 var(--ui)}
 .game-tab[aria-pressed=true] {border-bottom-color:var(--accent);color:var(--fg)}
 .game-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px 14px}
 .game-tile {min-width:0;display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:0 0 8px;border:0;border-bottom:2px solid transparent;background:transparent;text-align:left}
-.game-tile-art {aspect-ratio:4 / 3;border:1px solid var(--hairline)}
-.game-tile:hover .game-art,.game-tile.selected .game-art {outline:1px solid var(--accent);outline-offset:-1px}
+.game-tile-art {aspect-ratio:4 / 3;border:1px solid var(--glass-border);border-radius:var(--r);overflow:hidden}
+.game-tile:hover .game-art,.game-tile.selected .game-art {outline:2px solid var(--accent);outline-offset:-2px}
 .game-tile.selected {border-bottom-color:var(--accent)}
-.game-tile strong {margin-top:3px;font-size:12px;text-transform:uppercase;line-height:1.35}
+.game-tile strong {margin-top:4px;font:600 13px/1.35 var(--ui)}
 .game-tile .gaming-meta {font-size:8px}
 .game-tile .game-art-letter {font-size:42px}
 .game-empty {grid-column:1 / -1;padding:40px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}
@@ -1439,40 +1468,40 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .gaming-text-action {display:inline-flex;align-items:center;gap:8px;padding:6px 0;background:transparent;border:0;color:var(--accent);font-size:10px;white-space:nowrap}
 .gaming-text-action:hover {text-decoration:underline}
 .gaming-rail {display:flex;flex-direction:column;gap:18px;overflow-y:auto;scrollbar-width:thin;padding-bottom:4px}
-.gaming-rail-card {background:rgb(var(--glass) / .96);border:1px solid var(--hairline)}
+.gaming-rail-card {overflow:hidden}
 .gaming-rail-card .gaming-panel-title {justify-content:space-between;padding:8px 12px}
 .gaming-rail-card:first-child h2::before {content:'';display:inline-block;width:5px;height:5px;background:var(--accent);margin-right:9px;vertical-align:2px}
 .gaming-rail-body {padding:14px 12px}
 .gaming-rail-body > p:first-child {margin-top:0}
 .gaming-mind-copy {font-size:12px;line-height:1.7;margin:8px 0 14px;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
-.gaming-rail-body > .btn.primary {min-height:32px;font-size:10px;text-transform:uppercase;font-weight:700;margin-right:12px}
+.gaming-rail-body > .btn.primary {min-height:32px;font-size:12.5px;font-weight:600;margin-right:12px}
 .gaming-metric {margin-bottom:13px}
 .gaming-metric > div:first-child {display:flex;justify-content:space-between;gap:8px}
 .gaming-metric .gaming-meta {font-size:9px}
-.gaming-meter {margin-top:7px;height:3px;background:var(--hairline)}
-.gaming-meter > span {display:block;height:100%;background:var(--fg-dim)}
+.gaming-meter {margin-top:7px;height:4px;border-radius:2px;background:var(--surface-strong);overflow:hidden}
+.gaming-meter > span {display:block;height:100%;border-radius:2px;background:var(--fg-dim);transition:width 400ms ease-out}
 .gaming-metric:first-child .gaming-meter > span {background:var(--accent)}
 .gaming-profiles {display:flex;margin:8px 0}
 .gaming-profiles .btn {flex:1;padding:7px 5px;justify-content:center;font-size:10px;min-height:29px}
 .gaming-profiles .btn + .btn {border-left:0}
-.gaming-profiles .btn[aria-pressed=true] {background:var(--surface-strong);color:var(--accent);box-shadow:inset 0 -2px var(--accent)}
+.gaming-profiles .btn[aria-pressed=true] {background:rgb(var(--accent-a) / .16);color:var(--accent);border-color:rgb(var(--accent-a) / .45)}
 .gaming-launchers {padding:0}
-.gaming-launcher {display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:12px;border:0;border-bottom:1px solid var(--hairline);background:transparent;text-align:left}
+.gaming-launcher {display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:12px 16px;border:0;border-bottom:1px solid var(--glass-border);background:transparent;text-align:left}
 .gaming-launcher:last-child {border-bottom:0}
 .gaming-launcher:hover {background:var(--surface-hover)}
 .gaming-launcher strong,.gaming-launcher small {display:block}
-.gaming-launcher strong {font-size:11px}
-.gaming-launcher small {margin-top:3px;color:var(--fg-faint);font-size:10px}
+.gaming-launcher strong {font:500 13px/1.3 var(--ui)}
+.gaming-launcher small {margin-top:3px;color:var(--fg-faint);font-size:11.5px}
 .gaming-launcher > .gaming-meta {font-size:9px;color:var(--accent)}
 .gaming-rail-foot {font-size:8px;margin:auto 0 0;text-align:right}
-.gaming-feedback {position:absolute;left:170px;bottom:8px;right:360px;padding:12px 16px;background:var(--bg-1);border:1px solid var(--accent);box-shadow:var(--shadow-1);font-size:12px;overflow-wrap:anywhere;z-index:3}
+.gaming-feedback {position:absolute;left:170px;bottom:8px;right:360px;padding:12px 16px;border-radius:var(--r);background:rgb(var(--glass) / .92);border:1px solid rgb(var(--accent-a) / .5);box-shadow:var(--shadow-1);font-size:13px;overflow-wrap:anywhere;z-index:3}
 .library-hidden .gaming-rail {grid-column:3}
 :root[data-theme] .g-stage {align-items:flex-start;justify-content:flex-end;padding:0 0 14vh 6vw}
-:root[data-theme] .g-card {border-radius:1px;align-items:flex-start;width:min(440px,calc(100vw - 40px));padding:22px;gap:8px;backdrop-filter:none;-webkit-backdrop-filter:none}
-:root[data-theme] .g-avatar {width:44px;height:44px;border-radius:1px;box-shadow:none;background:var(--surface-strong);color:var(--fg);font-size:20px}
-:root[data-theme] .g-who {text-transform:uppercase;font-weight:700}
+:root[data-theme] .g-card {border-radius:var(--r-lg);align-items:flex-start;width:min(440px,calc(100vw - 40px));padding:26px;gap:10px}
+:root[data-theme] .g-avatar {width:48px;height:48px;border-radius:50%;box-shadow:none;background:var(--surface-strong);color:var(--fg);font-size:20px}
+:root[data-theme] .g-who {font-weight:600}
 :root[data-theme] .g-form {width:100%}
-:root[data-theme] .g-field,:root[data-theme] .g-go,:root[data-theme] .g-chip,:root[data-theme] .g-pbtn,:root[data-theme] .g-session {border-radius:1px}
+:root[data-theme] .g-field,:root[data-theme] .g-go,:root[data-theme] .g-chip,:root[data-theme] .g-pbtn,:root[data-theme] .g-session {border-radius:var(--r-sm)}
 :root[data-theme] .g-go {color:white;background:var(--action)}
 :root[data-theme] .greeter-clock {top:35px;left:auto;right:40px;text-align:right}
 :root[data-theme] .gc-time {font:400 22px var(--mono);text-shadow:none}
@@ -1481,12 +1510,12 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 :root[data-theme] .g-brand-text {font-family:var(--ui);color:var(--fg-dim);letter-spacing:.04em}
 :root[data-theme] .g-vignette {background:transparent}
 @media (min-width:1650px) {
- .gaming-workspace {grid-template-columns:164px minmax(0,1fr) 330px;gap:30px;padding-right:36px;padding-bottom:36px}
+ .gaming-workspace {grid-template-columns:200px minmax(0,1fr) 330px;gap:30px;padding-right:36px;padding-bottom:36px}
  .gaming-menubar {margin-right:-36px}.game-library-body {padding:24px}.game-feature {min-height:285px}
  .game-feature-copy {padding:30px}.game-grid {gap:22px}.game-tile-art {aspect-ratio:1.3}.gaming-rail-body {padding:18px}
 }
 @media (max-width:1150px) {
- .gaming-workspace {grid-template-columns:100px minmax(0,1fr) 240px;gap:14px;padding-right:14px}
+ .gaming-workspace {grid-template-columns:124px minmax(0,1fr) 240px;gap:14px;padding-right:14px}
  .gaming-menubar {margin-right:-14px;gap:16px}.gaming-edition {display:none}.gaming-nav {padding-left:10px}
  .gaming-nav-link {font-size:9px;gap:7px}.gaming-nav-link svg {width:14px}.game-library-body {padding:12px}
  .game-feature {min-height:200px}.game-feature-copy {padding:17px}.game-feature-copy h1 {font-size:28px}
@@ -1498,8 +1527,8 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
  .gaming-workspace {grid-template-columns:66px minmax(0,1fr);gap:10px;padding-right:10px}.gaming-rail {display:none}
  .library-hidden .gaming-rail {display:flex;grid-column:2;max-width:340px;justify-self:end}.gaming-nav {padding-left:6px}
  .gaming-nav-link {flex-direction:column;padding:9px 2px;font-size:8px}.gaming-nav > .gaming-meta,.gaming-nav .gaming-nav-bottom,.gaming-top-status {display:none}
- .gaming-menubar {margin-right:-10px;padding:0 12px;gap:8px}.gaming-menubar .appearance-controls {margin-left:auto;gap:5px}
-.gaming-menubar .appearance-controls .btn {font-size:8px;padding:4px}.gaming-brand {font-size:12px}.gaming-feedback {left:76px;right:10px}
+ .gaming-menubar {margin-right:-10px;padding:0 12px;gap:8px}.gaming-menubar .appearance-controls {gap:5px}
+.gaming-brand {font-size:12px}.gaming-feedback {left:76px;right:10px}
 }
 @media (max-width:480px) {
  .game-feature {grid-template-columns:1fr}.game-feature-art {display:none}.game-grid {grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -1510,24 +1539,25 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 }
 .g-appearance {position:absolute;top:36px;left:6vw;display:flex;align-items:center;gap:28px}
 .g-appearance > strong {font-size:14px;letter-spacing:.04em}
-.g-appearance .btn {font:400 10px var(--mono);text-transform:uppercase;min-height:28px}
-@media (max-width:600px) {.g-appearance {top:100px;gap:15px}.g-appearance .appearance-controls {max-width:230px}.g-appearance .btn {font-size:8px}}
+.g-appearance .tool {width:32px;height:32px}
+@media (max-width:600px) {.g-appearance {top:100px;gap:15px}.g-appearance .appearance-controls {max-width:230px}}
 :root[data-theme=light] input[type=text],:root[data-theme=light] input[type=number],:root[data-theme=light] input[type=search],:root[data-theme=light] select,:root[data-theme=light] textarea,:root[data-theme=light] .g-field {background-color:var(--bg-1);box-shadow:none}
 :root[data-theme=light] ::-webkit-scrollbar-thumb {background-color:var(--line-strong)}
-:root[data-theme] .g-card {background:rgb(var(--glass) / .97)}
+:root[data-theme] .g-card {background:rgb(var(--glass) / .78)}
 
 /* Gaming utilities share the desktop's modernist shell. */
-.gaming-app { height:100%; overflow:auto; background:var(--gaming-panel, var(--surface)); color:var(--text); padding:24px; box-sizing:border-box; }
-.play-header { display:flex; align-items:center; justify-content:space-between; gap:24px; border-bottom:2px solid var(--border); padding-bottom:20px; }
-.play-header h1 { margin:4px 0; font-size:32px; letter-spacing:-1px; text-transform:uppercase; }
-.gaming-app select, .gaming-app .input { background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:0; padding:9px; max-width:100%; min-width:0; }
-.play-tabs { display:flex; flex-wrap:wrap; border-bottom:1px solid var(--border); gap:2px; margin-top:14px; }
-.play-tabs button { padding:12px; text-transform:uppercase; font-size:11px; letter-spacing:.07em; color:var(--text); border:0; background:transparent; border-bottom:2px solid transparent; cursor:pointer; }
+.gaming-app { height:100%; overflow:auto; color:var(--fg); padding:24px; box-sizing:border-box; }
+.play-header { display:flex; align-items:center; justify-content:space-between; gap:24px; border-bottom:1px solid var(--glass-border); padding-bottom:20px; }
+.play-header h1 { margin:4px 0; font-size:30px; letter-spacing:-.03em; }
+.gaming-app select, .gaming-app .input { background:rgb(0 0 0 / .2); color:var(--fg); border:1px solid var(--glass-border); border-radius:var(--r-sm); padding:9px; max-width:100%; min-width:0; }
+.play-tabs { display:flex; flex-wrap:wrap; border-bottom:1px solid var(--glass-border); gap:2px; margin-top:14px; }
+.play-tabs button { padding:11px 13px; font:500 13px/1 var(--ui); color:var(--fg-dim); border:0; background:transparent; border-bottom:2px solid transparent; border-radius:var(--r-xs) var(--r-xs) 0 0; cursor:pointer; transition:color var(--fast),background var(--fast); }
+.play-tabs button:hover { color:var(--fg); background:var(--surface-hover); }
 .play-tabs button.active { color:var(--accent); border-bottom-color:var(--accent); }
 .play-status { min-height:20px; margin:12px 0; font-size:12px; color:var(--accent); overflow-wrap:anywhere; }
 .play-sections { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr)); align-items:start; gap:14px; }
-.play-card { border:1px solid var(--border); padding:18px; display:flex; flex-direction:column; gap:12px; min-width:0; }
-.play-card h2 { text-transform:uppercase; font-size:15px; letter-spacing:.03em; margin:0; }
+.play-card { border:1px solid var(--glass-border); border-radius:var(--r-lg); background:var(--surface); padding:18px; display:flex; flex-direction:column; gap:12px; min-width:0; }
+.play-card h2 { font:600 15px/1.3 var(--ui); letter-spacing:-.005em; margin:0; }
 .play-note { color:var(--muted); line-height:1.65; font-size:12px; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .play-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; }
 .play-row .btn { flex:1 0 auto; }
@@ -1536,63 +1566,93 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .play-card progress { width:100%; accent-color:var(--accent); height:5px; }
 .play-card code { font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
 .play-card svg { width:100%; color:var(--accent); }
-.gaming-app .btn { border-radius:0; white-space:normal; }
+.gaming-app .btn { white-space:normal; }
 .gaming-app[aria-busy=true] button { opacity:.6; pointer-events:none; }
 .play-controller-focus { outline:3px solid var(--accent)!important; outline-offset:3px; }
-.play-osk { position:fixed; z-index:100000; bottom:18px; left:50%; transform:translateX(-50%); width:min(640px,94vw); padding:14px; background:var(--surface); border:1px solid var(--border); box-shadow:0 10px 50px #0009; display:flex; gap:6px; flex-wrap:wrap; }
-.play-osk button { flex:1 0 8%; padding:12px 5px; border:1px solid var(--border); background:var(--surface-raised,var(--surface)); color:var(--text); }
+.play-osk { position:fixed; z-index:100000; bottom:18px; left:50%; transform:translateX(-50%); width:min(640px,94vw); padding:14px; border-radius:var(--r-lg); background:rgb(var(--glass) / .95); border:1px solid var(--glass-border); box-shadow:var(--shadow-2); display:flex; gap:6px; flex-wrap:wrap; }
+.play-osk button { flex:1 0 8%; padding:12px 5px; border:1px solid var(--glass-border); border-radius:var(--r-xs); background:var(--surface); color:var(--fg); }
 .app-window[data-app="gaming"] { display:block; overflow:hidden; }
 .gaming-app { width:100%; }
 
-/* One shelf: launcher, applications and system controls share the desktop chrome. */
+/* One shelf. The bar is a flush strip of glass along the bottom edge: the
+   Start pill and the running/pinned applications centred, the status widgets
+   at the right. Everything on it is the same 34 px tall rounded slot, so the
+   icons line up on one baseline and the hover highlight is always the same
+   shape. */
 :root[data-theme] .panel-window {--inset:0px;--inset-side:0px;--r-island:0px}
-:root[data-theme] .panel-island,:root[data-theme] .bare .panel-island {background:var(--bg-0);border:1px solid var(--hairline);border-radius:0;box-shadow:none}
-:root[data-theme] .panel-island::before,:root[data-theme] .panel-island>.glass-bd,:root[data-theme] .panel-glow {display:none}
-:root[data-theme] .panel-window:not(.fit):not(.vertical) .panel-widgets {padding-left:110px}
-.panel-start {position:absolute;inset:0 auto 0 0;width:100px;display:flex;align-items:center;justify-content:center;gap:10px;background:var(--action);color:var(--action-fg);border:0;border-right:1px solid var(--hairline);font:700 11px var(--ui);text-transform:uppercase;letter-spacing:.08em;z-index:1}
-.panel-start:hover {background:var(--accent-dim)}
-.fit .panel-start,.vertical .panel-start,.editing .panel-start {display:none}
+:root[data-theme] .panel-island,:root[data-theme] .bare .panel-island {
+ background:rgb(var(--glass) / .62);border:0;border-top:1px solid var(--glass-border);border-radius:0;
+ box-shadow:0 -1px 0 rgb(0 0 0 / .25),0 -18px 40px rgb(0 0 0 / .22);
+}
+:root[data-theme] .panel-island::before {display:block;background:linear-gradient(to bottom,var(--glass-hi),transparent 40%)}
+:root[data-theme] .panel-island>.glass-bd {display:block}
+:root[data-theme] .panel-glow {display:none}
+:root[data-theme] .panel-window:not(.fit):not(.vertical) .panel-widgets {padding-left:var(--start-w,104px)}
 :root[data-theme] .editing .panel-widgets {padding-left:0!important}
-:root[data-theme] .task,:root[data-theme] .w {border-radius:0;box-shadow:none}
-:root[data-theme] .task-ic,:root[data-theme] .fit .task-ic {width:22px;filter:none;transition:none}
-:root[data-theme] .fit .task:hover .task-ic,:root[data-theme] .fit .task:active .task-ic {transform:none;filter:none}
-:root[data-theme] .task.active,:root[data-theme] .fit .task.active {background:rgb(var(--accent-a) / .09);box-shadow:inset 0 -2px var(--accent)}
-:root[data-theme] .task-dots i {border-radius:0;box-shadow:none;height:2px}
-:root[data-theme] .task.active .task-dots {display:none}
-:root[data-theme] .w-tray {border-left:1px solid var(--hairline);padding-left:14px;margin-left:10px}
-:root[data-theme] .w-label,:root[data-theme] .w-val,:root[data-theme] .clock-time,:root[data-theme] .clock-date {font:500 10px var(--mono);text-transform:uppercase;letter-spacing:.035em}
-:root[data-theme] .w-mind[data-state=ready] .w-ic,:root[data-theme] .w-vpn.on .w-ic,:root[data-theme] .w-perf .w-ic {filter:none}
-:root[data-theme] .popup-body,:root[data-theme] .menu.drop {background:var(--bg-1);border-radius:0}
+/* Glass tinted with the accent rather than a solid slab of it: the brightest
+   thing on the shelf should be what you are pointing at, not the shelf. */
+.panel-start {
+ position:absolute;inset:6px auto 6px 8px;width:88px;display:flex;align-items:center;justify-content:center;gap:9px;
+ border:1px solid rgb(var(--accent-a) / .28);border-radius:var(--r-sm);color:var(--accent);
+ background:linear-gradient(180deg,rgb(var(--accent-a) / .17),rgb(var(--accent-a) / .07));
+ font:700 11px/1 var(--ui);text-transform:uppercase;letter-spacing:.07em;z-index:1;
+ box-shadow:inset 0 1px 0 rgb(255 255 255 / .06),var(--glow-accent);
+ transition:background var(--fast),border-color var(--fast),box-shadow var(--fast),transform var(--fast);
+}
+.panel-start:hover {background:linear-gradient(180deg,rgb(var(--accent-a) / .28),rgb(var(--accent-a) / .14));border-color:rgb(var(--accent-a) / .5);box-shadow:inset 0 1px 0 rgb(255 255 255 / .09),0 6px 20px rgb(var(--accent-a) / .22)}
+.panel-start:active {transform:scale(.97)}
+.panel-start svg {width:16px;height:16px}
+.fit .panel-start,.vertical .panel-start,.editing .panel-start {display:none}
+
+/* The slots on the bar: one height, one radius, one hover. */
+:root[data-theme] .panel-widgets {gap:1px;padding:0 8px;align-items:center}
+:root[data-theme] .w-slot {align-items:center}
+:root[data-theme] .w {height:34px;padding:0 9px;border-radius:var(--r-sm);box-shadow:none}
+:root[data-theme] .w:hover {background:var(--surface-hover);color:var(--fg)}
+:root[data-theme] .w.open {background:rgb(var(--accent-a) / .16);color:var(--accent);box-shadow:none}
+:root[data-theme] .w-taskbar {gap:2px;height:34px;align-items:center;padding:0}
+:root[data-theme] .task {height:34px;min-width:40px;padding:0 7px;border-radius:var(--r-sm);box-shadow:none;justify-content:center}
+:root[data-theme] .task-ic,:root[data-theme] .fit .task-ic {width:22px;height:22px;filter:none;transition:transform var(--fast)}
+:root[data-theme] .task:hover {background:var(--surface-hover)}
+:root[data-theme] .task:active .task-ic,:root[data-theme] .fit .task:active .task-ic {transform:scale(.9)}
+:root[data-theme] .fit .task:hover .task-ic {transform:translateY(-2px)}
+:root[data-theme] .task.active,:root[data-theme] .fit .task.active {background:var(--surface-hover);box-shadow:none}
+:root[data-theme] .task.active .task-ic,:root[data-theme] .w.open .w-ic {filter:drop-shadow(0 0 6px rgb(var(--accent-a) / .45))}
+:root[data-theme] .task-dots {bottom:3px}
+:root[data-theme] .task-dots i {height:2px;border-radius:2px;box-shadow:none}
+:root[data-theme] .task.active .task-dots {display:flex}
+:root[data-theme] .task.active .task-dots i {width:14px;background:var(--accent)}
+:root[data-theme] .w-tray {gap:2px;padding:0 4px;margin-left:6px;position:relative}
+:root[data-theme] .w-tray::before {content:'';position:absolute;left:0;top:8px;bottom:8px;width:1px;background:var(--glass-border)}
+:root[data-theme] .tray-item {height:34px;border-radius:var(--r-sm)}
+:root[data-theme] .w-label,:root[data-theme] .w-val {font:var(--t-label)}
+:root[data-theme] .clock-time {font:500 13px/1.05 var(--ui);font-variant-numeric:tabular-nums}
+:root[data-theme] .clock-date {font:400 11px/1 var(--ui);color:var(--fg-dim)}
+:root[data-theme] .popup-body,:root[data-theme] .menu.drop {background:rgb(var(--glass) / .82);border-radius:var(--r-lg)}
 :root[data-theme] .g-go {color:var(--action-fg)}
 
-/* Neutral frosted surfaces. Green lives in highlights and the outer glow. */
-:root[data-theme] .game-library,:root[data-theme] .gaming-rail-card,:root[data-theme] .g-card {
- background:rgb(var(--glass) / .70);backdrop-filter:blur(22px) saturate(.75);-webkit-backdrop-filter:blur(22px) saturate(.75);
- border-color:var(--glass-border-strong);box-shadow:var(--shadow-1),inset 0 1px 0 var(--glass-hi)
+/* Frosted surfaces: the palette's surface colour over the blurred wallpaper,
+   a hairline of light on the top edge, and a soft shadow underneath. */
+:root[data-theme] .game-library,:root[data-theme] .gaming-rail-card,:root[data-theme] .g-card,:root[data-theme] .desktop-system-panel {
+ background:rgb(var(--glass) / .66);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+ border:1px solid var(--glass-border);border-radius:var(--r-lg);box-shadow:var(--shadow-1),inset 0 1px 0 var(--glass-hi)
 }
-:root[data-theme] .game-library:focus-within,:root[data-theme] .g-card:focus-within {box-shadow:var(--shadow-2),0 0 24px rgb(var(--accent-a) / .12)}
-:root[data-theme] .gaming-menubar {background:rgb(var(--glass) / .83);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
-:root[data-theme] .btn.primary {box-shadow:0 0 14px rgb(var(--accent-a) / .15)}
-:root[data-theme] .btn.primary:hover,:root[data-theme] .panel-start:hover {box-shadow:var(--glow-accent)}
-:root[data-theme] .task.active,:root[data-theme] .fit .task.active {background:var(--surface-hover);box-shadow:inset 0 -2px var(--accent),0 0 15px rgb(var(--accent-a) / .10)}
-:root[data-theme] .task.active .task-ic,:root[data-theme] .w.open .w-ic {filter:drop-shadow(0 0 5px rgb(var(--accent-a) / .3))}
-:root[data-theme] .panel-island,:root[data-theme] .bare .panel-island {background:rgb(var(--glass) / .68);box-shadow:0 -1px 16px rgb(var(--accent-a) / .08),inset 0 1px 0 var(--glass-hi)}
-:root[data-theme] .panel-island>.glass-bd {display:block}
+:root[data-theme] .game-library:focus-within,:root[data-theme] .g-card:focus-within {box-shadow:var(--shadow-2),0 0 28px rgb(var(--accent-a) / .10)}
+:root[data-theme] .gaming-menubar {background:rgb(var(--glass) / .74);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border-bottom:1px solid var(--glass-border)}
 :root[data-theme] .glass-bd.builtin {background-image:none}
-:root[data-theme] .glass-bd.builtin::before {content:'';position:absolute;inset:-28px;background:var(--aurora);filter:blur(20px);opacity:.8}
-:root[data-theme] .glass-bd::after {background:rgb(var(--glass) / .68)}
+:root[data-theme] .glass-bd.builtin::before {content:'';position:absolute;inset:0;background-image:var(--frosted-wallpaper);background-size:cover}
+:root[data-theme] .glass-bd::after {background:rgb(var(--glass) / .62)}
 :root[data-theme][data-kind=app],:root[data-theme][data-kind=app] body {background:transparent}
-:root[data-theme] .app-window {background:rgb(var(--glass) / .08);isolation:isolate}
-:root[data-theme] .app-window>.glass-bd {position:absolute;inset:0;z-index:-1;opacity:.88;pointer-events:none}
+:root[data-theme] .app-window {background:rgb(var(--glass) / .10);isolation:isolate;border-radius:var(--r-lg)}
+:root[data-theme] .app-window>.glass-bd {position:absolute;inset:0;z-index:-1;opacity:.9;pointer-events:none}
 :root[data-theme] .app-window.game-library {backdrop-filter:none;-webkit-backdrop-filter:none}
-:root[data-theme] .app-window .gaming-app,:root[data-theme] .app-main {background:rgb(var(--glass) / .12)}
-:root[data-theme] .app-side {background:rgb(var(--glass) / .45);--glass-a:.65}
-:root[data-theme] .game-library .gaming-panel-title,:root[data-theme] .game-library-footer {background:rgb(var(--glass) / .28)}
+:root[data-theme] .app-window .gaming-app,:root[data-theme] .app-main {background:rgb(var(--glass) / .14)}
+:root[data-theme] .app-side {background:rgb(var(--glass) / .42);--glass-a:.62}
+:root[data-theme] .game-library .gaming-panel-title,:root[data-theme] .game-library-footer {background:rgb(var(--glass) / .24)}
 
-/* Cache the frost instead of running a live blur filter on a CPU renderer. */
-:root[data-theme] .glass-bd.builtin::before {inset:0;background-image:var(--frosted-wallpaper);background-size:cover;filter:none;opacity:1}
+/* A software renderer gets the same look without a live blur filter. */
 :root.software-rendered *,:root.software-rendered *::before,:root.software-rendered *::after {backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
-:root.software-rendered .game-library,:root.software-rendered .gaming-rail-card,:root.software-rendered .g-card {background-image:linear-gradient(rgb(var(--glass) / .70),rgb(var(--glass) / .70)),var(--frosted-wallpaper);background-size:cover}
+:root.software-rendered .game-library,:root.software-rendered .gaming-rail-card,:root.software-rendered .g-card,:root.software-rendered .desktop-system-panel {background-image:linear-gradient(rgb(var(--glass) / .74),rgb(var(--glass) / .74)),var(--frosted-wallpaper);background-size:cover}
 :root.software-rendered .app-window.game-library {background-image:none}
 
 /* The primary screen owns the desktop workspace; other outputs are wallpaper. */
@@ -1611,25 +1671,30 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .productivity-main {display:flex;flex-direction:column;gap:22px;overflow:auto;min-height:0}
 .productivity-main {position:relative;background:transparent;border:0;box-shadow:none;padding:12px;gap:8px}
 .productivity-main .home-desktop-files {position:relative;inset:auto;flex:1;min-height:120px;padding:0!important;visibility:visible}
-.productivity-main .shortcut-add-form {grid-column:1 / -1;display:flex;gap:8px;max-width:420px}
 .work-card {padding-bottom:18px}
 .work-card > :not(header) {margin-left:18px;margin-right:18px}
 .work-intro h1 {font-size:clamp(24px,3vw,42px);letter-spacing:-.04em;margin:26px 0 8px}
 .work-intro p {color:var(--fg-dim)}
-.work-shortcuts {display:grid;grid-template-columns:repeat(auto-fill,104px);gap:16px;padding:12px 0}
-.work-shortcut {position:relative;color:var(--fg);border:0;background:transparent}
-.work-shortcut-main,.work-shortcut-add {display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;width:104px;min-height:112px;padding:12px 6px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:center;font:500 12px/1.4 var(--ui)}
-.work-shortcut-main img {object-fit:contain;filter:drop-shadow(0 2px 3px #0004)}
-.work-shortcut-main span {overflow-wrap:anywhere}
-.work-shortcut-add svg {width:48px;height:48px;padding:12px}
-.work-shortcut-main:hover,.work-shortcut-add:hover {background:var(--surface-hover)}
-.work-shortcut-remove {position:absolute;top:0;right:0;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:3px;border:0;border-radius:50%;color:var(--fg-faint);background:var(--bg-1);opacity:0}
-.work-shortcut:hover .work-shortcut-remove,.work-shortcut:focus-within .work-shortcut-remove {opacity:1}
-.work-shortcut-remove:hover {color:var(--danger)}
-.shortcut-add-form {display:flex;align-items:center;gap:8px;grid-column:1 / -1}
-.shortcut-add-form .select {min-width:220px}
+/* Desktop shortcuts: one tile, one application. The tile is the whole button
+   so the click target matches what you see; a ring turns while it starts. */
+.work-shortcuts {display:grid;grid-template-columns:repeat(auto-fill,108px);gap:10px;padding:10px 0}
+.work-shortcut,.work-shortcut-add {position:relative;display:flex;flex-direction:column;align-items:center;gap:9px;width:108px;padding:12px 6px 10px;border:1px solid transparent;border-radius:var(--r-md);background:transparent;color:var(--fg);text-align:center;font:500 12px/1.35 var(--ui);transition:background var(--fast),border-color var(--fast),transform var(--fast)}
+.work-shortcut:hover,.work-shortcut-add:hover {background:rgb(255 255 255 / .06);border-color:var(--glass-border)}
+.work-shortcut:active,.work-shortcut-add:active {transform:scale(.96)}
+.work-shortcut:focus-visible,.work-shortcut-add:focus-visible {box-shadow:var(--ring);outline:0}
+.work-shortcut-art {position:relative;display:flex;width:56px;height:56px;align-items:center;justify-content:center}
+.work-shortcut-art img,.work-shortcut-art svg {width:48px;height:48px;object-fit:contain;filter:drop-shadow(0 3px 6px rgb(0 0 0 / .45));transition:transform var(--fast)}
+.work-shortcut:hover .work-shortcut-art img,.work-shortcut:hover .work-shortcut-art svg {transform:translateY(-2px) scale(1.04)}
+.work-shortcut-name {overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+.work-shortcut.pinned::after {content:'';position:absolute;top:7px;right:9px;width:5px;height:5px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px rgb(var(--accent-a) / .8)}
+.work-shortcut-add {color:var(--fg-dim);border-style:dashed;border-color:var(--glass-border)}
+.work-shortcut-add:hover {color:var(--accent)}
+.work-shortcut-add svg {width:26px;height:26px}
+/* The "it is starting" ring, shared by the shortcuts and the desktop files. */
+.work-shortcut-spin,.di-spin {position:absolute;inset:-3px;border-radius:50%;border:2px solid transparent;border-top-color:var(--accent);opacity:0;pointer-events:none}
+.work-shortcut.launching .work-shortcut-spin,.di.launching .di-spin {opacity:1;animation:g-spin .8s linear infinite}
+.work-shortcut.launching .work-shortcut-art img,.work-shortcut.launching .work-shortcut-art svg,.di.launching .di-ic {opacity:.55}
 .workspace-custom-nav {display:contents}
-.work-shortcut:hover {box-shadow:none}
 .work-shortcut svg {color:var(--accent)}
 .work-files,.work-windows {padding-top:12px}
 .work-file {display:flex;align-items:center;gap:12px;width:100%;padding:12px 4px;text-align:left;border-bottom:1px solid var(--hairline);background:transparent;color:var(--fg)}
@@ -1641,5 +1706,5 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 @media(prefers-reduced-motion:reduce) {.gaming-workspace{animation:none!important}}
 .work-file {border:0;border-bottom:1px solid var(--hairline)}
 .work-file:hover {background:var(--surface-hover);color:var(--accent)}
-.appearance-controls .btn {width:34px;padding:0;justify-content:center}
+.appearance-controls {display:flex;gap:6px;align-items:center}
 .work-intro {padding-top:10px}

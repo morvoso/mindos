@@ -9,6 +9,8 @@ export function gamingMock(): (p: Record<string, unknown>) => unknown {
   return p => {
     const game = String(p.game || '');
     switch(p.action) {
+      case 'config.get': return cfg;
+      case 'config.set': cfg={...cfg,...p.settings as object};return cfg;
       case 'metadata.get': return meta[game] || {};
       case 'metadata.set': meta[game]={...meta[game],...p.settings as object};return meta[game];
       case 'library.state': return { metadata:meta, storage:archive };

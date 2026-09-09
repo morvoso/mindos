@@ -52,7 +52,7 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
     message.dataset.error = String(error);
   };
   const command = async (fn: () => Promise<unknown>) => {
-    try { await fn(); } catch (e) { report(String(e), true); }
+    try { await fn(); } catch (e) { report(bridge.reason(e), true); }
   };
   const allGames = () => {
     const games = [...scanned, ...nativeGames()];
@@ -88,7 +88,7 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
       prefs.launched[game.id] = Math.floor(Date.now() / 1000);
       saveLibraryPreferences(prefs);
       report(result === 'focused' ? `Returned to ${game.name}.` : `${game.name} requested in ${sourceLabel[game.source] || game.source}. The launcher handles startup.`);
-    } catch (e) { report(String(e), true); }
+    } catch (e) { report(bridge.reason(e), true); }
     finally { launchPending = false; if (alive) render(); }
   };
   // The hero is rebuilt only when what it shows changes; window and layout
@@ -137,6 +137,9 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
   };
   let tabsFilter = '';
   const render = () => {
+    // Screen readers and the tests both read this: it is the truth every render,
+    // not only on the way in and out of a scan that a warm cache can skip.
+    root.setAttribute('aria-busy', String(loading));
     const games = allGames();
     const needle = search.value.trim().toLocaleLowerCase();
     const visible = games.filter((g) => (source === 'all' || g.source === source)
@@ -178,7 +181,7 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
       if (!alive) return;
       scanned = cache.scanned; details = cache.details; loaded = true;
       report(result.warnings.join(' '), result.warnings.length > 0);
-    } catch (e) { report(String(e), true); }
+    } catch (e) { report(bridge.reason(e), true); }
     finally { loading = false; if (alive) { refresh.disabled = false; root.setAttribute('aria-busy', 'false'); render(); } }
   };
   search.oninput = render;

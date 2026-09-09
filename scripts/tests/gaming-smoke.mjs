@@ -187,21 +187,21 @@ try {
   };
   await openTool('gaming');
   assert.ok(await evaluate("document.querySelector('.gaming-app').getBoundingClientRect().width > 1000"), 'Gaming app fills its window');
-  assert.match(await evaluate('document.body.textContent'), /HELD IN MEMORY/);
-  await toolButton('Resume');
-  assert.match(await evaluate('document.body.textContent'), /RUNNING/);
-  await toolButton('Hold session');
-  assert.match(await evaluate('document.body.textContent'), /HELD IN MEMORY/);
-  await shot('gaming-sessions');
-  await toolButton('party');
-  assert.match(await evaluate('document.body.textContent'), /Connect Steam/);
+  assert.match(await evaluate('document.body.textContent'), /Downloads/);
+  await shot('gaming-downloads');
+  // Storage moves need the cold drive first; the tab says so instead of failing.
+  await toolButton('storage');
+  await toolButton('Plan move to cold drive');
+  assert.match(await evaluate('document.body.textContent'), /cold storage folder in Connections/);
   await toolButton('connections');
-  await evaluate("document.querySelectorAll('.play-field input')[0].value = '76561198000000000'; document.querySelectorAll('.play-field input')[2].value = '/cloud'; document.querySelectorAll('.play-field input')[3].value = '/cold'");
-  await toolButton('Save connections');
-  await toolButton('party');
-  assert.match(await evaluate('document.body.textContent'), /Preview player/);
+  // Fields are found by their label: the pages grow, the indices move.
+  const setField = (starts, value) => evaluate(`[...document.querySelectorAll('.play-field')].find(f => f.textContent.startsWith(${JSON.stringify(starts)})).querySelector('input').value = ${JSON.stringify(value)}`);
+  await setField('Synced save folder', '/cloud');
+  await setField('Cold storage', '/cold');
+  await toolButton('Save locations');
+  assert.match(await evaluate("document.querySelectorAll('.play-field input')[1].value"), /\/cold/);
   await toolButton('saves');
-  await evaluate("document.querySelector('.play-field input').value = '/saves'");
+  await setField('Save folder', '/saves');
   await toolButton('Set save folder');
   await toolButton('Back up locally');
   assert.match(await evaluate('document.body.textContent'), /6 files/);
@@ -218,14 +218,9 @@ try {
   await toolButton('history');
   assert.equal(await evaluate("document.querySelectorAll('.play-card polyline').length"), 1);
   await shot('gaming-history');
-  await openTool('companion', {}, 520);
-  await waitFor("document.querySelector('select').options.length > 0");
-  await evaluate("document.querySelector('.companion-notes').value = 'Wait for the second phase.'");
-  await toolButton('Save game companion');
-  assert.match(await evaluate("document.querySelector('.play-status').textContent"), /saved for this game/);
-  await toolButton('Load video');
-  assert.match(await evaluate("document.querySelector('.play-status').textContent"), /Error/);
-  await shot('companion');
+  await toolButton('activity');
+  assert.match(await evaluate('document.body.textContent'), /While you were away/);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: page + '?kind=greeter' });
   await waitFor("document.querySelector('.g-pw') !== null");
   await toolButton('On-screen keyboard · controller A');
@@ -236,7 +231,7 @@ try {
   await toolButton('Done');
   assert.equal(await evaluate("document.querySelectorAll('.play-osk').length"), 0);
   assert.deepEqual(errors, [], 'No uncaught browser exceptions');
-  console.log('PASS: discovery preview, launch/focus/error recovery, search, favorites, empty/missing helpers, dark/light persistence, static wallpaper, frosted glass, GameMode pause, compact layout, login keyboard, gaming sessions/saves/storage/connections/audio/history and companion');
+  console.log('PASS: discovery preview, launch/focus/error recovery, search, favorites, empty/missing helpers, dark/light persistence, static wallpaper, frosted glass, GameMode pause, compact layout, login keyboard, gaming downloads/saves/storage/connections/audio/history/activity');
   console.log(`Screenshots: ${out}`);
 } finally {
   socket?.close();

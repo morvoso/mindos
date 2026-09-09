@@ -25,7 +25,7 @@ const missingHelper = (msg: string) => /^mindos-dlss: No such file or directory(
 export function gamesPage(el: HTMLElement, root: HTMLElement): () => void {
   const note = notice();
   const fail = (e: unknown) => {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = bridge.reason(e);
     if (missingHelper(msg)) {
       missing = true;
       loaded = false;
@@ -109,10 +109,10 @@ export function gamesPage(el: HTMLElement, root: HTMLElement): () => void {
         await fetchState();
         if (alive) note.show('Gaming tools installed. Open Steam or Lutris from the launcher to install a game.', 'ok');
       } catch (e) {
-        if (alive) note.show(`Installation finished, but the game scan is unavailable: ${e instanceof Error ? e.message : String(e)}. Use Check again to retry.`, 'error');
+        if (alive) note.show(`Installation finished, but the game scan is unavailable: ${bridge.reason(e)}. Use Check again to retry.`, 'error');
       }
     } catch (e) {
-      if (alive) note.show(`Could not install gaming tools: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      if (alive) note.show(`Could not install gaming tools: ${bridge.reason(e)}`, 'error');
     } finally {
       busy = settingUp = false;
       if (alive) {
@@ -147,7 +147,7 @@ export function gamesPage(el: HTMLElement, root: HTMLElement): () => void {
       await dlss(...args);
     } catch (e) {
       failed = true;
-      outcome = e instanceof Error ? e.message : String(e);
+      outcome = bridge.reason(e);
     }
     try {
       // Also refresh after failures: multi-DLL operations may have completed
@@ -155,7 +155,7 @@ export function gamesPage(el: HTMLElement, root: HTMLElement): () => void {
       await fetchState();
     } catch (e) {
       failed = true;
-      outcome += ` Could not refresh: ${e instanceof Error ? e.message : String(e)}`;
+      outcome += ` Could not refresh: ${bridge.reason(e)}`;
     } finally {
       busy = false;
       if (alive) {
@@ -196,7 +196,7 @@ export function gamesPage(el: HTMLElement, root: HTMLElement): () => void {
         if (!list.length) rows.appendChild(h('div', { class: 'row-help' }, 'No versions listed.'));
         body.appendChild(rows);
       })
-      .catch((e) => { if (alive && !closed && body.isConnected) body.replaceChildren(h('div', { class: 'row-help danger' }, `Could not fetch the list: ${e instanceof Error ? e.message : e}`)); });
+      .catch((e) => { if (alive && !closed && body.isConnected) body.replaceChildren(h('div', { class: 'row-help danger' }, `Could not fetch the list: ${bridge.reason(e)}`)); });
   };
 
   const render = () => {

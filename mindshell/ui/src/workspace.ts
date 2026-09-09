@@ -1,8 +1,11 @@
+import * as actions from './actions';
 import * as bridge from './bridge';
+import { launchWithFeedback } from './app-match';
 import { appearanceControls } from './appearance';
 import { renderSettings } from './apps/settings';
 import { renderGaming } from './apps/gaming';
 import { h } from './dom';
+import { rectIn } from './geometry';
 import { renderGamingDesktop } from './gaming-desktop';
 import { icon } from './icons';
 import { store } from './state';
@@ -25,13 +28,31 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
   let openPage: ((p: Page) => void) | undefined;
   let previousPrimary = false;
   const mode = (): Mode => store.state.layout.desktop.workspace?.mode ?? 'gaming';
+  let mounting = false;
+  let again = false;
+  // Tearing a workspace down writes to the layout (a pending note flushes on
+  // the way out), and that change comes straight back here. Take the teardown
+  // first, read the mode again afterwards, and let a nested call ask for one
+  // more pass instead of building a second workspace over the top of this one.
   function mount(animate = false) {
-    const primary = isMainOutput(output);
-    if (primary === previousPrimary && (!primary || mountedMode === mode())) return;
-    dispose?.(); dispose = undefined; openPage = undefined;
-    previousPrimary = primary; mountedMode = primary ? mode() : undefined;
-    if (!primary) return;
-    dispose = mountMode(mode(), animate);
+    if (mounting) { again = true; return; }
+    mounting = true;
+    try {
+      do {
+        again = false;
+        const primary = isMainOutput(output);
+        if (primary === previousPrimary && (!primary || mountedMode === mode())) return;
+        const previous = dispose;
+        dispose = undefined; openPage = undefined; mountedMode = undefined;
+        previous?.();
+        previousPrimary = primary;
+        if (!primary) continue;
+        mountedMode = mode();
+        dispose = mountMode(mountedMode, animate);
+      } while (again);
+    } finally {
+      mounting = false;
+    }
   }
   function mountMode(current: Mode, animate: boolean): () => void {
     const offs: (() => void)[] = [];
@@ -40,8 +61,9 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
     let productivityCustomNav: HTMLElement | undefined;
     let area: HTMLElement, nav: HTMLElement, main: HTMLElement, rail: HTMLElement, header: HTMLElement;
     if (current === 'gaming') {
-      offs.push(renderGamingDesktop(root, output));
-      area = root.querySelector('.gaming-workspace')!;
+      const desktop = renderGamingDesktop(root, output);
+      offs.push(desktop.destroy);
+      area = desktop.el;
       nav = area.querySelector('.gaming-nav')!;
       main = area.querySelector('.gaming-main')!;
       rail = area.querySelector('.gaming-rail')!;
@@ -89,7 +111,7 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
     openPage = (p) => {
       if (p.name === 'library') {
         if (current === 'productivity') {
-          void store.updateLayout(l => { l.desktop.workspace = { mode: 'gaming', notes: l.desktop.workspace?.notes ?? '' }; });
+          void store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: 'gaming', notes: l.desktop.workspace?.notes ?? '' }; });
         } else showHome();
         return;
       }
@@ -119,7 +141,7 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
     });
     nav.replaceChildren(h('span', { class: 'gaming-meta' }, current === 'gaming' ? 'Gaming' : 'Productivity'),
       link(homeTitle, current === 'gaming' ? 'gamepad' : 'grid', showHome, 'home'),
-      ...(current === 'gaming' ? [link('Gaming Center', 'gamepad', open('gaming'), 'gaming')] : [
+      ...(current === 'gaming' ? [link('Gaming Center', 'sliders', open('gaming'), 'gaming')] : [
         link('Documents', 'folder', run(() => bridge.call('fs.open', { path: '~/Documents' }))),
       ]),
       ...(current === 'gaming' ? [link('Files', 'folder', run(() => bridge.call('fs.open', { path: '~' }))), link('Browser', 'globe', launch(/firefox|chromium/i))] : []),
@@ -152,32 +174,62 @@ function renderProductivity(main: HTMLElement, rail: HTMLElement, output: string
   const status = h('p', { class: 'play-status', role: 'status' });
   const run = (fn: () => Promise<unknown>) => () => { void fn().catch(e => { if (alive) status.textContent = String(e); }); };
   const card = (title: string, ...body: HTMLElement[]) => h('section', { class: 'gaming-rail-card work-card' }, h('header', { class: 'gaming-panel-title' }, h('h2', {}, title)), ...body);
-  const launch = (appId: string) => run(async () => {
-    const app = store.state.apps.find(a => a.id === appId);
-    if (app) await bridge.call('apps.launch', { id: app.id });
-    else await bridge.call('shell.openApp', { name: 'settings', page: 'software' });
+  const open = (el: HTMLElement, appId: string) => run(async () => {
+    if (!store.state.apps.some(a => a.id === appId)) return bridge.call('shell.openApp', { name: 'settings', page: 'software' });
+    return launchWithFeedback(el, appId);
   });
-  const defaultShortcuts = (): WorkspaceShortcut[] => store.state.apps.filter(a => /firefox|chromium|libreoffice-writer|libreoffice-calc|onlyoffice|thunderbird|evolution|geary/i.test(a.id)).slice(0, 4).map(a => ({ id: `app-${a.id}`, appId: a.id, label: a.name, icon: /firefox|chromium/i.test(a.id) ? 'globe' : /mail|evolution|geary/i.test(a.id) ? 'mail' : 'edit' }));
+  const defaultShortcuts = (): WorkspaceShortcut[] => store.state.apps.filter(a => /firefox|chromium|libreoffice-writer|libreoffice-calc|onlyoffice|thunderbird|evolution|geary/i.test(a.id)).slice(0, 4).map(a => ({ id: `app-${a.id}`, appId: a.id, label: a.name, pinned: true, icon: /firefox|chromium/i.test(a.id) ? 'globe' : /mail|evolution|geary/i.test(a.id) ? 'mail' : 'edit' }));
   const currentShortcuts = () => store.state.layout.desktop.workspace?.shortcuts ?? defaultShortcuts();
-  const saveShortcuts = (shortcuts: WorkspaceShortcut[]) => void store.updateLayout(l => { l.desktop.workspace = { mode: 'productivity', notes: l.desktop.workspace?.notes ?? '', shortcuts }; });
+  const saveShortcuts = (shortcuts: WorkspaceShortcut[]) => void store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: 'productivity', notes: l.desktop.workspace?.notes ?? '', shortcuts }; });
   const shortcutGrid = h('div', { class: 'work-shortcuts' });
-  const addLabel = h('span', {}, 'Add shortcut');
-  const addButton = h('button', { class: 'work-shortcut-add', onclick: () => {
-    const installed = store.state.apps.filter(a => !currentShortcuts().some(s => s.appId === a.id)).sort((a, b) => a.name.localeCompare(b.name));
-    if (!installed.length) return;
-    const select = h('select', { class: 'select', 'aria-label': 'Application shortcut' }, ...installed.map(a => h('option', { value: a.id }, a.name))) as HTMLSelectElement;
-    const commit = h('button', { class: 'btn primary', onclick: () => { const app = installed.find(a => a.id === select.value); if (!app) return; saveShortcuts([...currentShortcuts(), { id: `app-${app.id}`, appId: app.id, label: app.name, icon: 'box' }]); renderShortcuts(); } }, 'Add');
-    addButton.replaceWith(h('span', { class: 'shortcut-add-form' }, select, commit));
-  } }, icon('plus', 15), addLabel);
+  const addButton = h('button', { class: 'work-shortcut-add', title: 'Add an application shortcut' }, h('span', { class: 'work-shortcut-art' }, icon('plus', 26)), h('span', {}, 'Add shortcut'));
+  addButton.addEventListener('click', () => {
+    const r = rectIn(main.closest<HTMLElement>('.win') ?? document.body, addButton);
+    actions.openPopup('app-picker', {}, { keyboard: true, anchor: { x: r.x, y: r.y, w: r.w, h: r.h, edge: 'top' } });
+  });
+
+  /** Single or double click to open, chosen in Settings; the menu is always single. */
+  const activation = () => store.state.layout.desktop.workspace?.activate ?? 'single';
+
+  const shortcutTile = (s: WorkspaceShortcut) => {
+    const app = store.state.apps.find(a => a.id === s.appId);
+    const art = app?.icon
+      ? h('img', { src: app.icon, alt: '', width: 48, height: 48, onerror: (e: Event) => (e.target as HTMLElement).replaceWith(icon(s.icon || 'box', 48)) })
+      : icon(s.icon || 'box', 48);
+    const el = h('button', { class: `work-shortcut${s.pinned ? ' pinned' : ''}`, 'aria-label': `Open ${app?.name || s.label}` },
+      h('span', { class: 'work-shortcut-art' }, art, h('span', { class: 'work-shortcut-spin' })),
+      h('span', { class: 'work-shortcut-name' }, app?.name || s.label));
+    const launch = open(el, s.appId);
+    el.addEventListener(activation() === 'double' ? 'dblclick' : 'click', launch);
+    el.addEventListener('contextmenu', ev => {
+      ev.preventDefault();
+      const root = main.closest<HTMLElement>('.win') ?? document.body;
+      const b = root.getBoundingClientRect();
+      const scale = b.width / root.offsetWidth || 1;
+      actions.openPopup('context-menu', {
+        title: app?.name || s.label,
+        items: [
+          { label: 'Open', icon: 'window', action: { call: 'apps.launch', params: { id: s.appId } } },
+          { label: s.pinned ? 'Unpin from the menu' : 'Pin to the menu', icon: 'pin', action: { shortcut: { id: s.id, op: 'pin' } } },
+          { label: '', separator: true },
+          { label: 'Remove shortcut', icon: 'trash', danger: true, action: { shortcut: { id: s.id, op: 'remove' } } },
+        ],
+        anchor: { x: (ev.clientX - b.left) / scale, y: (ev.clientY - b.top) / scale, w: 0, h: 0 },
+      });
+    });
+    return el;
+  };
+
   const renderShortcuts = () => {
     const shortcuts = currentShortcuts();
-    shortcutGrid.replaceChildren(...shortcuts.map(s => {
-      const app = store.state.apps.find(a => a.id === s.appId);
-      return h('div', { class: 'work-shortcut' }, h('button', { class: 'work-shortcut-main', onclick: launch(s.appId), 'aria-label': `Open ${s.label}` }, app?.icon ? h('img', { src: app.icon, alt: '', width: 48, height: 48, onerror: (e: Event) => (e.target as HTMLElement).replaceWith(icon('box', 48)) }) : icon('box', 48), h('span', {}, app?.name || s.label)), h('button', { class: 'work-shortcut-remove', title: `Remove ${s.label}`, 'aria-label': `Remove ${s.label}`, onclick: () => { saveShortcuts(shortcuts.filter(x => x.id !== s.id)); } }, icon('x', 14)));
-    }), addButton);
-    customNav.replaceChildren(...shortcuts.map(s => linkShortcut(s)));
+    shortcutGrid.replaceChildren(...shortcuts.map(shortcutTile), addButton);
+    // Only pinned shortcuts belong in the left menu; the desktop keeps them all.
+    customNav.replaceChildren(...shortcuts.filter(s => s.pinned).map(s => {
+      const el = h('button', { class: 'gaming-nav-link', dataset: { shortcut: s.id } }, icon(s.icon || 'box', 18), h('span', {}, store.state.apps.find(a => a.id === s.appId)?.name || s.label));
+      el.addEventListener('click', open(el, s.appId));
+      return el;
+    }));
   };
-  const linkShortcut = (s: WorkspaceShortcut) => h('button', { class: 'gaming-nav-link', onclick: launch(s.appId), dataset: { shortcut: s.id } }, icon(s.icon || 'box', 18), h('span', {}, s.label));
   main.setAttribute('aria-label', 'Desktop');
   const desktopFiles = h('div', { class: 'desktop-icons home-desktop-files' });
   main.append(shortcutGrid, desktopFiles, status);
@@ -202,11 +254,19 @@ function renderProductivity(main: HTMLElement, rail: HTMLElement, output: string
   notes.addEventListener('blur', flushNotes);
   rail.append(card('Notes', notes));
   renderShortcuts();
-  let shortcutKey = JSON.stringify(currentShortcuts());
-  const offApps = store.on('apps', () => { shortcutKey = JSON.stringify(currentShortcuts()); renderShortcuts(); });
+  // The first-run suggestions are only a suggestion until they are written
+  // down; the right-click menu and the picker both edit the saved list.
+  const seed = () => {
+    if (store.state.layout.desktop.workspace?.shortcuts?.length) return;
+    const defaults = defaultShortcuts();
+    if (defaults.length) saveShortcuts(defaults);
+  };
+  seed();
+  let shortcutKey = JSON.stringify(currentShortcuts()) + activation();
+  const offApps = store.on('apps', () => { seed(); shortcutKey = JSON.stringify(currentShortcuts()) + activation(); renderShortcuts(); });
   const offLayout = store.on('layout', () => {
     // Layout events carry every change from every page; only the shortcuts matter here.
-    const key = JSON.stringify(currentShortcuts());
+    const key = JSON.stringify(currentShortcuts()) + activation();
     if (key === shortcutKey) return;
     shortcutKey = key; renderShortcuts();
   });

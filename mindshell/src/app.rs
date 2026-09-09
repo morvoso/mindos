@@ -1137,9 +1137,18 @@ impl App {
             "layout.save" => {
                 let value = params.get("layout").cloned().ok_or("layout.save: missing 'layout'")?;
                 let layout = Layout::from_value(value)?;
+                // The desktop's own state -- the workspace mode, its shortcuts,
+                // the palette -- is a deliberate choice, and losing it because
+                // the session went away inside the debounce window would be
+                // plainly wrong. Only the churn of dragging panels and widgets
+                // around waits.
+                let desktop_changed = self.state.borrow().layout.desktop.extra != layout.desktop.extra;
                 self.set_layout(layout.clone());
-                if self.app_mode.is_some() {
+                if desktop_changed || self.app_mode.is_some() {
                     // The shell follows this file; an app window writes it at once.
+                    if let Some(id) = self.layout_save.borrow_mut().take() {
+                        id.remove();
+                    }
                     layout.save()?;
                 } else {
                     self.schedule_layout_save();

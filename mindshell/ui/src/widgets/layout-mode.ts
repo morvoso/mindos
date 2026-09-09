@@ -24,7 +24,7 @@ export const MODES: ModeInfo[] = [
     icon: 'mode-floating',
     like: 'like KDE',
     blurb: 'Windows open at their own position and can overlap. Drag them by the title bar, maximise or snap them.',
-    hint: 'Super+M maximise · Super+F full screen',
+    hint: 'Drag a window edge to resize · Super+drag move · Super+right-drag resize · Super+R size · Super+Shift+arrows snap',
   },
   {
     name: 'dwindle',
@@ -32,7 +32,7 @@ export const MODES: ModeInfo[] = [
     icon: 'mode-tiles',
     like: 'like Hyprland',
     blurb: 'Every window occupies a tile. Each new window splits the focused tile in half. Windows do not overlap.',
-    hint: 'Super+arrows or Super+wheel focus · Super+Shift+arrows move · Super+Shift+F float',
+    hint: 'Drag the gap to move a split · Super+drag move a tile · Super+right-drag the split · Super+R size · Super+Shift+F float',
   },
   {
     name: 'columns',
@@ -40,7 +40,7 @@ export const MODES: ModeInfo[] = [
     icon: 'mode-columns',
     like: 'like Niri',
     blurb: 'Windows are arranged in columns on a horizontally scrolling strip. Suited to ultrawide displays.',
-    hint: 'Super+R column width · Super+arrows or Super+wheel focus',
+    hint: 'Drag the gap to set a width · Super+drag move a column · Super+right-drag its width · Super+R width',
   },
 ];
 

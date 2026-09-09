@@ -4,10 +4,11 @@ import * as bridge from '../bridge';
 import { h } from '../dom';
 import { icon } from '../icons';
 import { store } from '../state';
-import type { CatalogEntry, ModelsInfo } from '../types';
+import type { CatalogEntry, MindPermissions, ModelsInfo } from '../types';
 import { card, fmtBytes, notice, pageHeader, pill, progress, row, toggle } from './shared';
 
 const request = (req: Record<string, unknown>) => bridge.call<ModelsInfo>('mind.request', { request: req });
+const ask = <T>(req: Record<string, unknown>) => bridge.call<T>('mind.request', { request: req });
 
 export function mindPage(el: HTMLElement): () => void {
   const note = notice();
@@ -15,7 +16,7 @@ export function mindPage(el: HTMLElement): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let busyUntil = 0;
 
-  const fail = (e: unknown) => note.show(`Mind: ${e instanceof Error ? e.message : String(e)}`, 'error');
+  const fail = (e: unknown) => note.show(`Mind: ${bridge.reason(e)}`, 'error');
 
   // ----- answers ------------------------------------------------------------
   const toolsToggle = toggle(!!store.prefs.mind_show_tools, (v) => void store.setPrefs({ mind_show_tools: v }));
@@ -33,6 +34,28 @@ export function mindPage(el: HTMLElement): () => void {
     row('Think before answering', 'The Mind works through the question before answering. Slower, with better results on difficult questions. Supported by Qwen3.5.', thinkToggle),
   );
 
+  // ----- what it may do -------------------------------------------------------
+  // The Mind runs as root, so these two switches are the whole of what it can
+  // and cannot reach. Each change is still confirmed on screen before it runs,
+  // and the ruinous commands are refused whatever these say.
+  const setPerm = (change: Record<string, boolean>) => {
+    ask<MindPermissions>({ type: 'set_permissions', ...change })
+      .then(showPerms)
+      .catch(fail);
+  };
+  const changesToggle = toggle(true, (v) => setPerm({ system_changes: v }));
+  const aurToggle = toggle(true, (v) => setPerm({ aur: v }));
+  const showPerms = (p: MindPermissions) => {
+    (changesToggle.querySelector('input') as HTMLInputElement).checked = !!p.system_changes;
+    (aurToggle.querySelector('input') as HTMLInputElement).checked = !!p.aur;
+    (aurToggle.querySelector('input') as HTMLInputElement).disabled = !p.system_changes;
+  };
+  const permissions = card(
+    'What Mind may do',
+    row('Let Mind change this system', 'Install and remove software, edit configuration, control services and run commands as the administrator. Every change is shown to you for confirmation first, and the commands that cannot be undone are refused outright. Turn this off to leave the Mind able to look and to advise only.', changesToggle),
+    row('Build packages from the AUR', 'Some software — Chrome, many game and driver tools — is only in the Arch User Repository, where packages are submitted by users and built from source on this machine. The build is confirmed like any other change.', aurToggle),
+  );
+
   // ----- model ----------------------------------------------------------------
   const modelBody = h('div', { class: 'stack' });
   const modelCard = card('Model', modelBody);
@@ -47,7 +70,8 @@ export function mindPage(el: HTMLElement): () => void {
   const ownHelp = h('div', { class: 'row-help' });
   const ownCard = card('Use your own model', h('div', { class: 'inline-form' }, pathIn, useBtn), ownHelp);
 
-  el.append(pageHeader('Mind', 'The assistant opened with Super+Space. It can open applications, install software, change settings and explain the state of the system.'), note.el, answers, modelCard, catalogCard, ownCard);
+  el.append(pageHeader('Mind', 'The assistant opened with Super+Space. It can open applications, install software, change settings and explain the state of the system.'), note.el, answers, permissions, modelCard, catalogCard, ownCard);
+  ask<MindPermissions>({ type: 'permissions' }).then(showPerms).catch(() => undefined);
 
   const setModel = (path: string) => {
     busyUntil = Date.now() + 3000;

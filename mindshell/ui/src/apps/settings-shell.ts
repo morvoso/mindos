@@ -6,7 +6,7 @@ import { icon } from '../icons';
 import { store } from '../state';
 import type { PointerState } from '../types';
 import { MODES } from '../widgets/layout-mode';
-import { card, notice, pageHeader, row, selectBox } from './shared';
+import { card, notice, pageHeader, row, selectBox, toggle } from './shared';
 
 const SHORTCUTS: [string, string][] = [
   ['Volume / mute keys', 'Adjust output in 5% steps; hold to repeat (up to 100%)'],
@@ -53,7 +53,7 @@ function pointerCard(note: ReturnType<typeof notice>): HTMLElement {
     bridge
       .call<PointerState>('pointer.set', change)
       .then((p) => { fill(p); note.show('The pointer changed.', 'ok'); })
-      .catch((e) => note.show(String(e instanceof Error ? e.message : e), 'error'));
+      .catch((e) => note.show(bridge.reason(e), 'error'));
   };
   themeSel.addEventListener('change', () => apply({ theme: themeSel.value }));
   sizeSel.addEventListener('change', () => apply({ size: Number(sizeSel.value) }));
@@ -98,7 +98,7 @@ export function shellPage(el: HTMLElement): () => void {
     bridge
       .call('layout.reset')
       .then(() => note.show('Panels and widgets have been reset to the defaults.', 'ok'))
-      .catch((e) => note.show(String(e instanceof Error ? e.message : e), 'error'));
+      .catch((e) => note.show(bridge.reason(e), 'error'));
   });
 
   const modeSel = selectBox(MODES.map((m) => ({ value: m.name, label: `${m.label} (${m.like})` })), store.layoutMode?.mode ?? 'floating', (v) => bridge.send('wm.setLayoutMode', { mode: v }));
@@ -109,12 +109,36 @@ export function shellPage(el: HTMLElement): () => void {
 
   const table = h('table', { class: 'keys' }, ...SHORTCUTS.map(([k, d]) => h('tr', {}, h('td', { class: 'mono key' }, k), h('td', {}, d))));
 
+  // How the desktop itself behaves. The left menu is always one click; this is
+  // about the shortcuts and files lying on the desktop.
+  const workspace = () => store.state.layout.desktop.workspace;
+  const activateSel = selectBox(
+    [{ value: 'single', label: 'One click' }, { value: 'double', label: 'Two clicks' }],
+    workspace()?.activate ?? 'single',
+    (v) => void store.updateLayout((l) => { l.desktop.workspace = { ...l.desktop.workspace, mode: l.desktop.workspace?.mode ?? 'gaming', notes: l.desktop.workspace?.notes ?? '', activate: v as 'single' | 'double' }; }),
+  );
+  const iconsToggle = toggle(store.state.layout.desktop.icons !== false, (v) => void store.updateLayout((l) => { l.desktop.icons = v; }));
+  const modeButtons = h('div', { class: 'segs' }, ...(['gaming', 'productivity'] as const).map((m) =>
+    h('button', { class: `seg${(workspace()?.mode ?? 'gaming') === m ? ' on' : ''}`, dataset: { mode: m }, onclick: () => void store.updateLayout((l) => { l.desktop.workspace = { ...l.desktop.workspace, mode: m, notes: l.desktop.workspace?.notes ?? '' }; }) },
+      icon(m === 'gaming' ? 'gamepad' : 'grid', 14), m === 'gaming' ? 'Gaming' : 'Productivity')));
+  const syncDesktop = () => {
+    if (document.activeElement !== activateSel) activateSel.value = workspace()?.activate ?? 'single';
+    (iconsToggle.querySelector('input') as HTMLInputElement).checked = store.state.layout.desktop.icons !== false;
+    for (const b of modeButtons.querySelectorAll<HTMLElement>('.seg')) b.classList.toggle('on', b.dataset.mode === (workspace()?.mode ?? 'gaming'));
+  };
+
   el.append(
     pageHeader('Desktop', 'Panels, the dock, windows and shortcuts.'),
     note.el,
     card(
       'Windows',
       row('Layout', 'How windows are arranged. Also available next to the clock and with Super+T.', modeSel),
+    ),
+    card(
+      'Desktop',
+      row('Mode', 'Gaming puts your library front and centre. Productivity gives you shortcuts, files and notes. The choice is remembered across restarts.', modeButtons),
+      row('Opening items', 'How many clicks open a shortcut or a file on the desktop. The menu down the left side always takes one.', activateSel),
+      row('Show desktop files', 'Lay the contents of your Desktop folder out on the wallpaper.', iconsToggle),
     ),
     card(
       'Panels and the dock',
@@ -130,9 +154,11 @@ export function shellPage(el: HTMLElement): () => void {
       row('Hardware acceleration', null, h('span', { class: 'mono' }, cfg.hardware_acceleration ?? 'auto')),
     ),
   );
-  return store.on('config', () => {
-    themeName.textContent = store.state.config.icon_theme ?? 'default';
-  });
+  const offs = [
+    store.on('config', () => { themeName.textContent = store.state.config.icon_theme ?? 'default'; }),
+    store.on('layout', syncDesktop),
+  ];
+  return () => offs.forEach((off) => off());
 }
 
 export function aboutPage(el: HTMLElement): () => void {

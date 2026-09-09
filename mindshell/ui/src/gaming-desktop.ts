@@ -9,7 +9,7 @@ import { store } from './state';
 import { systemControls } from './system-menu';
 import type { PerfStatus, Stats } from './types';
 
-export function renderGamingDesktop(root: HTMLElement, output: string): () => void {
+export function renderGamingDesktop(root: HTMLElement, output: string): { el: HTMLElement; destroy: () => void } {
   const workspace = h('div', { class: 'gaming-workspace' });
   const feedback = h('div', { class: 'gaming-feedback', role: 'status', 'aria-live': 'polite', hidden: true });
   const status = h('span', { class: 'gaming-meta gaming-top-status' }, 'MindOS / Desktop session');
@@ -115,5 +115,5 @@ export function renderGamingDesktop(root: HTMLElement, output: string): () => vo
   const offs = [store.on('editMode', layout), store.on('layout', layout), store.on('apps', renderLaunchers), store.on('game', gameState),
     perfSubscribe(workspace, (s) => { perf = s; renderPerf(); }), every(workspace, 3000, () => void sample()),
     every(workspace, 15000, () => { if (!store.state.game && !document.hidden) void perfRefresh(); })];
-  return () => { alive = false; offs.forEach((off) => off()); appearance.destroy(); systemMenu.destroy(); disposeLibrary(); workspace.remove(); };
+  return { el: workspace, destroy: () => { alive = false; offs.forEach((off) => off()); appearance.destroy(); systemMenu.destroy(); disposeLibrary(); workspace.remove(); } };
 }

@@ -1,9 +1,11 @@
 // Desktop icons: the Desktop folder laid out as a grid on the wallpaper,
-// Windows-style (column by column from the top left). Single click selects,
-// double click opens, right click gets a menu; the host says when the folder
-// changes (`desktop.changed`) and the grid re-lists.
+// Windows-style (column by column from the top left). One click or two opens
+// an item (Settings › Desktop chooses), Ctrl-click picks several out, right
+// click gets a menu; the host says when the folder changes
+// (`desktop.changed`) and the grid re-lists.
 
 import * as actions from './actions';
+import { launchWithFeedback } from './app-match';
 import { thumbUrl } from './apps/shared';
 import * as bridge from './bridge';
 import { h, reconcile } from './dom';
@@ -25,6 +27,9 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
   const iconFor = (e: FsEntry): string => appFor(e)?.icon || (e.thumb ? e.thumb : e.image ? thumbUrl(e.path, 128) : e.icon);
   const labelFor = (e: FsEntry): string => appFor(e)?.name ?? (e.dir ? e.name : e.name.replace(/\.desktop$/, ''));
 
+  /** Single or double click to open, chosen in Settings › Desktop. */
+  const activation = () => store.state.layout.desktop.workspace?.activate ?? 'single';
+
   const openAction = (e: FsEntry) => {
     const app = appFor(e);
     if (app) return { call: 'apps.launch', params: { id: app.id } };
@@ -38,14 +43,29 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
 
   const item = (e: FsEntry): HTMLElement => {
     const img = h('img', { class: 'di-ic', src: iconFor(e), alt: '', draggable: false });
-    const el = h('button', { class: `di${e.image && !appFor(e) ? ' img' : ''}`, title: e.name }, h('span', { class: 'di-frame' }, img), h('span', { class: 'di-name' }, labelFor(e)));
+    const el = h('button', { class: `di${e.image && !appFor(e) ? ' img' : ''}`, title: e.name }, h('span', { class: 'di-frame' }, img, h('span', { class: 'di-spin' })), h('span', { class: 'di-name' }, labelFor(e)));
+    // Opening something takes a moment; say so on the icon itself. An app gets
+    // the real "its window appeared" signal, anything else a short flash.
+    const open = () => {
+      const app = appFor(e);
+      if (app) return void launchWithFeedback(el, app.id);
+      el.classList.add('launching');
+      setTimeout(() => el.classList.remove('launching'), 1600);
+      void actions.runAction(openAction(e));
+    };
     el.addEventListener('click', (ev) => {
-      if (!(ev.ctrlKey || ev.metaKey)) selected.clear();
+      const multi = ev.ctrlKey || ev.metaKey;
+      if (!multi) selected.clear();
       if (selected.has(e.path)) selected.delete(e.path);
       else selected.add(e.path);
       syncSelection();
+      // Single-click activation: the click both selects and opens, unless the
+      // user is picking several items out.
+      if (!multi && activation() === 'single') open();
     });
-    el.addEventListener('dblclick', () => void actions.runAction(openAction(e)));
+    el.addEventListener('dblclick', () => {
+      if (activation() !== 'single') open();
+    });
     el.addEventListener('contextmenu', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();

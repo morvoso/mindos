@@ -25,7 +25,7 @@ export function parseSnapshots(text: string): Snapshot[] {
 
 export function updatesPage(el: HTMLElement, root: HTMLElement): () => void {
   const note = notice();
-  const fail = (e: unknown) => note.show(`Mind: ${e instanceof Error ? e.message : String(e)}`, 'error');
+  const fail = (e: unknown) => note.show(`Mind: ${bridge.reason(e)}`, 'error');
   let snapshots: Snapshot[] = [];
 
   // ----- updates ------------------------------------------------------------

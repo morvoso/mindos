@@ -14,9 +14,19 @@ export interface Game {
 export interface GameLibrary { games: Game[]; warnings: string[] }
 export const sourceLabel: Record<string, string> = { steam: 'Steam', heroic: 'Epic · Heroic', gog: 'GOG · Heroic', lutris: 'Lutris', native: 'Desktop' };
 
+/** Shown whenever the optional gaming tools are not on the system. */
+const NO_TOOLS = 'Gaming tools are not installed yet. Settings \u203a Games installs them.';
+
 export async function gameCommand<T>(...args: string[]): Promise<T> {
-  const r = await bridge.call<RunResult>('shell.run', { argv: ['mindos-games', ...args] });
-  if (!r.ok || r.json == null) throw new Error((r.json as { error?: string })?.error || r.stderr.trim() || 'The game library is unavailable. Install or update gaming tools in Settings › Games.');
+  let r: RunResult;
+  try {
+    r = await bridge.call<RunResult>('shell.run', { argv: ['mindos-games', ...args] });
+  } catch (e) {
+    // mindos-gaming is an optional package: say that, rather than repeating
+    // the operating system's own "no such file" at the person using it.
+    throw new Error(/no such file|not found/i.test(bridge.reason(e)) ? NO_TOOLS : bridge.reason(e));
+  }
+  if (!r.ok || r.json == null) throw new Error((r.json as { error?: string })?.error || r.stderr.trim() || NO_TOOLS);
   return r.json as T;
 }
 

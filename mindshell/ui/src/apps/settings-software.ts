@@ -9,7 +9,7 @@ export function softwarePage(el: HTMLElement): void {
   const windowsReady = store.state.apps.some(app => app.id === 'mindos-win-open.desktop');
   const open = (label: string, cmd: string) => h('button', { class: 'btn accent', onclick: async () => {
     try { await bridge.call('shell.exec', { cmd }); }
-    catch (error) { note.show(error instanceof Error ? error.message : String(error), 'error'); }
+    catch (error) { note.show(bridge.reason(error), 'error'); }
   } }, icon('external', 14), label);
   el.append(pageHeader('Software', 'Find what you want, review the changes, and install.'), note.el,
     card('Get more apps',

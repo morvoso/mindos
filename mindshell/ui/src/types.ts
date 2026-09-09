@@ -52,6 +52,12 @@ export interface AppearancePalette {
   muted: string;
 }
 
+export interface SavedPalette {
+  name: string;
+  dark: AppearancePalette;
+  light: AppearancePalette;
+}
+
 export interface Layout {
   version: number;
   panels: PanelDef[];
@@ -60,8 +66,14 @@ export interface Layout {
     widgets: DesktopWidgetEntry[];
     /** Show the Desktop folder as icons (default true). */
     icons?: boolean;
-    workspace?: { mode: 'gaming' | 'productivity'; notes: string; shortcuts?: WorkspaceShortcut[] };
-    appearance?: { theme: 'dark' | 'light'; live?: boolean; dark?: AppearancePalette; light?: AppearancePalette };
+    workspace?: {
+      mode: 'gaming' | 'productivity';
+      notes: string;
+      shortcuts?: WorkspaceShortcut[];
+      /** How a desktop shortcut runs: one click or two. The menu is always one. */
+      activate?: 'single' | 'double';
+    };
+    appearance?: { theme: 'dark' | 'light'; live?: boolean; dark?: AppearancePalette; light?: AppearancePalette; preset?: string; saved?: SavedPalette[] };
     library?: { favorites: string[]; launched: Record<string, number> };
   };
 }
@@ -71,6 +83,8 @@ export interface WorkspaceShortcut {
   appId: string;
   label: string;
   icon?: string;
+  /** Pinned shortcuts also appear in the left menu. */
+  pinned?: boolean;
 }
 
 export interface OutputInfo {
@@ -187,6 +201,12 @@ export interface BatteryState {
   percent?: number;
   charging?: boolean;
   timeToEmpty?: number;
+}
+
+/** What the Mind is allowed to do on its own (Settings › Mind). */
+export interface MindPermissions {
+  system_changes: boolean;
+  aur: boolean;
 }
 
 export interface MindStatus {
@@ -673,7 +693,8 @@ export type Action =
   | { exec: string }
   | { pin: { panel: string; widget: string; app: string; pinned: boolean } }
   | { desktopIcons: boolean }
-  | { removeWidget: { kind: Container; panel?: string; widget: string } };
+  | { removeWidget: { kind: Container; panel?: string; widget: string } }
+  | { shortcut: { id: string; op: 'pin' | 'remove' } };
 
 export interface MenuAction {
   label: string;

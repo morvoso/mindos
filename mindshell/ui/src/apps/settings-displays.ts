@@ -60,7 +60,7 @@ export function displaysPage(el: HTMLElement, root: HTMLElement): () => void {
 
   el.append(pageHeader('Displays', 'Resolution, refresh rate and scale. Advanced adds orientation, variable refresh rate and the arrangement.', h('span', { class: 'segs' }, ...modeBtns)), note.el, cards, canvasCard);
 
-  const fail = (e: unknown) => note.show(`Display: ${e instanceof Error ? e.message : String(e)}`, 'error');
+  const fail = (e: unknown) => note.show(`Display: ${bridge.reason(e)}`, 'error');
 
   const fetch = () =>
     bridge

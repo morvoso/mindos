@@ -22,7 +22,7 @@ const PAGES: { id: string; label: string; icon: string; group?: string; keywords
   { id: 'performance', label: 'Performance', icon: 'rocket', group: 'Gaming', keywords: 'cpu gpu power mode boost scheduler memory latency', render: performancePage },
   { id: 'games', label: 'Games', icon: 'gamepad', group: 'Gaming', keywords: 'steam proton dlss fsr xess upscaler windows wine install', render: gamesPage },
   { id: 'shell', label: 'Desktop', icon: 'layout', group: 'Personalize', keywords: 'windows tiles columns panels dock widgets shortcuts cursor pointer theme', render: shellPage },
-  { id: 'wallpaper', label: 'Wallpaper', icon: 'image', group: 'Personalize', keywords: 'background picture image color', render: wallpaperPage },
+  { id: 'wallpaper', label: 'Appearance', icon: 'image', group: 'Personalize', keywords: 'background picture image colour color theme palette accent wallpaper', render: wallpaperPage },
   { id: 'displays', label: 'Displays', icon: 'display', group: 'Personalize', keywords: 'screen monitor refresh hz resolution scale vrr', render: displaysPage },
   { id: 'screen', label: 'Screen & lock', icon: 'moon', group: 'Personalize', keywords: 'idle sleep timeout screensaver password suspend', render: screenPage },
   { id: 'input', label: 'Keyboard & mouse', icon: 'keyboard', group: 'Personalize', keywords: 'input layout language repeat typing acceleration sensitivity speed left handed scroll', render: inputPage },

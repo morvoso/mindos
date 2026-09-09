@@ -23,7 +23,7 @@ export function renderGaming(root: HTMLElement, initial = 'downloads', gameId = 
   const button = (label: string, fn: () => Promise<unknown>, accent = false) => h('button', { class: `btn${accent ? ' primary' : ''}`, onclick: () => void act(fn) }, label);
   async function act(fn: () => Promise<unknown>): Promise<void> {
     if (busy) return; busy = true; status.textContent = 'Working…'; root.setAttribute('aria-busy', 'true');
-    try { await fn(); status.textContent = 'Done.'; } catch (e) { status.textContent = String(e instanceof Error ? e.message : e); }
+    try { await fn(); status.textContent = 'Done.'; } catch (e) { status.textContent = bridge.reason(e); }
     finally { busy = false; root.removeAttribute('aria-busy'); }
   }
   function field(label: string, value = '', type = 'text'): [HTMLElement, HTMLInputElement] {
@@ -83,7 +83,7 @@ export function renderGaming(root: HTMLElement, initial = 'downloads', gameId = 
         for (const event of events) content.append(panel(text(stamp(event.time)), h('strong', {}, event.action.replaceAll('-', ' ')), text(games.find(g => g.id === event.game)?.name || event.game || '')));
         const boot = await play<{ summary: string; services: string[] }>('boot'); content.append(panel(title('Boot trace'), text(boot.summary), ...boot.services.map(s => h('code', {}, s)))); if (!events.length) content.append(text('No recorded gaming activity yet.'));
       }
-    } catch (e) { content.append(panel(title('Needs attention'), text(String(e instanceof Error ? e.message : e)), button('Storage settings', async () => { page = 'connections'; await render(); }), button('Retry', render))); }
+    } catch (e) { content.append(panel(title('Needs attention'), text(bridge.reason(e)), button('Storage settings', async () => { page = 'connections'; await render(); }), button('Retry', render))); }
     if (token === generation && root.isConnected) body.replaceChildren(content);
   }
   function updateGames(): void { games = [...scanned, ...nativeGames()]; select.replaceChildren(...games.map(g => h('option', { value: g.id }, `${g.name} · ${sourceLabel[g.source] || g.source}`))); chosen = games.some(g => g.id === chosen) ? chosen : games[0]?.id || ''; if (!games.length) select.append(h('option', { value: '' }, 'No installed games')); select.disabled = !games.length; select.value = chosen; }

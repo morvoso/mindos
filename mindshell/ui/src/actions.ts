@@ -42,6 +42,15 @@ export async function runAction(action: Action | undefined): Promise<void> {
         if (p) p.widgets = p.widgets.filter((w) => w.id !== widget);
       } else layout.desktop.widgets = layout.desktop.widgets.filter((w) => w.id !== widget);
     });
+  } else if ('shortcut' in action) {
+    // The desktop shortcuts live in the layout, so a menu in another window
+    // can change them: every window redraws from the layout broadcast.
+    const { id, op } = action.shortcut;
+    await store.updateLayout((layout) => {
+      const w = layout.desktop.workspace;
+      if (!w?.shortcuts) return;
+      w.shortcuts = op === 'remove' ? w.shortcuts.filter((s) => s.id !== id) : w.shortcuts.map((s) => (s.id === id ? { ...s, pinned: !s.pinned } : s));
+    });
   } else if ('pin' in action) {
     const { panel, widget, app, pinned } = action.pin;
     await store.updateLayout((layout) => {

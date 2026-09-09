@@ -136,3 +136,9 @@ export function setApi(m: MindosGlobal): void {
   api = m;
   window.mindos = m;
 }
+
+/** What went wrong, in one line, ready to show someone. */
+export function reason(e: unknown): string {
+  const text = e instanceof Error ? e.message : String(e);
+  return text.replace(/\s*\(os error \d+\)$/, '').trim() || 'Something went wrong.';
+}

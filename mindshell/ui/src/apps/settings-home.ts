@@ -12,7 +12,7 @@ export function homePage(el: HTMLElement, navigate: (page: string) => void): () 
   const terminal = h('button', { class: 'btn', onclick: async () => {
     terminal.disabled = true;
     try { await bridge.call('shell.exec', { cmd: store.state.config.terminal || 'kitty' }); }
-    catch (error) { note.show(error instanceof Error ? error.message : String(error), 'error'); }
+    catch (error) { note.show(bridge.reason(error), 'error'); }
     finally { terminal.disabled = false; }
   } }, icon('terminal', 15), 'Open terminal');
   const go = (page: string, title: string, text: string, symbol: string) => h('button', {
@@ -53,7 +53,7 @@ export function connectionsPage(el: HTMLElement): void {
     const button = h('button', { class: 'btn', onclick: async () => {
       button.disabled = true;
       try { await bridge.call('shell.exec', { cmd }); }
-      catch (error) { note.show(error instanceof Error ? error.message : String(error), 'error'); }
+      catch (error) { note.show(bridge.reason(error), 'error'); }
       finally { button.disabled = false; }
     } }, label, icon('external', 14));
     return button;

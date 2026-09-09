@@ -3,6 +3,7 @@ import { h, reconcile } from '../dom';
 import { hashHue, iconSvg, letterIcon } from '../icons';
 import { registerWidget } from './registry';
 import { outputPoint } from './common';
+import { appIndex, matchApp, norm } from '../app-match';
 import type { AppInfo, MenuAction, ShellState, WindowInfo } from '../types';
 
 interface Group {
@@ -13,39 +14,6 @@ interface Group {
   pinned: boolean;
   /** A Windows program (Wine/Proton): the icon carries a badge saying so. */
   wine: boolean;
-}
-
-const norm = (s: string) => s.toLowerCase().replace(/\.desktop$/, '');
-const last = (s: string) => {
-  const parts = s.split('.');
-  return parts[parts.length - 1];
-};
-const execBase = (exec: string) => {
-  const first = exec.trim().split(/\s+/)[0] ?? '';
-  return first.split('/').pop() ?? '';
-};
-
-/** Index apps by the names a window's app_id is likely to carry. */
-function appIndex(apps: AppInfo[]): Map<string, AppInfo> {
-  const idx = new Map<string, AppInfo>();
-  const put = (k: string, a: AppInfo) => {
-    if (k && !idx.has(k)) idx.set(k, a);
-  };
-  // StartupWMClass is the entry's own statement of what its windows are
-  // called, so it wins over the guesses below (Wine's generated entries rely
-  // on it: the id is a menu path, the windows carry the exe name).
-  for (const a of apps) if (a.wmClass) put(norm(a.wmClass), a);
-  for (const a of apps) if (a.wmClass) put(norm(a.wmClass).replace(/\.exe$/, ''), a);
-  for (const a of apps) put(norm(a.id), a);
-  for (const a of apps) put(last(norm(a.id)), a);
-  for (const a of apps) put(norm(execBase(a.exec)), a);
-  for (const a of apps) put(norm(a.name), a);
-  return idx;
-}
-
-function matchApp(idx: Map<string, AppInfo>, appId: string): AppInfo | undefined {
-  const k = norm(appId);
-  return idx.get(k) ?? idx.get(last(k)) ?? idx.get(k.replace(/-bin$|-wayland$|\.exe$/, ''));
 }
 
 function buildGroups(state: ShellState, pins: string[], windows: WindowInfo[]): Group[] {

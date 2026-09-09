@@ -170,8 +170,14 @@ export class Store {
     });
   }
 
+  // Over a copy, and skipping anything unsubscribed along the way: a listener
+  // is free to tear its view down and build another one (a workspace mode
+  // switch does exactly that) without the new view's listeners being called
+  // for the event that created them.
   emit(key: StateKey): void {
-    this.listeners.get(key)?.forEach((cb) => cb(this.state));
+    const set = this.listeners.get(key);
+    if (!set) return;
+    for (const cb of [...set]) if (set.has(cb)) cb(this.state);
   }
 
   /** Change the layout: apply locally for instant feedback, then persist through the host. */

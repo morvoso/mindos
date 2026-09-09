@@ -1,15 +1,16 @@
 // Settings › Performance: the mode, what it does, and what happens while a
 // game runs (GameMode hooks into mindos-perf).
 
+import { reason } from '../bridge';
 import { every, h } from '../dom';
 import { icon } from '../icons';
-import { PERF_MODES, perfRefresh, perfSubscribe, perfSwitch, setPerfConfig } from '../perf';
+import { PERF_MODES, perfRefresh, perfSubscribe, perfSwitch, perfWatch, setPerfConfig } from '../perf';
 import type { PerfStatus } from '../types';
 import { card, notice, pageHeader, pill, row, selectBox, toggle } from './shared';
 
 export function performancePage(el: HTMLElement): () => void {
   const note = notice();
-  const fail = (e: unknown) => note.show(`mindos-perf: ${e instanceof Error ? e.message : String(e)}`, 'error');
+  const fail = (e: unknown) => note.show(`mindos-perf: ${reason(e)}`, 'error');
   let status: PerfStatus | undefined;
   let busy = false;
 

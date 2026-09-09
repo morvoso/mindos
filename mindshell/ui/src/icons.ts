@@ -16,7 +16,9 @@ const P: Record<string, string> = {
   'volume-high': '<path d="M4 9.5v5h3.5l5 4v-13l-5 4z"/><path d="M16 9.5a3.5 3.5 0 0 1 0 5"/><path d="M18.8 6.5a7.5 7.5 0 0 1 0 11"/>',
   battery: '<rect x="2.5" y="7.5" width="16" height="9" rx="1.5"/><path d="M21.5 10.5v3"/>',
   bolt: '<path d="M12.5 3L6 13h5l-.5 8L18 11h-5z" fill="currentColor" stroke="none"/>',
-  gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+  // A real cog, not a sunburst: `sun` is a circle with eight spokes and the
+  // two must not be mistaken for each other in the same menu.
+  gear: '<path d="M10.13 2.38 L13.87 2.38 L14.41 5.00 L15.24 5.35 L17.48 3.88 L20.12 6.52 L18.65 8.76 L19.00 9.59 L21.62 10.13 L21.62 13.87 L19.00 14.41 L18.65 15.24 L20.12 17.48 L17.48 20.12 L15.24 18.65 L14.41 19.00 L13.87 21.62 L10.13 21.62 L9.59 19.00 L8.76 18.65 L6.52 20.12 L3.88 17.48 L5.35 15.24 L5.00 14.41 L2.38 13.87 L2.38 10.13 L5.00 9.59 L5.35 8.76 L3.88 6.52 L6.52 3.88 L8.76 5.35 L9.59 5.00 Z"/><circle cx="12" cy="12" r="3.4"/>',
   x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
   plus: '<path d="M12 5.5v13M5.5 12h13"/>',
   minus: '<path d="M5.5 12h13"/>',

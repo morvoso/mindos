@@ -80,7 +80,7 @@ export function inputPage(el: HTMLElement): () => void {
       note.show('Input settings applied and saved.', 'ok');
       await refreshDevices();
     } catch (error) {
-      if (alive) note.show(error instanceof Error ? error.message : String(error), 'error');
+      if (alive) note.show(bridge.reason(error), 'error');
     } finally {
       busy = false;
       if (alive) form.disabled = false;

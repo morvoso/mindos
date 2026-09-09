@@ -1,6 +1,7 @@
 // The performance mode chooser: three modes, the current one lit, plus what
 // GameMode is doing right now.
 
+import { reason } from '../bridge';
 import { h } from '../dom';
 import { icon } from '../icons';
 import { PERF_MODES, perfRefresh, perfSubscribe, perfSwitch } from '../perf';
@@ -35,7 +36,7 @@ export function perfPopup(ctx: PopupCtx): PopupContent {
           }
         })
         .catch((e) => {
-          err.textContent = `Could not switch: ${e instanceof Error ? e.message : e}`;
+          err.textContent = `Could not switch: ${reason(e)}`;
           err.hidden = false;
         })
         .finally(() => {

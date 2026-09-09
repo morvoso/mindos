@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -285,6 +285,18 @@ try {
   await delay(250);
   assert.equal(await evaluate("const p = document.querySelector('.pop-notifications').getBoundingClientRect(); const bar = document.querySelector('.panel-island').getBoundingClientRect(); p.bottom < bar.top && p.right <= innerWidth && p.top >= 0"), true, 'Notifications stay above the shelf after their entrance animation');
   await shot('notifications-shelf');
+
+  // The shipped bar: every widget in data/layout.json must be a widget the UI
+  // knows how to build, or the slot renders as "unknown" and quietly vanishes
+  // from the bar. This is the check the missing network widget needed.
+  const shipped = JSON.parse(await readFile(resolve(root, 'mindshell/data/layout.json'), 'utf8'));
+  const types = shipped.panels.flatMap((p) => p.widgets.map((w) => w.type));
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.panel-island .w-unknown .w-label')].map(e => e.textContent)"), [], 'Every shipped widget type is registered');
+  assert.deepEqual(
+    await evaluate("[...document.querySelectorAll('.panel-island .panel-widgets > .w-slot')].map(s => s.dataset.type)"),
+    types,
+    'The bar mounts exactly the shipped widget list',
+  );
   assert.deepEqual(errors, [], 'No uncaught popup exceptions');
   console.log('PASS: native terminal launch/error feedback, navigation/search, mode/config feedback, software and gaming setup, game filtering/actions/rescan recovery, keyboard dialogs, compact layouts');
   console.log(`Screenshots: ${out}`);

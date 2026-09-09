@@ -5,6 +5,7 @@ import { clamp, h } from '../dom';
 import { glassLayer } from '../glass';
 import { store } from '../state';
 import type { Anchor } from '../types';
+import { appPickerPopup } from './app-picker';
 import { audioPopup } from './audio';
 import { authPopup } from './auth';
 import { calendarPopup } from './calendar';
@@ -20,6 +21,7 @@ import { widgetCatalogPopup } from './widget-catalog';
 import { widgetSettingsPopup } from './widget-settings';
 
 export const POPUPS: Record<string, PopupFactory> = {
+  'app-picker': appPickerPopup,
   auth: authPopup,
   calendar: calendarPopup,
   'layout-mode': layoutModePopup,

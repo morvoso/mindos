@@ -150,10 +150,17 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     if (spacer.style.flex !== value) spacer.style.flex = value;
   };
 
+  // A widget's anchor for popups. Along the bar it is the widget itself, so the
+  // popup lines up with what was clicked; across it, it is the whole island, so
+  // the popup opens clear of the shelf and not over its padding.
   const anchorOf = (el: Element): Anchor => {
     const o = origin();
     const r = rectIn(root, el);
-    return { x: o.x + r.x, y: o.y + r.y, w: r.w, h: r.h, edge: current?.edge };
+    const i = rectIn(root, island);
+    const across = current && isVertical(current)
+      ? { x: i.x, y: r.y, w: i.w, h: r.h }
+      : { x: r.x, y: i.y, w: r.w, h: i.h };
+    return { x: o.x + across.x, y: o.y + across.y, w: across.w, h: across.h, edge: current?.edge };
   };
 
   const placeholder = (entry: WidgetEntry): WidgetInstance => ({

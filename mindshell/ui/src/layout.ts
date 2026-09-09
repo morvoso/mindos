@@ -2,39 +2,13 @@
 
 import { deepClone, newId } from './dom';
 import type { AppearancePalette, DesktopWidgetEntry, Layout, PanelDef, WidgetEntry, WorkspaceShortcut } from './types';
+// The one copy of the shipped layout. The host compiles the same file into the
+// binary and installs it as /usr/share/mindos/shell/layout.json, so there is
+// nothing here to keep in sync by hand.
+import builtin from '../../data/layout.json';
 
 export function defaultLayout(): Layout {
-  return {
-    version: 4,
-    panels: [
-      {
-        // A floating shelf along the bottom: the apps centred,
-        // the tray, Mind and the clock at the right.
-        id: 'bar', output: '*', edge: 'bottom', size: 64, length: 100, align: 'center', margin: 8, layer: 'top', opacity: 0.9, float: true,
-        widgets: [
-          { id: 'sp-l', type: 'spacer', config: { expand: true } },
-          { id: 'tasks', type: 'taskbar', config: { pins: ['mindos-library.desktop', 'steam.desktop', 'firefox.desktop', 'org.gnome.Nautilus.desktop', 'kitty.desktop', 'mindos-settings.desktop'] } },
-          { id: 'sp-r', type: 'spacer', config: { expand: true } },
-          { id: 'tray', type: 'tray', config: {} },
-          { id: 'audio', type: 'audio', config: {} },
-          { id: 'net', type: 'network', config: {} },
-          { id: 'vpn', type: 'vpn', config: {} },
-          { id: 'bat', type: 'battery', config: {} },
-          { id: 'mode', type: 'layout-mode', config: {} },
-          { id: 'perf', type: 'perf', config: {} },
-          { id: 'mind', type: 'mind', config: {} },
-          { id: 'updates', type: 'updates', config: {} },
-          { id: 'notify', type: 'notifications', config: {} },
-          { id: 'clock', type: 'clock', config: { seconds: false, date: true, hour24: false } },
-        ],
-      },
-    ],
-    desktop: {
-      wallpaper: { mode: 'builtin' },
-      icons: true,
-      widgets: [],
-    },
-  };
+  return deepClone(builtin as unknown as Layout);
 }
 
 /** Panel length: 0 (or less) means "fit the widgets", otherwise a percentage of the edge. */
@@ -76,8 +50,10 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
       workspace: {
         mode: desktop.workspace?.mode === 'productivity' ? 'productivity' : 'gaming',
         notes: String(desktop.workspace?.notes ?? ''),
+        activate: desktop.workspace?.activate === 'double' ? 'double' : 'single',
         shortcuts: Array.isArray(desktop.workspace?.shortcuts) ? desktop.workspace.shortcuts.map((s: WorkspaceShortcut) => ({
-          id: String(s.id), appId: String(s.appId), label: String(s.label), ...(s.icon ? { icon: String(s.icon) } : {}),
+          id: String(s.id), appId: String(s.appId), label: String(s.label),
+          ...(s.icon ? { icon: String(s.icon) } : {}), ...(s.pinned ? { pinned: true } : {}),
         })) : [],
       },
       ...(desktop.appearance ? {
@@ -86,6 +62,8 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
           ...(desktop.appearance.live !== undefined ? { live: Boolean(desktop.appearance.live) } : {}),
           ...(desktop.appearance.dark ? { dark: desktop.appearance.dark as AppearancePalette } : {}),
           ...(desktop.appearance.light ? { light: desktop.appearance.light as AppearancePalette } : {}),
+          ...(desktop.appearance.preset ? { preset: String(desktop.appearance.preset) } : {}),
+          ...(Array.isArray(desktop.appearance.saved) ? { saved: desktop.appearance.saved } : {}),
         },
       } : {}),
       ...(desktop.library ? { library: desktop.library } : {}),

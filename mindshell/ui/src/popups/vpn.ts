@@ -2,6 +2,7 @@
 // each, and a row's details (interface, address, endpoint, start-up
 // behaviour, remove) on click. Import brings in a wg-quick file.
 
+import { reason } from '../bridge';
 import { h } from '../dom';
 import { icon } from '../icons';
 import type { VpnTunnel } from '../types';
@@ -19,7 +20,7 @@ export function vpnPopup(ctx: PopupCtx): PopupContent {
   let pending = 0;
 
   const fail = (what: string, e: unknown) => {
-    err.textContent = `${what}: ${e instanceof Error ? e.message : String(e)}`.replace(/: (Could not [^:]+): /, ': $1: ');
+    err.textContent = `${what}: ${reason(e)}`.replace(/: (Could not [^:]+): /, ': $1: ');
     err.hidden = false;
     ctx.relayout();
   };

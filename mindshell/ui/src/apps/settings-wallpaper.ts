@@ -1,7 +1,11 @@
-// Settings › Wallpaper: a grid of the pictures found on the system.
+// Settings › Appearance: the colour scheme (presets, the seven colours behind
+// every token, and palettes the user saved) and the desktop background.
 
 import * as bridge from '../bridge';
-import { appearance, appearanceControls, onAppearance, paletteFor, setPaletteColor } from '../appearance';
+import {
+  appearance, appearanceControls, deleteSavedPalette, onAppearance, paletteFor, PRESETS, savedPalettes,
+  savePalette, setPaletteColor, usePreset, useSavedPalette,
+} from '../appearance';
 import { h } from '../dom';
 import { icon } from '../icons';
 import { store } from '../state';
@@ -17,6 +21,43 @@ export function wallpaperPage(el: HTMLElement): () => void {
   let paletteTheme: 'dark' | 'light' = appearance.theme;
   const paletteGrid = h('div', { class: 'palette-grid' });
   const paletteTabs = h('div', { class: 'palette-tabs' });
+  const presetRow = h('div', { class: 'swatch-row' });
+  const savedRow = h('div', { class: 'swatch-row' });
+  const saveName = h('input', { type: 'text', class: 'grow', placeholder: 'Name these colours', spellcheck: 'false', maxlength: '40' }) as HTMLInputElement;
+
+  /** A small three-colour chip standing in for a whole palette. */
+  const chip = (p: { background: string; surface: string; accent: string }) =>
+    h('span', { class: 'swatch-chip', style: `background:${p.background}` },
+      h('i', { style: `background:${p.surface}` }), h('i', { style: `background:${p.accent}` }));
+
+  const renderSchemes = () => {
+    presetRow.replaceChildren(...PRESETS.map((preset) => {
+      const on = appearance.preset === preset.id;
+      const b = h('button', { class: `swatch${on ? ' on' : ''}`, type: 'button', title: preset.note },
+        chip(preset[paletteTheme]), h('span', {}, preset.name));
+      b.onclick = () => usePreset(preset.id);
+      return b;
+    }));
+    const saved = savedPalettes();
+    savedRow.replaceChildren(...saved.map((s) => {
+      const b = h('button', { class: 'swatch', type: 'button', title: `Use “${s.name}”` }, chip(s[paletteTheme]), h('span', {}, s.name));
+      b.onclick = () => useSavedPalette(s.name);
+      const del = h('button', { class: 'swatch-del', type: 'button', title: `Forget “${s.name}”`, 'aria-label': `Forget ${s.name}` }, icon('close', 12));
+      del.onclick = () => deleteSavedPalette(s.name);
+      return h('span', { class: 'swatch-wrap' }, b, del);
+    }));
+    if (!saved.length) savedRow.replaceChildren(h('span', { class: 'row-help' }, 'Nothing saved yet. Tune the colours below, then keep them under a name.'));
+    saveName.placeholder = appearance.preset ? `Name a change to ${PRESETS.find((x) => x.id === appearance.preset)?.name ?? 'these colours'}` : 'Name these colours';
+  };
+
+  const keep = () => {
+    const name = saveName.value.trim();
+    if (!name) return note.show('Give the palette a name first.', 'info');
+    savePalette(name);
+    saveName.value = '';
+    note.show(`Saved “${name}”.`, 'ok');
+  };
+  saveName.addEventListener('keydown', (e) => { if (e.key === 'Enter') keep(); });
 
   const renderPalette = () => {
     const p = paletteFor(paletteTheme);
@@ -35,6 +76,7 @@ export function wallpaperPage(el: HTMLElement): () => void {
       button.onclick = () => { paletteTheme = theme; renderPalette(); };
       return button;
     }));
+    renderSchemes();
   };
   renderPalette();
 
@@ -45,10 +87,13 @@ export function wallpaperPage(el: HTMLElement): () => void {
   });
 
   el.append(
-    pageHeader('Wallpaper', 'Select a desktop background. Images in ~/Pictures/Wallpapers and /usr/share/backgrounds are listed here.'),
+    pageHeader('Appearance', 'The colours of the desktop and the picture behind them. Images in ~/Pictures/Wallpapers and /usr/share/backgrounds are listed here.'),
     note.el,
-    card('Appearance', appearanceCtl.el, h('p', { class: 'row-help' }, 'Choose a theme and tune its colors. Changes apply immediately and are saved to this desktop.')),
-    card('Theme colors', paletteTabs, paletteGrid),
+    card('Theme', appearanceCtl.el, h('p', { class: 'row-help' }, 'Light or dark, and the colours each one uses. Changes apply at once, across the whole desktop.')),
+    card('Colour scheme', paletteTabs, presetRow,
+      h('h3', { class: 'card-sub' }, 'Your palettes'), savedRow,
+      h('div', { class: 'inline-form' }, saveName, h('button', { class: 'btn', type: 'button', onclick: keep }, icon('check', 14), 'Save these colours'))),
+    card('Colours', paletteGrid, h('p', { class: 'row-help' }, 'Seven colours make up the whole desktop: everything else is worked out from them.')),
     card(null, grid),
     card('Add a folder', h('div', { class: 'inline-form' }, folderIn, addBtn), h('div', { class: 'row-help' }, 'An image can also be set by right-clicking it in Files or Image Viewer and choosing “Set as Background”.')),
   );
@@ -99,7 +144,7 @@ export function wallpaperPage(el: HTMLElement): () => void {
         note.show(`Added ${images.length} image${images.length === 1 ? '' : 's'} from ${l.path}.`, 'ok');
         render();
       })
-      .catch((e) => note.show(String(e instanceof Error ? e.message : e), 'error'));
+      .catch((e) => note.show(bridge.reason(e), 'error'));
   };
 
   render();
@@ -109,7 +154,7 @@ export function wallpaperPage(el: HTMLElement): () => void {
       entries = Array.isArray(list) ? list : [];
       render();
     })
-    .catch((e) => note.show(`Could not list wallpapers: ${e instanceof Error ? e.message : e}`, 'error'));
+    .catch((e) => note.show(`Could not list wallpapers: ${bridge.reason(e)}`, 'error'));
   store.bind(grid, 'layout', render);
   const unlisten = onAppearance(renderPalette);
   return () => { appearanceCtl.destroy(); unlisten(); };

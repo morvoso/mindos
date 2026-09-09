@@ -14,7 +14,7 @@ registerWidget({
   description: 'WireGuard tunnels. The shield lights up while one is connected; click to connect, disconnect or import a configuration.',
   icon: 'shield',
   containers: ['panel'],
-  defaults: { name: true, hideWhenNone: false },
+  defaults: { name: true, hideWhenNone: true },
   settings: {
     name: { label: 'Show the tunnel name', type: 'boolean', help: 'The name of the connected tunnel, or how many are up' },
     hideWhenNone: { label: 'Hide when no tunnel is set up', type: 'boolean', help: 'The icon stays hidden until a WireGuard configuration has been imported' },
