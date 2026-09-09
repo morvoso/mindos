@@ -57,8 +57,15 @@ export function run(canvas: HTMLCanvasElement, frame: (f: Frame) => void, reset?
     // A saver should not spend a game's GPU budget. Bound the actual backing
     // store, including displays whose CSS size is already 4K at scale 1.
     const ratio = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(1920 * 1080 / (w * h)));
-    canvas.width = Math.max(1, Math.floor(w * ratio));
-    canvas.height = Math.max(1, Math.floor(h * ratio));
+    const bw = Math.max(1, Math.floor(w * ratio));
+    const bh = Math.max(1, Math.floor(h * ratio));
+    // Only when the size really changed: assigning either of these throws the
+    // backing store away and takes a new one, and the shuffle starts every
+    // saver on the canvas the last one was drawing on.
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw;
+      canvas.height = bh;
+    }
     g.setTransform(ratio, 0, 0, ratio, 0, 0);
     g.fillStyle = C.void;
     g.fillRect(0, 0, w, h);

@@ -1130,6 +1130,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     ) {
         let time = time.into();
         let throttle = Some(Duration::from_secs(1));
+        // A fullscreen window is drawn on the output that holds it, which is
+        // not always the output the space still has it on: fullscreening does
+        // not move the window. Without this it would miss the frame callbacks
+        // of the output it is actually on and fall back to the one-second beat
+        // meant for windows nobody can see — one frame a second, full screen.
+        let fullscreen = output
+            .user_data()
+            .get::<FullscreenSurface>()
+            .and_then(|surface| surface.get());
 
         #[allow(clippy::mutable_key_type)]
         let mut clients: HashMap<ClientId, Client> = HashMap::new();
@@ -1164,7 +1173,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 }
             });
 
-            if self.space.outputs_for_element(window).contains(output) {
+            if self.space.outputs_for_element(window).contains(output) || fullscreen.as_ref() == Some(window) {
                 window.send_frame(output, time, throttle, surface_primary_scanout_output);
                 if let Some(dmabuf_feedback) = dmabuf_feedback.as_ref() {
                     window.send_dmabuf_feedback(output, surface_primary_scanout_output, |surface, _| {

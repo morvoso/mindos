@@ -830,7 +830,13 @@ impl App {
             .map(|v| *v == w.view)
             .unwrap_or(false);
         if is_first {
-            let next = self.windows.borrow().first().map(|x| x.view.clone());
+            // Never a lock window: those are a web process of their own.
+            let next = self
+                .windows
+                .borrow()
+                .iter()
+                .find(|x| x.kind != Kind::Lock)
+                .map(|x| x.view.clone());
             *self.first_view.borrow_mut() = next;
         }
         w.hide();
@@ -897,15 +903,26 @@ impl App {
         let builder = webkit::WebView::builder()
             .settings(&self.settings)
             .user_content_manager(&ucm);
-        let first = self.first_view.borrow().clone();
-        let view = match first {
+        // The lock windows keep to themselves. The screensaver is the only
+        // page the shell leaves drawing every frame for hours at a time, and
+        // a driver that loses ground over those hours would take the desktop
+        // and the panels down with it: they share the web process, so once
+        // its graphics go, everything the shell draws is garbage until it is
+        // restarted. On their own they take their own process, one for all
+        // the displays, and it ends with them when the session wakes.
+        let related = if kind == Kind::Lock {
+            self.windows.borrow().iter().find(|w| w.kind == Kind::Lock).map(|w| w.view.clone())
+        } else {
+            self.first_view.borrow().clone()
+        };
+        let view = match related {
             Some(related) => builder.related_view(&related).build(),
             None => builder
                 .web_context(&self.web_context)
                 .network_session(&self.network_session)
                 .build(),
         };
-        if self.first_view.borrow().is_none() {
+        if kind != Kind::Lock && self.first_view.borrow().is_none() {
             *self.first_view.borrow_mut() = Some(view.clone());
         }
         // Full-screen pages that paint every pixel (the wallpaper, the lock
