@@ -53,7 +53,17 @@ impl Message {
                     .collect(),
             )
         };
-        Message { role: "assistant".into(), content: if text.is_empty() { None } else { Some(text.to_string()) }, tool_calls, tool_call_id: None, name: None }
+        // A reply with neither text nor a tool call is rejected outright:
+        // "Assistant message must contain either 'content' or 'tool_calls'".
+        // The message stays in the history, so one empty answer from the model
+        // would fail every later question in the session. An empty string is a
+        // turn that said nothing, which is what happened, and is accepted.
+        let content = match (text.is_empty(), tool_calls.is_none()) {
+            (false, _) => Some(text.to_string()),
+            (true, true) => Some(String::new()),
+            (true, false) => None,
+        };
+        Message { role: "assistant".into(), content, tool_calls, tool_call_id: None, name: None }
     }
     pub fn tool(id: &str, name: &str, content: String) -> Message {
         Message { role: "tool".into(), content: Some(content), tool_calls: None, tool_call_id: Some(id.to_string()), name: Some(name.to_string()) }
@@ -381,6 +391,21 @@ mod tests {
         assert_eq!(result.unwrap_err().to_string(), "cancelled");
         trigger.await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), peer).await.expect("stream must close").unwrap();
+    }
+
+    #[test]
+    fn an_empty_reply_is_still_a_turn_the_server_accepts() {
+        // The model can answer with nothing at all. The endpoint refuses an
+        // assistant message carrying neither field, and goes on refusing it
+        // for every later question, because the message stays in the history.
+        let nothing = serde_json::to_value(Message::assistant("", &[])).unwrap();
+        assert_eq!(nothing["content"], "", "an empty answer still needs content");
+        let call = ToolCall { id: "c".into(), name: "journal".into(), arguments: "{}".into() };
+        let calling = serde_json::to_value(Message::assistant("", &[call])).unwrap();
+        assert!(calling.get("content").is_none(), "a tool call carries the turn by itself");
+        assert_eq!(calling["tool_calls"][0]["function"]["name"], "journal");
+        let spoke = serde_json::to_value(Message::assistant("hi", &[])).unwrap();
+        assert_eq!(spoke["content"], "hi");
     }
 
     #[tokio::test]

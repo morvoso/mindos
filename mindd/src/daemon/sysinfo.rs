@@ -49,6 +49,20 @@ pub fn gpus() -> Vec<String> {
     GPUS.get_or_init(|| cmd("lspci", &["-d", "::0300"]).into_iter().chain(cmd("lspci", &["-d", "::0302"]).into_iter()).flat_map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<_>>()).collect()).clone()
 }
 
+/// The configured timezone ("America/New_York"), read from the symlink
+/// systemd keeps at /etc/localtime. It is the only hint the machine has
+/// about where its user is, which is what a question about the weather or
+/// about what is open right now actually depends on.
+pub fn timezone() -> String {
+    std::fs::read_link("/etc/localtime")
+        .ok()
+        .and_then(|p| {
+            let p = p.to_string_lossy().into_owned();
+            p.split_once("zoneinfo/").map(|(_, tz)| tz.to_string())
+        })
+        .unwrap_or_default()
+}
+
 pub fn nvidia_driver() -> Option<String> {
     let v = read("/sys/module/nvidia/version");
     if v.trim().is_empty() {
@@ -70,6 +84,7 @@ pub fn summary() -> Value {
         "memory_gib": (mem_total_gib() * 10.0).round() / 10.0,
         "gpus": gpus(),
         "nvidia_driver": nvidia_driver(),
+        "timezone": timezone(),
         "uptime": cmd("uptime", &["-p"]).unwrap_or_default(),
         "cmdline": read("/proc/cmdline").trim(),
         "scheduler": read("/sys/kernel/sched_ext/root/ops").trim(),
