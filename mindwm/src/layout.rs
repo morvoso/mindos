@@ -29,7 +29,10 @@ use smithay::{
 
 use crate::{
     config::LayoutConfig,
-    shell::{usable_area, WindowElement},
+    shell::{
+        frame::{SEAM_BOTTOM, SEAM_LEFT, SEAM_RIGHT, SEAM_TOP},
+        usable_area, WindowElement,
+    },
     state::{AnvilState, Backend},
 };
 
@@ -109,6 +112,16 @@ const FLOAT_SIZES: [f32; 3] = [0.5, 0.7, 0.9];
 const DEFAULT_COLUMN_WIDTH: f32 = 0.5;
 const MIN_TILE: i32 = 120;
 
+/// A window a game sent to another screen: where it came from, where it went
+/// (so that a window the user has since moved again is left alone), and the
+/// geometry to give it back.
+#[derive(Debug, Clone)]
+pub struct Away {
+    pub from: String,
+    pub to: String,
+    pub rect: Rectangle<i32, Logical>,
+}
+
 /// Per-window layout data, kept in the window's user data.
 #[derive(Debug, Default)]
 pub struct TileData {
@@ -116,6 +129,9 @@ pub struct TileData {
     pub output: RefCell<Option<String>>,
     /// Output clipping rectangle in window-local coordinates (rendering and input).
     pub clip: Cell<Option<Rectangle<i32, Logical>>>,
+    /// Sides of this tile that face another tile (`frame::SEAM_*`). The frame
+    /// draws a visible seam on those and leaves the rest of the ring alone.
+    pub seams: Cell<u8>,
     /// Taken out of the tiling by the user (Super+Shift+F).
     pub floating: Cell<bool>,
     /// How wide this tile is: in columns, the fraction of the usable width; in
@@ -133,6 +149,8 @@ pub struct TileData {
     pub untiled: RefCell<Option<Rectangle<i32, Logical>>>,
     /// The layout has this window in a tile slot right now.
     pub tiled_now: Cell<bool>,
+    /// Where a game moved this window from, while it is moved.
+    pub away: RefCell<Option<Away>>,
     pub snap: RefCell<Option<String>>,
     pub snap_saved: RefCell<Option<(Rectangle<i32, Logical>, bool, bool, bool, Option<String>)>>,
 }
@@ -467,6 +485,68 @@ fn nearest_output(outputs: &[(String, Rectangle<i32, Logical>)], at: Point<f64, 
         .map(|(name, _)| name.clone())
 }
 
+/// The sides of `rect` that `other` sits against: no further than the layout
+/// gap away, and overlapping along the edge they share. Anything further is
+/// the desktop showing through, and so is the edge of the screen.
+fn seams_against(rect: Rectangle<i32, Logical>, other: Rectangle<i32, Logical>, gap: i32) -> u8 {
+    let slack = gap.max(1) + 1;
+    let (left, right) = (rect.loc.x, rect.loc.x + rect.size.w);
+    let (top, bottom) = (rect.loc.y, rect.loc.y + rect.size.h);
+    let (oleft, oright) = (other.loc.x, other.loc.x + other.size.w);
+    let (otop, obottom) = (other.loc.y, other.loc.y + other.size.h);
+    let along_x = left.max(oleft) < right.min(oright);
+    let along_y = top.max(otop) < bottom.min(obottom);
+    let near = |d: i32| (0..=slack).contains(&d);
+    let mut seams = 0;
+    if along_y && near(left - oright) {
+        seams |= SEAM_LEFT;
+    }
+    if along_y && near(oleft - right) {
+        seams |= SEAM_RIGHT;
+    }
+    if along_x && near(top - obottom) {
+        seams |= SEAM_TOP;
+    }
+    if along_x && near(otop - bottom) {
+        seams |= SEAM_BOTTOM;
+    }
+    seams
+}
+
+/// Programs that start games and then stand aside. One of these on the game's
+/// screen is quite possibly what launched the game a second ago, so it stays
+/// where it is rather than being dragged off mid-launch.
+const LAUNCHERS: [&str; 9] =
+    ["steam", "steamwebhelper", "heroic", "heroicgameslauncher", "lutris", "bottles", "gamescope", "playnite", "gamehub"];
+
+/// Is this app id a launcher? Matched on the last part of a reverse-DNS id
+/// (`com.heroicgameslauncher.hgl` is matched by its own name), and on the
+/// `steam_app_NNN` ids XWayland gives a game Steam has started.
+fn is_launcher(app_id: &str) -> bool {
+    let id = app_id.to_ascii_lowercase();
+    if id.starts_with("steam_app_") {
+        return true;
+    }
+    LAUNCHERS.iter().any(|l| id.split(['.', '-']).any(|part| part == *l))
+}
+
+/// The same window on another screen: the offset it had from the corner of
+/// its old screen, trimmed to fit if the new one is smaller.
+fn across(rect: Rectangle<i32, Logical>, from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    let size: Size<i32, Logical> = (rect.size.w.min(to.size.w), rect.size.h.min(to.size.h)).into();
+    let x = (to.loc.x + rect.loc.x - from.loc.x).clamp(to.loc.x, to.loc.x + to.size.w - size.w);
+    let y = (to.loc.y + rect.loc.y - from.loc.y).clamp(to.loc.y, to.loc.y + to.size.h - size.h);
+    Rectangle::new(Point::from((x, y)), size)
+}
+
+/// Squared distance between the centres of two screens, for picking the one
+/// next door.
+fn between(a: Rectangle<i32, Logical>, b: Rectangle<i32, Logical>) -> i64 {
+    let centre = |r: Rectangle<i32, Logical>| (i64::from(r.loc.x) * 2 + i64::from(r.size.w), i64::from(r.loc.y) * 2 + i64::from(r.size.h));
+    let ((ax, ay), (bx, by)) = (centre(a), centre(b));
+    (ax - bx).pow(2) + (ay - by).pow(2)
+}
+
 /// Squared distance from a point to a rectangle (0 inside it).
 fn gap_to(rect: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> f64 {
     let dx = (rect.loc.x as f64 - at.x).max(at.x - (rect.loc.x + rect.size.w) as f64).max(0.0);
@@ -513,6 +593,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 *window.tile().output.borrow_mut() = Some(home.name());
             }
             window.tile().clip.set(None);
+            window.tile().seams.set(0);
         }
         self.layout.outputs.retain(|name, _| outputs.iter().any(|o| o.name() == *name));
         // Only the tiling modes place new windows in an order; floating would
@@ -621,6 +702,18 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 }
                 LayoutMode::Floating => Vec::new(),
             };
+            // Which sides of each tile face another one. Every other side
+            // is the desktop or the edge of the screen, and stays a hairline.
+            for (i, w) in tiles.iter().enumerate() {
+                let Some(rect) = rects.get(i) else { continue };
+                let mut seams = 0u8;
+                for (j, other) in rects.iter().enumerate() {
+                    if i != j {
+                        seams |= seams_against(*rect, *other, gap);
+                    }
+                }
+                w.tile().seams.set(seams);
+            }
             for (w, rect) in tiles.iter().zip(rects) {
                 handled.push(w.clone());
                 if dragging.as_ref() == Some(w) {
@@ -713,6 +806,121 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         }
         self.layout.dirty = true;
         self.activate_window(window);
+    }
+
+    /// A game has a screen to itself: everything else goes to the other
+    /// screens for as long as it runs, and comes back afterwards. Nothing
+    /// here is permanent — every window that moves remembers where it came
+    /// from, so it goes home even if the game leaves in a hurry.
+    pub fn game_scene(&mut self, on: bool) {
+        if on {
+            self.clear_the_game_screen();
+        } else {
+            self.restore_the_game_screen();
+        }
+    }
+
+    /// The screen the game is on: the one with a fullscreen window, failing
+    /// that the one with a maximised window (a borderless game is only
+    /// maximised), then the focused window's screen, then the pointer's.
+    fn game_output(&self) -> Option<Output> {
+        let home = |w: &WindowElement| self.window_home(w);
+        self.space
+            .elements()
+            .find(|w| w.pending_fullscreen())
+            .and_then(home)
+            .or_else(|| self.space.elements().find(|w| w.pending_maximized()).and_then(home))
+            .or_else(|| self.focused_window().and_then(|w| home(&w)))
+            .or_else(|| self.space.output_under(self.pointer.current_location()).next().cloned())
+    }
+
+    fn clear_the_game_screen(&mut self) {
+        let Some(game) = self.game_output() else { return };
+        let Some(game_geo) = self.space.output_geometry(&game) else { return };
+        // One screen is the whole desktop: there is nowhere to put anything.
+        let mut others: Vec<(String, Rectangle<i32, Logical>)> = self
+            .space
+            .outputs()
+            .filter(|o| **o != game)
+            .filter_map(|o| self.space.output_geometry(o).map(|g| (o.name(), g)))
+            .collect();
+        if others.is_empty() {
+            return;
+        }
+        others.sort_by_key(|(_, g)| between(game_geo, *g));
+        let (dest, dest_geo) = others[0].clone();
+
+        // The game's own window is whatever is fullscreen or maximised on that
+        // screen; only when there is no such window does the focus stand in
+        // for it, so a game running fullscreen still gets a chat window moved
+        // off its screen even if the chat window happens to have the focus.
+        let on_game = |w: &WindowElement| self.window_home(w).as_ref() == Some(&game);
+        let game_window = self
+            .space
+            .elements()
+            .any(|w| on_game(w) && (w.pending_fullscreen() || w.pending_maximized()));
+        let focused = self.focused_window().filter(|_| !game_window);
+        let windows: Vec<WindowElement> = self
+            .space
+            .elements()
+            // A launcher may be what started the game a second ago, and
+            // taking it away can take the game with it. Everything else on
+            // that screen is in the way.
+            .filter(|w| on_game(w))
+            .filter(|w| !w.pending_fullscreen() && !w.pending_maximized())
+            .filter(|w| focused.as_ref() != Some(*w))
+            .filter(|w| !is_launcher(&w.app_id()))
+            .cloned()
+            .collect();
+
+        for window in windows {
+            // Already away from an earlier game: leave the first record be,
+            // it is the one that knows where home is.
+            if window.tile().away.borrow().is_some() {
+                continue;
+            }
+            let Some(rect) = self.space.element_geometry(&window) else { continue };
+            let tiled = self.layout.mode.is_tiling() && window.tileable();
+            *window.tile().away.borrow_mut() = Some(Away { from: game.name(), to: dest.clone(), rect });
+            *window.tile().output.borrow_mut() = Some(dest.clone());
+            for tiling in self.layout.outputs.values_mut() {
+                tiling.order.retain(|w| *w != window);
+            }
+            // A tile is placed by the layout a moment from now. A floating
+            // window keeps its own geometry, so carry it across by hand.
+            if !tiled {
+                let loc = self.apply_rect(&window, across(rect, game_geo, dest_geo), false);
+                self.space.map_element(window.clone(), loc, false);
+            }
+        }
+        self.layout.dirty = true;
+    }
+
+    fn restore_the_game_screen(&mut self) {
+        let windows: Vec<WindowElement> =
+            self.space.elements().filter(|w| w.tile().away.borrow().is_some()).cloned().collect();
+        for window in windows {
+            let Some(away) = window.tile().away.borrow_mut().take() else { continue };
+            // Not if the screen it came from has since been unplugged, and
+            // not if the user has moved it somewhere else in the meantime:
+            // that is a decision of theirs, and it outranks the game's.
+            if !self.space.outputs().any(|o| o.name() == away.from) {
+                continue;
+            }
+            if window.tile().output.borrow().as_deref() != Some(away.to.as_str()) {
+                continue;
+            }
+            let tiled = self.layout.mode.is_tiling() && window.tileable();
+            *window.tile().output.borrow_mut() = Some(away.from.clone());
+            for tiling in self.layout.outputs.values_mut() {
+                tiling.order.retain(|w| *w != window);
+            }
+            if !tiled {
+                let loc = self.apply_rect(&window, away.rect, false);
+                self.space.map_element(window.clone(), loc, false);
+            }
+        }
+        self.layout.dirty = true;
     }
 
     fn apply_rect(&mut self, window: &WindowElement, rect: Rectangle<i32, Logical>, tiled: bool) -> Point<i32, Logical> {
@@ -1277,6 +1485,39 @@ mod tests {
         // scrolling back to the first column
         assert_eq!(scroll_to_show(1000, &widths, 10, s, Some(0)), 0);
         assert_eq!(column_width(1000, 1.0, 10), 1000);
+    }
+
+    #[test]
+    fn a_game_keeps_its_launcher_and_moves_everything_else() {
+        // What started the game stays on the game's screen.
+        assert!(is_launcher("steam"));
+        assert!(is_launcher("Steam"));
+        assert!(is_launcher("steam_app_1091500"));
+        assert!(is_launcher("steamwebhelper"));
+        assert!(is_launcher("net.lutris.Lutris"));
+        assert!(is_launcher("com.heroicgameslauncher.hgl"));
+        assert!(is_launcher("gamescope"));
+        // The things the user actually wants moved out of the way.
+        assert!(!is_launcher("vesktop"));
+        assert!(!is_launcher("firefox"));
+        assert!(!is_launcher("kitty"));
+        // And a name that merely contains one is not one: `steamlocomotive`
+        // is a train.
+        assert!(!is_launcher("steamlocomotive"));
+    }
+
+    #[test]
+    fn a_window_sent_next_door_lands_on_the_screen() {
+        let (left, right) = (rect(0, 0, 2560, 1440), rect(2560, 0, 1920, 1080));
+        // It keeps the corner offset it had.
+        assert_eq!(across(rect(100, 200, 800, 600), left, right), rect(2660, 200, 800, 600));
+        // A smaller screen next door trims it and pulls it back inside
+        // rather than leaving it half off the edge.
+        assert_eq!(across(rect(1800, 1200, 700, 500), left, right), rect(3780, 580, 700, 500));
+        assert_eq!(across(rect(0, 0, 2560, 1440), left, right), rect(2560, 0, 1920, 1080));
+        // The nearest other screen is the one next door, not the far one.
+        let far = rect(6000, 0, 1920, 1080);
+        assert!(between(left, right) < between(left, far));
     }
 
     #[test]

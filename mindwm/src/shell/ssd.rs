@@ -53,7 +53,6 @@ const WHITE: Rgba = hex(0xffffff);
 const FG: Rgba = hex(0xeff0f1);
 const FG_DIM: Rgba = hex(0xc1c3c6);
 const FG_FAINT: Rgba = hex(0xa0a3a7);
-const ACCENT: Rgba = hex(0x3ddc97);
 const DANGER: Rgba = hex(0xff5d8f);
 
 thread_local! {
@@ -89,6 +88,8 @@ struct Cached {
     buffer: MemoryRenderBuffer,
     width: i32,
     scale: i32,
+    /// The accent this bar was drawn in: a new theme makes it stale.
+    accent: u32,
 }
 
 #[derive(Debug)]
@@ -353,10 +354,11 @@ impl HeaderBar {
             self.width = width;
             self.dirty = true;
         }
+        let accent = crate::config::accent_rgb();
         let stale = self
             .cache
             .as_ref()
-            .map(|c| c.width != width || c.scale != scale)
+            .map(|c| c.width != width || c.scale != scale || c.accent != accent)
             .unwrap_or(true);
         if !self.dirty && !stale {
             return;
@@ -370,7 +372,7 @@ impl HeaderBar {
             Transform::Normal,
             None,
         );
-        self.cache = Some(Cached { buffer, width, scale });
+        self.cache = Some(Cached { buffer, width, scale, accent });
         self.dirty = false;
     }
 
@@ -386,7 +388,8 @@ impl HeaderBar {
         // 0.92 the desktop's own headings and buttons stayed legible through the
         // bar, which reads as a rendering fault rather than as glass.
         c.fill_rounded_rect(0, 0, w, h, r, corners, alpha(BG, 0.985));
-        c.fill_rect(0, h - s, w, s, if self.focused { ACCENT } else { alpha(WHITE, 0.12) });
+        let accent = crate::config::accent_color();
+        c.fill_rect(0, h - s, w, s, if self.focused { accent } else { alpha(WHITE, 0.12) });
 
         // Title.
         let buttons = self.buttons();
@@ -425,7 +428,7 @@ impl HeaderBar {
                 if danger {
                     DANGER
                 } else {
-                    ACCENT
+                    accent
                 }
             } else {
                 glyph_base

@@ -6,7 +6,7 @@
 //! cargo run --example frameproof -- /tmp/frame.ppm
 //! ```
 use mindwm::shell::{
-    frame::{preview, FrameStyle, SHADOW, TILE_SHADOW},
+    frame::{preview, FrameStyle, SEAM_BOTTOM, SEAM_LEFT, SEAM_RIGHT, SEAM_TOP, SHADOW, TILE_SHADOW},
     ssd::{HeaderBar, HEADER_BAR_HEIGHT, RADIUS},
 };
 use mindwm::text::{alpha, hex, Canvas, Face, TextRenderer};
@@ -22,8 +22,15 @@ fn write_ppm(path: &str, canvas: &Canvas) {
     out.write_all(&buf).unwrap();
 }
 
-fn window(c: &mut Canvas, t: &mut TextRenderer, x: i32, y: i32, w: i32, h: i32, title: &str, focused: bool, tiled: bool) {
-    let style = FrameStyle { focused, radius: RADIUS, shadow: if tiled { TILE_SHADOW } else { SHADOW } };
+fn window(c: &mut Canvas, t: &mut TextRenderer, x: i32, y: i32, w: i32, h: i32, title: &str, focused: bool, tiled: bool, seams: u8) {
+    let style = FrameStyle {
+        focused,
+        radius: RADIUS,
+        shadow: if tiled { TILE_SHADOW } else { SHADOW },
+        accent: mindwm::config::accent_rgb(),
+        seams,
+        seam: mindwm::config::seam_rgb(),
+    };
     let (frame, m) = preview(style, 1, w, h);
     c.draw_canvas(x - m, y - m, &frame);
     let mut bar = HeaderBar::default();
@@ -43,7 +50,7 @@ fn window(c: &mut Canvas, t: &mut TextRenderer, x: i32, y: i32, w: i32, h: i32, 
 
 fn main() {
     let out = std::env::args().nth(1).expect("usage: frameproof <out.ppm>");
-    let (w, h) = (1100, 620);
+    let (w, h) = (1240, 700);
     let mut c = Canvas::new(w, h);
     // a rough aurora: navy ground with a cyan and a violet glow
     for yy in 0..h {
@@ -63,10 +70,15 @@ fn main() {
         }
     }
     let mut t = TextRenderer::new();
-    window(&mut c, &mut t, 70, 80, 520, 320, "Terminal — ~/src/mindos", false, false);
-    window(&mut c, &mut t, 300, 200, 560, 340, "Settings", true, false);
-    window(&mut c, &mut t, 760, 60, 300, 200, "Tile", true, true);
-    window(&mut c, &mut t, 760, 330, 300, 200, "Another tile", false, true);
-    t.draw(&mut c, 20, h - 30, None, "frameproof: floating unfocused / focused, tiles", 12.0, alpha(hex(0xe6edf3), 0.6), Face::Label);
+    // Left: floating windows, which touch nothing and keep the hairline ring.
+    window(&mut c, &mut t, 40, 90, 460, 300, "Terminal — ~/src/mindos", false, false, 0);
+    window(&mut c, &mut t, 190, 230, 420, 320, "Settings", true, false, 0);
+    // Right: a tiling laid out the way dwindle would, one wide tile beside two
+    // stacked ones. Only the sides that face another tile carry a seam; the
+    // outer edges of the tiling are hairlines like anything else.
+    window(&mut c, &mut t, 640, 70, 276, 520, "Firefox", false, true, SEAM_RIGHT);
+    window(&mut c, &mut t, 924, 70, 276, 256, "Vesktop", true, true, SEAM_LEFT | SEAM_BOTTOM);
+    window(&mut c, &mut t, 924, 334, 276, 256, "kitty", false, true, SEAM_LEFT | SEAM_TOP);
+    t.draw(&mut c, 20, h - 30, None, "frameproof: floating (no seams) / three tiles, seams on the sides that touch", 12.0, alpha(hex(0xe6edf3), 0.6), Face::Label);
     write_ppm(&out, &c);
 }

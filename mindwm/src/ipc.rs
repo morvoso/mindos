@@ -209,6 +209,11 @@ pub enum Request {
     /// Hold the session awake — nothing idles while a client asks for this —
     /// or let go of the hold. The hold ends with the connection.
     InhibitIdle { on: bool },
+    /// A game is running (`on`) or has ended. While it runs it has its screen
+    /// to itself: every other window moves to the other screens, and moves
+    /// back afterwards. Harmless on a single screen, which has nowhere to
+    /// move anything to.
+    GameScene { on: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -858,6 +863,10 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             Request::InhibitIdle { on } => {
                 self.set_idle_hold(client, on);
                 Reply::Ok(self.idle_json())
+            }
+            Request::GameScene { on } => {
+                self.game_scene(on);
+                Reply::Ok(Value::Null)
             }
         }
     }

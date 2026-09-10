@@ -37,7 +37,7 @@ use smithay::{
                 KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState,
                 LayerSurfaceData, WlrLayerShellHandler, WlrLayerShellState,
             },
-            xdg::{ToplevelSurface, XdgToplevelSurfaceData},
+            xdg::{PopupSurface as XdgPopupSurface, ToplevelSurface, XdgToplevelSurfaceData},
         },
     },
 };
@@ -321,6 +321,14 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 impl<BackendData: Backend> WlrLayerShellHandler for AnvilState<BackendData> {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
         &mut self.layer_shell_state
+    }
+
+    /// A popup on a panel: a tooltip, a menu. The xdg popup is created before
+    /// the layer surface adopts it, so `XdgShellHandler::new_popup` runs while
+    /// it is still an orphan and cannot tell what screen it belongs to. This
+    /// is where the parent is known, so this is where it gets placed.
+    fn new_popup(&mut self, _parent: WlrLayerSurface, popup: XdgPopupSurface) {
+        self.unconstrain_popup(&popup);
     }
 
     fn new_layer_surface(

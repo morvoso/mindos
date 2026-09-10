@@ -613,39 +613,55 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         (pointer.x as i32 - w / 2, pointer.y as i32 - header / 2).into()
     }
 
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    pub(crate) fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let Some(window) = self.window_for_surface(&root) else {
+        let Some((screen, root_loc)) = self.popup_screen(&root) else {
             return;
         };
 
-        let mut outputs_for_window = self.space.outputs_for_element(&window);
-        if outputs_for_window.is_empty() {
-            return;
-        }
-
-        // Get a union of all outputs' geometries.
-        let mut outputs_geo = self
-            .space
-            .output_geometry(&outputs_for_window.pop().unwrap())
-            .unwrap();
-        for output in outputs_for_window {
-            outputs_geo = outputs_geo.merge(self.space.output_geometry(&output).unwrap());
-        }
-
-        let window_geo = self.space.element_geometry(&window).unwrap();
-
         // The target geometry for the positioner should be relative to its parent's geometry, so
         // we will compute that here.
-        let mut target = outputs_geo;
+        let mut target = screen;
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
-        target.loc -= window_geo.loc;
+        target.loc -= root_loc;
 
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });
+    }
+
+    /// The screen area a popup has to stay inside, and where the surface it
+    /// hangs off sits in it. A popup belongs either to a window — which may
+    /// straddle several outputs, so it gets all of them — or to a layer
+    /// surface (a panel, the desktop), which lives on one output and keeps its
+    /// popups there.
+    ///
+    /// Layer surfaces matter as much as windows here: a tooltip on a bottom
+    /// panel asks to open below its icon, off the bottom of the screen, and
+    /// only gets flipped above it if the compositor answers with an area.
+    fn popup_screen(&self, root: &WlSurface) -> Option<(Rectangle<i32, Logical>, Point<i32, Logical>)> {
+        if let Some(window) = self.window_for_surface(root) {
+            let mut outputs = self.space.outputs_for_element(&window);
+            // A union of every output the window is on.
+            let mut geo = self.space.output_geometry(&outputs.pop()?)?;
+            for output in outputs {
+                if let Some(other) = self.space.output_geometry(&output) {
+                    geo = geo.merge(other);
+                }
+            }
+            return Some((geo, self.space.element_geometry(&window)?.loc));
+        }
+
+        self.space.outputs().find_map(|output| {
+            let map = layer_map_for_output(output);
+            let layer = map.layer_for_surface(root, WindowSurfaceType::TOPLEVEL)?;
+            // A layer's geometry is relative to its output.
+            let layer_loc = map.layer_geometry(layer)?.loc;
+            let geo = self.space.output_geometry(output)?;
+            Some((geo, geo.loc + layer_loc))
+        })
     }
 }
 

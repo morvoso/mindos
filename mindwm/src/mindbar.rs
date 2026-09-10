@@ -704,6 +704,16 @@ impl MindBar {
         self.show_tools
     }
 
+    /// Follow a new accent (Settings > Appearance). The drop shadow is tinted
+    /// with it and kept between frames, so it goes too.
+    pub fn set_accent(&mut self, accent: Rgba) {
+        if self.accent != accent {
+            self.accent = accent;
+            self.shadow = None;
+            self.dirty = true;
+        }
+    }
+
     pub fn set_show_tools(&mut self, on: bool) {
         if self.show_tools != on {
             self.show_tools = on;

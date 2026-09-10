@@ -41,7 +41,18 @@ pub const TILE_SHADOW: i32 = 12;
 
 const BLACK: [f32; 4] = hex(0x000000);
 const WHITE: [f32; 4] = hex(0xffffff);
-const GREEN: [f32; 4] = hex(0x3ddc97);
+
+/// Sides of a tile that touch another tile, as bits of `FrameStyle::seams`,
+/// in the order the corner and edge arrays use.
+pub const SEAM_TOP: u8 = 1;
+pub const SEAM_RIGHT: u8 = 2;
+pub const SEAM_BOTTOM: u8 = 4;
+pub const SEAM_LEFT: u8 = 8;
+
+/// How solid a seam is. The ordinary ring is 0.09-0.17: barely there, which
+/// is what a lone window wants and what makes two tiles side by side read as
+/// one wide window. A seam is loud on purpose.
+const SEAM_ALPHA: f32 = 0.55;
 
 /// What the frame looks like. Every distinct value is one cached reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,6 +62,15 @@ pub struct FrameStyle {
     pub radius: i32,
     /// Reach of the shadow; 0 leaves only the border.
     pub shadow: i32,
+    /// The accent a focused window is drawn in, packed 0xRRGGBB. It is part
+    /// of the style so that picking a new theme misses the reference cache
+    /// and the frames are drawn again in the new colour.
+    pub accent: u32,
+    /// Which sides touch another tile (`SEAM_*`). Only the tiling modes set
+    /// it; a floating window and the outer edges of a tiling are always 0.
+    pub seams: u8,
+    /// The colour those sides are drawn in, packed 0xRRGGBB.
+    pub seam: u32,
 }
 
 impl FrameStyle {
@@ -118,12 +138,32 @@ impl Reference {
             let tight = (m / 4).max(2);
             c.shadow_rounded_rect(wx, wy + (dy / 3) * s, ww, wh, r * s, corners, tight * s, alpha(BLACK, a * 0.8));
             if style.focused {
-                c.shadow_rounded_rect(wx, wy, ww, wh, r * s, corners, (m / 2).max(4) * s, alpha(GREEN, 0.28));
+                c.shadow_rounded_rect(wx, wy, ww, wh, r * s, corners, (m / 2).max(4) * s, alpha(hex(style.accent), 0.28));
             }
         }
         // the ring: one pixel just outside the window
         for i in 0..s {
-            c.stroke_rounded_rect(wx - s + i, wy - s + i, ww + 2 * s - 2 * i, wh + 2 * s - 2 * i, (r + 1) * s - i, corners, alpha(if style.focused { GREEN } else { WHITE }, style.ring_alpha()));
+            c.stroke_rounded_rect(wx - s + i, wy - s + i, ww + 2 * s - 2 * i, wh + 2 * s - 2 * i, (r + 1) * s - i, corners, alpha(if style.focused { hex(style.accent) } else { WHITE }, style.ring_alpha()));
+        }
+        // The seam goes over the ring on the sides that touch another tile,
+        // in the same band of `s` pixels just outside the window. Rounded
+        // corners are left to the ring underneath: the straight run stops a
+        // radius short of each end (with square corners it is the whole side).
+        if style.seams != 0 {
+            let color = alpha(hex(style.seam), SEAM_ALPHA);
+            let k = r * s;
+            if style.seams & SEAM_TOP != 0 {
+                c.fill_rect(wx - s + k, wy - s, ww + 2 * s - 2 * k, s, color);
+            }
+            if style.seams & SEAM_BOTTOM != 0 {
+                c.fill_rect(wx - s + k, wy + wh, ww + 2 * s - 2 * k, s, color);
+            }
+            if style.seams & SEAM_LEFT != 0 {
+                c.fill_rect(wx - s, wy - s + k, s, wh + 2 * s - 2 * k, color);
+            }
+            if style.seams & SEAM_RIGHT != 0 {
+                c.fill_rect(wx + ww, wy - s + k, s, wh + 2 * s - 2 * k, color);
+            }
         }
         c.cut_rounded_rect(wx, wy, ww, wh, r * s, corners);
 
@@ -325,7 +365,7 @@ mod tests {
 
     #[test]
     fn reference_has_a_hole_a_ring_and_a_shadow() {
-        let style = FrameStyle { focused: true, radius: 12, shadow: SHADOW };
+        let style = FrameStyle { focused: true, radius: 12, shadow: SHADOW, accent: 0x3ddc97, seams: 0, seam: 0xedf2f8 };
         let r = Reference::draw(style, 1);
         let [ml, mt, _, _] = r.margins;
         let tl = &r.corners[0];
@@ -352,7 +392,7 @@ mod tests {
 
     #[test]
     fn a_border_only_frame_is_one_pixel() {
-        let style = FrameStyle { focused: false, radius: 12, shadow: 0 };
+        let style = FrameStyle { focused: false, radius: 12, shadow: 0, accent: 0x3ddc97, seams: 0, seam: 0xedf2f8 };
         let r = Reference::draw(style, 1);
         assert_eq!(r.margins, [1, 1, 1, 1]);
         let left = &r.edges[3];
@@ -361,8 +401,33 @@ mod tests {
     }
 
     #[test]
+    fn a_seam_brightens_only_the_side_that_touches() {
+        let plain = FrameStyle { focused: false, radius: 0, shadow: TILE_SHADOW, accent: 0x3ddc97, seams: 0, seam: 0xedf2f8 };
+        let seamed = FrameStyle { seams: SEAM_RIGHT, ..plain };
+        let (a, b) = (Reference::draw(plain, 1), Reference::draw(seamed, 1));
+        // The right edge is the one that touches: it gains the seam. Both
+        // pixels carry the tile's shadow as well, so what the seam is worth
+        // is the difference, not the ratio.
+        let (dull, bright) = (px(&a.edges[1], 0, 1)[3], px(&b.edges[1], 0, 1)[3]);
+        assert!(bright > dull + 90, "dull {dull} bright {bright}");
+        // Its three other sides are the hairline they were.
+        for i in [0, 2, 3] {
+            assert_eq!(px(&a.edges[i], 0, 0), px(&b.edges[i], 0, 0), "edge {i} changed");
+        }
+        // A seam is loud enough to see against the desktop between two tiles.
+        assert!(bright > 150, "seam alpha {bright}");
+        // Both neighbours draw their own, and the seam colour is the same
+        // whether or not a window has the focus, so the two lines either side
+        // of a gap are a pair. The focused one keeps a little of its accent
+        // glow underneath, which is a difference you have to look for.
+        let focused = Reference::draw(FrameStyle { focused: true, ..seamed }, 1);
+        let lit = px(&focused.edges[1], 0, 1)[3];
+        assert!(lit.abs_diff(bright) < 40, "unfocused {bright} focused {lit}");
+    }
+
+    #[test]
     fn scaled_reference_scales_the_tiles() {
-        let style = FrameStyle { focused: true, radius: 12, shadow: TILE_SHADOW };
+        let style = FrameStyle { focused: true, radius: 12, shadow: TILE_SHADOW, accent: 0x3ddc97, seams: 0, seam: 0xedf2f8 };
         let one = Reference::draw(style, 1);
         let two = Reference::draw(style, 2);
         assert_eq!(two.corners[0].width, one.corners[0].width * 2);

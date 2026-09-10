@@ -389,7 +389,7 @@ impl App {
         }
     }
 
-    fn game_changed(&self) {
+    fn game_changed(self: &Rc<Self>) {
         let running = game_running();
         if self.state.borrow().game == running {
             return;
@@ -405,6 +405,26 @@ impl App {
         // no lock in the middle of a cut scene, no display switching off on a
         // controller-only session that the compositor never sees a key from.
         let _ = self.ipc.send(json!({ "type": "inhibit_idle", "on": running }));
+        // And the game gets the screen it is on to itself: the compositor
+        // moves everything else to the other displays until it ends. On the
+        // way in this waits, because GameMode counts the launcher's process
+        // before the game has a window, let alone a fullscreen one, and the
+        // compositor decides which screen to clear by looking at the windows.
+        // On the way out there is nothing to wait for.
+        if !running {
+            let _ = self.ipc.send(json!({ "type": "game_scene", "on": false }));
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(GAME_SETTLE, move || {
+            let Some(app) = weak.upgrade() else { return };
+            // Gone again already: a game that starts and stops inside the
+            // wait never moves anything.
+            if !app.state.borrow().game {
+                return;
+            }
+            let _ = app.ipc.send(json!({ "type": "game_scene", "on": true }));
+        });
     }
 
     // -----------------------------------------------------------------
@@ -1130,6 +1150,10 @@ impl App {
                 // takes its startup screen down as this view maps.
                 if first_desktop {
                     tracing::info!(ms = crate::STARTED.elapsed().as_millis() as u64, output = win.output, "desktop up");
+                    // The compositor started before the shell and drew its
+                    // chrome in whatever mindwm.toml says. Tell it the palette
+                    // this session actually uses.
+                    self.sync_accent().await;
                 }
                 Ok(Value::Null)
             }
@@ -1169,6 +1193,9 @@ impl App {
                     layout.save()?;
                 } else {
                     self.schedule_layout_save();
+                }
+                if desktop_changed {
+                    self.sync_accent().await;
                 }
                 Ok(layout.to_value())
             }
@@ -1865,6 +1892,29 @@ impl App {
     /// Run one of the system helpers for the UI and return its output.
     /// Only a fixed set of read-mostly commands is allowed; anything that
     /// changes the system goes through the helper's own sudo rules.
+    /// Give the compositor the accent of the chosen theme.
+    ///
+    /// It draws the window frames, the title bars and the Mind bar itself and
+    /// has no way to read the shell's palette, so every change to Settings >
+    /// Appearance is passed on. A compositor that is not listening keeps the
+    /// colour it has: this is decoration, never a reason to fail a save.
+    async fn sync_accent(&self) {
+        let accent = {
+            let state = self.state.borrow();
+            let Some(appearance) = state.layout.desktop.extra.get("appearance") else { return };
+            let theme = appearance.get("theme").and_then(Value::as_str).unwrap_or("dark");
+            appearance
+                .get(theme)
+                .and_then(|palette| palette.get("accent"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let Some(accent) = accent else { return };
+        if let Err(err) = self.ipc.request(json!({ "type": "set_prefs", "prefs": { "accent": accent } })).await {
+            tracing::warn!(%err, "the compositor kept its old accent");
+        }
+    }
+
     async fn run_helper(&self, argv: Vec<String>) -> Result<Value, String> {
         let bare: Vec<&str> = argv.iter().map(String::as_str).collect();
         let (sudo, cmd) = match bare.as_slice() {
@@ -2726,6 +2776,12 @@ impl App {
 
 /// The GameMode counter kept by `mindos-perf game-start` / `game-end`.
 const GAME_FILE: &str = "/run/mindos/perf/game";
+
+/// How long the compositor is given to see a game's window before the game's
+/// screen is cleared for it. Launchers hand over slowly, and a shell that
+/// swept the desktop the instant GameMode counted up would be clearing the
+/// wrong screen half the time.
+const GAME_SETTLE: Duration = Duration::from_millis(2500);
 
 /// How long after a `system.stats` call the GPU keeps being sampled.
 const STATS_INTEREST_MS: u64 = 6_000;

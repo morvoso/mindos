@@ -51,6 +51,87 @@ pub(crate) fn clamp_to_outputs(
         .unwrap_or(pos)
 }
 
+/// Clamp a point into one output, with the same edge handling as
+/// [`clamp_to_outputs`].
+fn clamp_into(r: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> Point<f64, Logical> {
+    let x = if pos.x.is_finite() { pos.x } else { r.loc.x as f64 };
+    let y = if pos.y.is_finite() { pos.y } else { r.loc.y as f64 };
+    Point::from((
+        x.clamp(
+            r.loc.x as f64,
+            r.loc.x as f64 + r.size.w as f64 - EDGE_EPSILON,
+        ),
+        y.clamp(
+            r.loc.y as f64,
+            r.loc.y as f64 + r.size.h as f64 - EDGE_EPSILON,
+        ),
+    ))
+}
+
+/// Clamp `pos` onto the outputs, honouring the direction the pointer is
+/// travelling in.
+///
+/// Screens of different logical size leave a band along their shared edge with
+/// nothing opposite it: a 3072x1728 screen beside a 2560x1440 one, aligned at
+/// the top, has 288 rows at the bottom bordering empty space. Nearest-output
+/// clamping traps the pointer inside that band, because stepping sideways out
+/// of the tall screen lands nearer the edge it just left than the short screen
+/// beside it, and the pointer is pushed straight back; the screens can only be
+/// crossed higher up. So when the pointer leaves every output, look for one
+/// across the edge it is heading for and clamp only the other axis: a sideways
+/// push always reaches the screen beside it, at the nearest height that screen
+/// has.
+pub(crate) fn clamp_to_outputs_along(
+    previous: Point<f64, Logical>,
+    pos: Point<f64, Logical>,
+    outputs: impl Iterator<Item = Rectangle<i32, Logical>>,
+) -> Point<f64, Logical> {
+    let rects: Vec<_> = outputs.filter(|r| r.size.w > 0 && r.size.h > 0).collect();
+    if rects.is_empty() {
+        return pos;
+    }
+    if !pos.x.is_finite() || !pos.y.is_finite() {
+        return clamp_to_outputs(pos, rects.into_iter());
+    }
+    // Still on a screen: nothing to resolve.
+    if rects.iter().any(|r| clamp_into(*r, pos) == pos) {
+        return pos;
+    }
+    let delta = pos - previous;
+    if delta.x != 0.0 || delta.y != 0.0 {
+        // The axis being crossed; the other one is the one to clamp.
+        let horizontal = delta.x.abs() > delta.y.abs();
+        let offset = |r: &Rectangle<i32, Logical>| {
+            let c = clamp_into(*r, pos);
+            if horizontal {
+                (c.y - pos.y).abs()
+            } else {
+                (c.x - pos.x).abs()
+            }
+        };
+        // The screens the pointer is level with across that edge.
+        let across: Vec<Rectangle<i32, Logical>> = rects
+            .iter()
+            .copied()
+            .filter(|r| {
+                let c = clamp_into(*r, pos);
+                if horizontal {
+                    c.x == pos.x
+                } else {
+                    c.y == pos.y
+                }
+            })
+            .collect();
+        if let Some(best) = across
+            .into_iter()
+            .min_by(|a, b| offset(a).total_cmp(&offset(b)))
+        {
+            return clamp_into(best, pos);
+        }
+    }
+    clamp_to_outputs(pos, rects.into_iter())
+}
+
 pub(crate) fn absolute_position(
     x: f64,
     y: f64,
@@ -288,7 +369,8 @@ impl<B: Backend> AnvilState<B> {
             pointer.frame(self);
             return;
         }
-        let mut position = clamp_to_outputs(
+        let mut position = clamp_to_outputs_along(
+            previous,
             position,
             self.space
                 .outputs()
@@ -351,6 +433,53 @@ mod tests {
         assert_eq!(gap, (200.0, 400.0).into());
         let edge = clamp_to_outputs((9000.0, 9000.0).into(), outputs.iter().copied());
         assert!(outputs.iter().any(|r| r.contains(edge.to_i32_floor())));
+    }
+
+    #[test]
+    fn pointer_crosses_between_screens_of_different_heights() {
+        // A 3072x1728 screen beside a 2560x1440 one, aligned at the top: the
+        // bottom 288 rows of the tall screen have no neighbour opposite them.
+        let outputs = [rect(0, 0, 3072, 1728), rect(3072, 0, 2560, 1440)];
+        // Stepping right from inside that band reaches the short screen, at the
+        // lowest row it has, instead of being pushed back.
+        let crossed = clamp_to_outputs_along(
+            (3060.0, 1600.0).into(),
+            (3100.0, 1600.0).into(),
+            outputs.iter().copied(),
+        );
+        assert!(outputs[1].contains(crossed.to_i32_floor()), "{crossed:?}");
+        assert_eq!(crossed.x, 3100.0);
+        assert!(crossed.y > 1439.0 && crossed.y < 1440.0);
+        // Coming back the other way is untouched: it is still on a screen.
+        let back = clamp_to_outputs_along(
+            (3080.0, 1400.0).into(),
+            (3050.0, 1400.0).into(),
+            outputs.iter().copied(),
+        );
+        assert_eq!(back, (3050.0, 1400.0).into());
+        // Pushing down off the bottom has nothing to cross to, so it stops at
+        // the edge it is leaving rather than jumping sideways.
+        let floor = clamp_to_outputs_along(
+            (1000.0, 1700.0).into(),
+            (1000.0, 1800.0).into(),
+            outputs.iter().copied(),
+        );
+        assert_eq!(floor.x, 1000.0);
+        assert!(floor.y > 1727.0 && floor.y < 1728.0);
+        // Nor is there anything past the far right edge.
+        let far = clamp_to_outputs_along(
+            (5600.0, 700.0).into(),
+            (5700.0, 700.0).into(),
+            outputs.iter().copied(),
+        );
+        assert!(outputs[1].contains(far.to_i32_floor()));
+        // A pointer that has not moved is left where it is.
+        let still = clamp_to_outputs_along(
+            (3100.0, 1600.0).into(),
+            (3100.0, 1600.0).into(),
+            outputs.iter().copied(),
+        );
+        assert!(outputs.iter().any(|r| r.contains(still.to_i32_floor())));
     }
     #[test]
     fn absolute_mapping_uses_real_bounds_and_handles_no_outputs() {

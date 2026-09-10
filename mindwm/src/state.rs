@@ -716,6 +716,17 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             prefs.input = Default::default();
         }
         mindbar.set_show_tools(prefs.mind_show_tools.unwrap_or(config.mind.show_tools));
+        // The chosen theme outranks mindwm.toml, and has to be in place before
+        // the first frame: the window frames and title bars read it as they draw.
+        if let Some(rgb) = prefs.accent.as_deref().and_then(crate::config::parse_accent) {
+            crate::config::set_accent_rgb(rgb);
+        } else if let Some(rgb) = crate::config::parse_accent(&config.theme.accent) {
+            crate::config::set_accent_rgb(rgb);
+        }
+        if let Some(rgb) = crate::config::parse_accent(&config.theme.seam) {
+            crate::config::set_seam_rgb(rgb);
+        }
+        mindbar.set_accent(crate::config::accent_color());
         let layout_mode = prefs
             .layout_mode
             .or_else(|| LayoutMode::parse(&config.layout.mode))
@@ -1945,6 +1956,27 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             self.idle.since = Some(std::time::Instant::now());
             self.arm_idle_timer();
             self.idle_changed();
+        }
+        if let Some(accent) = object.get("accent") {
+            let rgb = match accent {
+                // Back to the colour the configuration file asks for.
+                Value::Null => {
+                    self.prefs.accent = None;
+                    crate::config::parse_accent(&self.config.theme.accent).unwrap_or(0x3d_dc97)
+                }
+                Value::String(text) => {
+                    let rgb = crate::config::parse_accent(text)
+                        .ok_or("accent must be a colour like #67dce5")?;
+                    self.prefs.accent = Some(format!("#{rgb:06x}"));
+                    rgb
+                }
+                _ => return Err("accent must be a colour or null".into()),
+            };
+            crate::config::set_accent_rgb(rgb);
+            // The frames and title bars notice by themselves: the colour is
+            // part of what they cache. The Mind bar keeps a tinted shadow.
+            self.mindbar.set_accent(crate::config::accent_color());
+            self.request_repaint();
         }
         self.prefs_changed();
         Ok(())

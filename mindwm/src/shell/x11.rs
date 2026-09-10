@@ -68,7 +68,27 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         // frames) get no bar; everything else gets the MindOS title bar.
         elem.set_ssd(!window.is_decorated());
         let header = elem.header_height();
-        let area = crate::shell::pointer_output_area(&self.space, self.pointer.current_location());
+
+        // ICCCM: a client may state where it wants to sit through WM_NORMAL_HINTS,
+        // and a user-specified position is meant to be honoured. Steam positions
+        // its Settings window that way, over the main Steam window. Placing it by
+        // the pointer instead drops it on whichever monitor the pointer happens to
+        // be on -- routinely not the one Steam itself is on, so the window looks
+        // like it never opened.
+        let requested = requested_client_loc(&window)
+            .filter(|p| self.space.output_under(p.to_f64()).next().is_some());
+        let parent = self.x11_parent(&window);
+        let area = requested
+            .map(|p| crate::shell::pointer_output_area(&self.space, p.to_f64()))
+            .or_else(|| {
+                parent
+                    .as_ref()
+                    .and_then(|e| crate::shell::window_output_area(&self.space, e))
+            })
+            .unwrap_or_else(|| {
+                crate::shell::pointer_output_area(&self.space, self.pointer.current_location())
+            });
+
         let dialog_like = window.is_popup()
             || window.is_transient_for().is_some()
             || !matches!(window.window_type(), None | Some(WmWindowType::Normal));
@@ -79,7 +99,18 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
                 // no usable size hint: something reasonable
                 size = Size::from((area.size.w * 3 / 5, (area.size.h - header) * 3 / 5));
             }
-            let loc = crate::shell::centered(area, (size.w, size.h + header).into());
+            let full = Size::from((size.w, size.h + header));
+            // Where it asked to be, else centred on its parent, else centred.
+            let loc = requested
+                .map(|p| p - Point::from((0, header)))
+                .or_else(|| {
+                    parent
+                        .as_ref()
+                        .and_then(|e| self.space.element_bbox(e))
+                        .map(|b| crate::shell::centered(b, full))
+                })
+                .map(|p| clamp_into(area, p, full))
+                .unwrap_or_else(|| crate::shell::centered(area, full));
             self.space.map_element(elem.clone(), loc, true);
             let _ = window.configure(Rectangle::new(loc + Point::from((0, header)), size));
         } else {
@@ -90,7 +121,18 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         }
         let previous = self.focused_window();
         self.focus_window(&elem);
-        *elem.tile().output.borrow_mut() = self.space.output_under(self.pointer.current_location()).next().map(|o| o.name());
+        // The window may have been placed on an output other than the pointer's.
+        *elem.tile().output.borrow_mut() = self
+            .space
+            .outputs_for_element(&elem)
+            .first()
+            .map(|o| o.name())
+            .or_else(|| {
+                self.space
+                    .output_under(self.pointer.current_location())
+                    .next()
+                    .map(|o| o.name())
+            });
         self.layout.window_opened(&elem, previous);
     }
 
@@ -136,19 +178,39 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         &mut self,
         _xwm: XwmId,
         window: X11Surface,
-        _x: Option<i32>,
-        _y: Option<i32>,
+        x: Option<i32>,
+        y: Option<i32>,
         w: Option<u32>,
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        // we just set the new size, but don't let windows move themselves around freely
         let mut geo = window.geometry();
         if let Some(w) = w {
             geo.size.w = w as i32;
         }
         if let Some(h) = h {
             geo.size.h = h as i32;
+        }
+        // A tiled, maximised or fullscreen window is placed by the shell, so its
+        // position is not the client's to pick. A floating one may move itself:
+        // dropping the request silently leaves the client believing it sits
+        // where it asked to be, which misplaces anything it positions relative
+        // to that window and offsets its own input handling.
+        let elem = self
+            .space
+            .elements()
+            .find(|e| matches!(e.0.x11_surface(), Some(s) if s == &window))
+            .cloned();
+        let shell_placed = window.is_maximized()
+            || window.is_fullscreen()
+            || elem.as_ref().is_some_and(|e| self.layout.is_tiled(e));
+        if !shell_placed {
+            if let Some(x) = x {
+                geo.loc.x = x;
+            }
+            if let Some(y) = y {
+                geo.loc.y = y;
+            }
         }
         let _ = window.configure(geo);
     }
@@ -381,7 +443,33 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 }
 
+/// The position a client asked for in WM_NORMAL_HINTS, if it gave one.
+fn requested_client_loc(window: &X11Surface) -> Option<Point<i32, Logical>> {
+    let (_, x, y) = window.size_hints()?.position?;
+    Some(Point::from((x, y)))
+}
+
+/// Keep a window of `size` placed at `loc` inside `area`.
+fn clamp_into(
+    area: Rectangle<i32, Logical>,
+    loc: Point<i32, Logical>,
+    size: Size<i32, Logical>,
+) -> Point<i32, Logical> {
+    let max_x = area.loc.x + (area.size.w - size.w).max(0);
+    let max_y = area.loc.y + (area.size.h - size.h).max(0);
+    Point::from((loc.x.clamp(area.loc.x, max_x), loc.y.clamp(area.loc.y, max_y)))
+}
+
 impl<BackendData: Backend> AnvilState<BackendData> {
+    /// The mapped window a transient names in WM_TRANSIENT_FOR.
+    pub fn x11_parent(&self, window: &X11Surface) -> Option<WindowElement> {
+        let parent = window.is_transient_for()?;
+        self.space
+            .elements()
+            .find(|e| matches!(e.0.x11_surface(), Some(s) if s.window_id() == parent))
+            .cloned()
+    }
+
     pub fn maximize_request_x11(&mut self, window: &X11Surface) {
         let Some(elem) = self
             .space

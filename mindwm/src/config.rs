@@ -4,6 +4,7 @@
 //! (and `$MINDWM_CONFIG`); later files override individual keys.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::Deserialize;
 use smithay::backend::renderer::Color32F;
@@ -120,6 +121,10 @@ pub struct Theme {
     pub foreground: String,
     /// The accent colour (Mind bar lines, selection, wordmark glow).
     pub accent: String,
+    /// The colour of a seam: the side of a tile that touches another tile.
+    /// Bright and focus-independent, so the two lines either side of a gap
+    /// match and two dark windows never read as one.
+    pub seam: String,
     /// Draw the "MINDOS" startup screen (wordmark and key hints) until the
     /// shell puts its desktop up.
     pub show_wordmark: bool,
@@ -136,6 +141,7 @@ impl Default for Theme {
             background: "#080a0e".into(),
             foreground: "#edf2f8".into(),
             accent: "#3ddc97".into(),
+            seam: "#edf2f8".into(),
             show_wordmark: true,
             cursor_theme: "MindOS".into(),
             cursor_size: 24,
@@ -190,6 +196,53 @@ impl Config {
     pub fn accent(&self) -> [f32; 4] {
         parse_color(&self.theme.accent).unwrap_or(ACCENT)
     }
+}
+
+/// The accent in force right now, packed as 0xRRGGBB.
+///
+/// The user picks a palette in Settings > Appearance and it has to reach the
+/// window frames, the title bars and the Mind bar. The render paths that draw
+/// them are handed a window and a scale, not the configuration, so the colour
+/// lives here instead of being threaded through every signature. It changes
+/// when the user picks a theme and at no other time; the drawing caches keep
+/// the value they were drawn with and redraw themselves when it differs.
+static ACCENT_RGB: AtomicU32 = AtomicU32::new(0x3d_dc97);
+
+pub fn accent_rgb() -> u32 {
+    ACCENT_RGB.load(Ordering::Relaxed)
+}
+
+pub fn accent_color() -> [f32; 4] {
+    crate::text::hex(accent_rgb())
+}
+
+pub fn set_accent_rgb(rgb: u32) {
+    ACCENT_RGB.store(rgb & 0xff_ffff, Ordering::Relaxed);
+}
+
+/// The seam colour, kept the same way as the accent and for the same reason:
+/// the frame is drawn far from the configuration.
+static SEAM_RGB: AtomicU32 = AtomicU32::new(0xed_f2f8);
+
+pub fn seam_rgb() -> u32 {
+    SEAM_RGB.load(Ordering::Relaxed)
+}
+
+pub fn set_seam_rgb(rgb: u32) {
+    SEAM_RGB.store(rgb & 0xff_ffff, Ordering::Relaxed);
+}
+
+/// The accent as `#rrggbb`, for the preferences file and the shell.
+pub fn accent_hex() -> String {
+    format!("#{:06x}", accent_rgb())
+}
+
+/// `#rrggbb` (or `#rgb`) as packed 0xRRGGBB; the alpha of an 8-digit colour
+/// is dropped, a frame ring draws its own.
+pub fn parse_accent(s: &str) -> Option<u32> {
+    let c = parse_color(s)?;
+    let channel = |v: f32| ((v.clamp(0.0, 1.0) * 255.0).round() as u32) & 0xff;
+    Some((channel(c[0]) << 16) | (channel(c[1]) << 8) | channel(c[2]))
 }
 
 fn merge(base: &mut toml::Table, overlay: toml::Table) {
@@ -249,5 +302,23 @@ mod tests {
         assert_eq!(Apps::default().terminal, "kitty");
         let cfg: Config = toml::from_str("[apps]\nterminal = 'ghostty'").unwrap();
         assert_eq!(cfg.apps.terminal_command("htop"), "ghostty -e sh -c 'htop'");
+    }
+
+    #[test]
+    fn an_accent_survives_the_trip_to_the_frames_and_back() {
+        // The shell sends "#rrggbb", the frames cache a u32 and the
+        // preferences file is written from that same u32.
+        assert_eq!(parse_accent("#67dce5"), Some(0x67dce5));
+        assert_eq!(parse_accent("67dce5"), Some(0x67dce5));
+        assert_eq!(parse_accent("#fff"), Some(0xffffff));
+        // an alpha is not a frame's to keep: the ring sets its own
+        assert_eq!(parse_accent("#67dce580"), Some(0x67dce5));
+        assert_eq!(parse_accent("not a colour"), None);
+
+        set_accent_rgb(0x67dce5);
+        assert_eq!(accent_rgb(), 0x67dce5);
+        assert_eq!(accent_hex(), "#67dce5");
+        assert_eq!(accent_color(), crate::text::hex(0x67dce5));
+        set_accent_rgb(0x3ddc97);
     }
 }

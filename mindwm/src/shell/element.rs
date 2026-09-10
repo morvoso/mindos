@@ -615,6 +615,9 @@ where
                     focused: bar.is_focused(),
                     radius: RADIUS,
                     shadow: if bar.is_tiled() { TILE_SHADOW } else { SHADOW },
+                    accent: crate::config::accent_rgb(),
+                    seams: self.tile().seams.get(),
+                    seam: crate::config::seam_rgb(),
                 };
                 let size = (window_geo.size.w, window_geo.size.h + header).into();
                 let WindowState { frame, .. } = &mut *state;

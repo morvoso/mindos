@@ -184,6 +184,19 @@ textures to composite. The window itself is drawn over the frame.
 Maximised and fullscreen windows have no frame; windows that draw their own
 decorations get neither the bar nor the frame.
 
+The ring around a lone window is nearly invisible on purpose, which is the
+wrong answer where two tiles meet: over the dark desktop, two dark windows
+either side of an 8 px gap read as one wide window. So in the tiling modes
+each tile's frame draws a **seam** — the same 1 px band, in `[theme].seam`
+(`#edf2f8` by default) at a much higher opacity — on the sides that face
+another tile, and nowhere else. The outer edges of a tiling stay hairlines,
+and a floating window has no seams at all. `src/layout.rs` works out which
+sides touch (`seams_against`: within the layout gap, and overlapping along
+the shared edge) as it arranges each output, and the frame cache keys on the
+mask, so the eight textures are still shared by every tile of the same shape.
+The colour does not follow the focus: both tiles bracketing a gap draw their
+half of it, and a pair of matching lines is what makes the gap read as a gap.
+
 A window that asks for
 client-side decorations gets none from the compositor; one that never asks
 gets none either, except the shell's app windows (`mindos-settings`), which
@@ -366,11 +379,48 @@ Two protocols hang off the same clock: `ext-idle-notify-v1`, so a program can
 be told how long the session has been idle, and `zwp_idle_inhibit_v1`, so a
 video player or a game can hold all of it off. The shell holds the session
 awake the same way (`inhibit_idle`) while GameMode reports a running game.
+It also asks for the game's screen to be cleared (`game_scene`): see
+*A game gets a screen to itself* below.
 Both only count while *Stay awake while something is playing* is set.
 
 Where it all stands is broadcast as the `idle` event
 (`{ stage, locked, inhibited, saver }`) and can be asked for with `get_idle`;
 `lock`, `unlock`, `wake` and `blank` drive it from the shell.
+
+## A game gets a screen to itself
+
+When GameMode reports a running game the shell also sends `game_scene`, and
+the compositor moves everything else off the game's screen onto the others:
+the chat window, the browser playing something and the terminal all end up
+next door, where they can be seen, instead of stacked behind the game.
+
+The game's screen is the one with a fullscreen window, failing that the one
+with a maximised window (a borderless game is only maximised), then the
+focused window's screen, then the pointer's. On that screen everything moves
+except the game itself (whatever is fullscreen or maximised), the focused
+window when nothing there is fullscreen or maximised, and the launchers — Steam, Heroic, Lutris, Bottles, gamescope and the
+`steam_app_NNN` ids XWayland gives a Steam game — since a launcher on that
+screen is quite possibly what started the game a second ago. Everything else
+goes to the nearest other screen; a tile is placed by the layout there, and a
+floating window keeps the offset it had from its old screen's corner, trimmed
+to fit.
+
+None of it is permanent. Each window that moves remembers where it came from
+and what geometry it had (`TileData::away`), and `game_scene` with `on: false`
+puts it all back when the game ends — including after a game that crashes,
+since the counter falls either way. A window the user has moved somewhere
+else in the meantime is left where they put it, and a window whose old screen
+has been unplugged stays put too. With one display there is nowhere to move
+anything to and the request does nothing.
+
+The shell waits `GAME_SETTLE` (2.5 s) after the counter goes up before asking,
+because GameMode counts the launcher's process before the game has a window,
+let alone a fullscreen one, and the compositor picks the screen by looking at
+the windows. A game that starts and stops inside that wait never moves
+anything. Coming back is immediate.
+
+Windows opened *during* a game are not steered: the desktop is the user's, and
+dragging something onto the game's screen on purpose should stick.
 
 ## The shell IPC
 
@@ -426,6 +476,7 @@ autopilot = false      # true: apply "change" actions without asking
 background = "#05070a"   # the MindOS void
 foreground = "#e6edf3"
 accent = "#19e3ff"       # Mind bar lines, selection, wordmark glow
+seam = "#edf2f8"         # the side of a tile that touches another tile
 show_wordmark = true     # the startup screen, until the shell's desktop is up
 cursor_theme = "MindOS"  # the pointer; Settings > Desktop > Pointer overrides both
 cursor_size = 24

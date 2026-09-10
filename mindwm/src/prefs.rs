@@ -24,6 +24,9 @@ pub struct Prefs {
     /// which is what GTK applications follow; the compositor keeps a copy so
     /// its own cursor is right before the shell has started.
     pub cursor_theme: Option<String>,
+    /// The accent the compositor draws its chrome in (`#rrggbb`), chosen in
+    /// Settings > Appearance. None leaves the colour from `mindwm.toml`.
+    pub accent: Option<String>,
     pub cursor_size: Option<u32>,
     /// What happens when nobody touches the machine (Settings > Screen).
     pub idle: IdleSettings,

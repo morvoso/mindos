@@ -511,6 +511,7 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `wake` | | wake the screen (undo the screensaver or blanking) without touching the lock |
 | `blank` | | switch the displays off now (and lock, when *Lock when the displays turn off* is set) |
 | `inhibit_idle` | `on` | hold the session awake while this client is connected — what the shell does while a game runs. Dropped with the connection |
+| `game_scene` | `on` | clear the game's screen (`true`) or give everything back (`false`) — what the shell sends 2.5 s after GameMode reports a game, and at once when it ends. Nothing on a single display |
 | `tray_click` | `icon` (the `id` from the `tray` event), `button` (1 left, 2 middle, 3 right, 4/5 wheel up/down, 6/7 wheel left/right) | replays the click on the XEmbed icon at the pointer's position, so the program's own menu opens under the cursor |
 | `set_output` | `name`, then any of `width` + `height` + `refresh` (mHz), `scale`, `position: [x, y]`, `transform`, `enabled`, `vrr`, `primary` | applies the mode/scale/position/rotation/VRR/primary change, persists it and sends an `outputs` event |
 
