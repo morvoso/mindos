@@ -21,12 +21,15 @@
 #   mindos-boot setup                  first-time snapper and snap-pac setup
 #
 # Settings: /etc/mindos/boot.conf. Menu colours: /usr/share/mindos/limine-theme.conf.
+# Other operating systems: /etc/mindos/boot.d/*.conf, Limine entries copied into
+# the menu as they are, so they survive every kernel and snapshot update.
 set -euo pipefail
 
 ESP=/boot
 STORE=$ESP/mindos            # kernels for snapshots: mindos/k/<id>/, mindos/snapshots/<N>
 SNAPDIR=/.snapshots
 CONF=/etc/mindos/boot.conf
+BOOTD=/etc/mindos/boot.d      # entries for other systems, copied verbatim
 THEME=/usr/share/mindos/limine-theme.conf
 CMDLINE_FILE=/usr/share/mindos/kernel-cmdline
 KERNEL=linux-mindos
@@ -166,7 +169,7 @@ entry() {  # depth+title, comment, kernel path, initramfs path, cmdline
   printf '    module_path: %s\n' "$initrd"
 }
 write_config() {
-  local uuid cmd tmp k name ver n id info type date desc imp shown=0 kind
+  local uuid cmd tmp k name ver n id info type date desc imp shown=0 kind f
   uuid=$(btrfs_uuid); [[ -n $uuid ]] || die "cannot find the btrfs file system ($SNAPDIR is not mounted)"
   cmd=$(kernel_cmdline)
   ver=$(kernel_version "$KERNEL")
@@ -186,6 +189,14 @@ write_config() {
       [[ $name != "$KERNEL" && -f $ESP/initramfs-$name.img ]] || continue
       entry "/MindOS ($name)" "$name $(kernel_version "$name")" "boot():/vmlinuz-$name" "boot():/initramfs-$name.img" \
             "root=UUID=$uuid rootflags=subvol=@ rw $cmd"
+    done
+    # Other systems, as their files have them: this machine may dual boot, and
+    # the menu is rewritten on every kernel update, so the entries cannot live
+    # in limine.conf itself.
+    for f in "$BOOTD"/*.conf; do
+      [[ -r $f ]] || continue
+      printf '\n'
+      grep -v '^[[:space:]]*#' "$f" || true
     done
     for n in $(snapshots | sort -rn); do
       snapshot_bootable "$n" || continue

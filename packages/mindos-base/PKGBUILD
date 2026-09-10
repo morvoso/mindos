@@ -48,6 +48,7 @@ package() {
   # /boot/limine.conf, keeps a kernel copy per snapper snapshot and restores one.
   install -Dm755 mindos-boot                "$pkgdir/usr/bin/mindos-boot"
   install -Dm644 boot.conf                  "$pkgdir/etc/mindos/boot.conf"
+  install -dm755                            "$pkgdir/etc/mindos/boot.d"
   install -Dm644 snapper-root               "$pkgdir/etc/snapper/configs/root"
   install -Dm755 10-mindos-boot             "$pkgdir/usr/lib/snapper/plugins/10-mindos-boot"
   install -Dm755 snapshot-prune            "$pkgdir/usr/lib/mindos/snapshot-prune"
