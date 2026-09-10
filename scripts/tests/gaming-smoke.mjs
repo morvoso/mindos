@@ -92,14 +92,14 @@ try {
   await waitFor("!!document.querySelector('.embedded-app .page-home')");
   assert.match(await evaluate("document.querySelector('.gaming-edition').textContent"), /Settings/);
   await shot('desktop-settings');
-  await evaluate("document.querySelector('.desktop-panel-toolbar button').click(); document.querySelectorAll('.workspace-modes button')[1].click()");
+  await evaluate("document.querySelector('.desktop-panel-toolbar button').click(); document.querySelectorAll('.mode-switch button')[1].click()");
   await waitFor("!!document.querySelector('.productivity-workspace')");
   assert.doesNotMatch(await evaluate("document.querySelector('.gaming-nav').textContent"), /Gaming Center|Capture/);
   await evaluate("const n = document.querySelector('.work-notes'); n.value = 'Finish the budget'; n.dispatchEvent(new Event('input'))");
   await shot('desktop-productivity');
-  await evaluate("document.querySelectorAll('.workspace-modes button')[0].click()");
+  await evaluate("document.querySelectorAll('.mode-switch button')[0].click()");
   await waitFor("document.querySelector('.game-library')?.getAttribute('aria-busy') === 'false'");
-  await evaluate("document.querySelectorAll('.workspace-modes button')[1].click()");
+  await evaluate("document.querySelectorAll('.mode-switch button')[1].click()");
   assert.equal(await evaluate("document.querySelector('.work-notes').value"), 'Finish the budget');
   await evaluate("window.mindos._dispatch('outputs', { outputs: [{name:'Virtual-1',width:1440,height:1000,x:0,y:0,scale:1,primary:false},{name:'Virtual-2',width:1440,height:1000,x:1440,y:0,scale:1,primary:true}] })");
   assert.equal(await evaluate("document.querySelector('.gaming-workspace')"), null, 'Secondary output has no workspace');
@@ -107,7 +107,7 @@ try {
   await shot('secondary-wallpaper');
   await evaluate("window.mindos._dispatch('outputs', { outputs: [{name:'Virtual-1',width:1440,height:1000,x:0,y:0,scale:1,primary:true},{name:'Virtual-2',width:1440,height:1000,x:1440,y:0,scale:1}] })");
   assert.equal(await evaluate("document.querySelector('.work-notes').value"), 'Finish the budget');
-  await evaluate("document.querySelectorAll('.workspace-modes button')[0].click()");
+  await evaluate("document.querySelectorAll('.mode-switch button')[0].click()");
   await waitFor("document.querySelector('.game-library')?.getAttribute('aria-busy') === 'false'");
 
   await evaluate("document.querySelector('[aria-label=\"Use light theme\"]').click()");

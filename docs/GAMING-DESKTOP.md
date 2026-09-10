@@ -23,17 +23,21 @@ Browser fixture previews: [Gaming Center](img/gaming-center.png) ·
 [Frame history](img/gaming-history.png) · [Companion](img/gaming-companion.png).
 Installed systems use native service data.
 
-[Productivity preview](img/productivity-desktop.png) · [Embedded Settings](img/desktop-settings.png)
+[Work preview](img/productivity-desktop.png) · [Embedded Settings](img/desktop-settings.png)
 
-## Gaming and Productivity
+## Gaming and Work
 
-The header switches between **Gaming** and **Productivity**, with a brief 240 ms
-fade/slide. Reduced-motion and GameMode disable the transition. No animation runs
-at rest. The header reads `MINDOS // <panel title>` and has an icon-only theme
-switch; hardware readings appear only in the System panel.
+The header carries the mode switch: one recessed track with two stops
+(**Gaming** and **Work**, the productivity desktop) and a lit thumb that slides
+onto the live one. It is a radio group -- the arrow keys move between the stops
+-- and below 1100px the labels drop, leaving the two glyphs. Switching modes
+rebuilds the workspace with a brief 240 ms fade/slide. Reduced-motion and
+GameMode disable the transition. No animation runs at rest. The header reads
+`MINDOS // <panel title>` and has an icon-only theme switch; hardware readings
+appear only in the System panel.
 
 Gaming has the library, sessions, downloads, friends and system tools.
-Productivity has everyday application launchers, recent files from Documents,
+Work has everyday application launchers, recent files from Documents,
 persistent desktop notes and this monitor's open windows. Missing applications
 open Software settings. The mode and notes are saved in `desktop.workspace` in
 layout.json. Switching modes does not close applications or change power profiles.

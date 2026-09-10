@@ -8,12 +8,13 @@ import { h } from './dom';
 import { rectIn } from './geometry';
 import { renderGamingDesktop } from './gaming-desktop';
 import { icon } from './icons';
+import { modeSwitch, type WorkspaceMode } from './mode-switch';
 import { store } from './state';
 import { systemControls } from './system-menu';
 import { renderDesktopIcons } from './desktop-icons';
 import type { Layout, WorkspaceShortcut } from './types';
 
-type Mode = 'gaming' | 'productivity';
+type Mode = WorkspaceMode;
 type Page = { name: string; page?: string; arg?: string };
 export function isMainOutput(output: string): boolean {
   const outputs = store.state.outputs;
@@ -43,18 +44,19 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
         const primary = isMainOutput(output);
         if (primary === previousPrimary && (!primary || mountedMode === mode())) return;
         const previous = dispose;
+        const previousMode = mountedMode;
         dispose = undefined; openPage = undefined; mountedMode = undefined;
         previous?.();
         previousPrimary = primary;
         if (!primary) continue;
         mountedMode = mode();
-        dispose = mountMode(mountedMode, animate);
+        dispose = mountMode(mountedMode, animate, previousMode);
       } while (again);
     } finally {
       mounting = false;
     }
   }
-  function mountMode(current: Mode, animate: boolean): () => void {
+  function mountMode(current: Mode, animate: boolean, from?: Mode): () => void {
     const offs: (() => void)[] = [];
     let systemDispose: (() => void) | undefined;
     let alive = true;
@@ -139,7 +141,7 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
       if (app) await bridge.call('apps.launch', { id: app.id });
       else openPage?.({ name: 'settings', page: 'software' });
     });
-    nav.replaceChildren(h('span', { class: 'gaming-meta' }, current === 'gaming' ? 'Gaming' : 'Productivity'),
+    nav.replaceChildren(h('span', { class: 'gaming-meta' }, current === 'gaming' ? 'Gaming' : 'Work'),
       link(homeTitle, current === 'gaming' ? 'gamepad' : 'grid', showHome, 'home'),
       ...(current === 'gaming' ? [link('Gaming Center', 'sliders', open('gaming'), 'gaming')] : [
         link('Documents', 'folder', run(() => bridge.call('fs.open', { path: '~/Documents' }))),
@@ -148,11 +150,9 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
       link('Settings', 'gear', open('settings'), 'settings'),
       ...(current === 'productivity' && productivityCustomNav ? [productivityCustomNav] : []),
       h('span', { class: 'gaming-nav-bottom gaming-meta' }, 'Super + Space'));
-    const modes = h('div', { class: 'workspace-modes', role: 'group', 'aria-label': 'Desktop mode' }, ...(['gaming', 'productivity'] as const).map(m => h('button', {
-      class: 'btn', 'aria-pressed': String(current === m), onclick: () => {
-        if (m !== mode()) store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: m, notes: l.desktop.workspace?.notes ?? '' }; });
-      },
-    }, icon(m === 'gaming' ? 'gamepad' : 'grid', 14), m === 'gaming' ? 'Gaming' : 'Productivity')));
+    const modes = modeSwitch(current, m => {
+      if (m !== mode()) void store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: m, notes: l.desktop.workspace?.notes ?? '' }; });
+    }, animate ? from : undefined);
     header.insertBefore(modes, header.querySelector('.header-actions'));
     showHome();
     return () => { alive = false; bridge.send('desktop.panel', { active: false }); systemDispose?.(); offs.forEach(off => off()); area.remove(); };

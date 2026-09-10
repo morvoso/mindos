@@ -7,7 +7,7 @@ Gaming desktop checks: `python3 scripts/tests/test_games.py` validates local
 launcher discovery and launch handoff in an isolated home. After building the
 UI, `node scripts/tests/gaming-smoke.mjs` checks library actions, light/dark
 preferences, static wallpaper, frosted glass and responsive desktop/login layouts.
-It also checks Gaming/Productivity switching, persisted notes, embedded Settings,
+It also checks Gaming/Work switching, persisted notes, embedded Settings,
 primary-output migration and wallpaper-only secondary desktops.
 The same smoke test covers Gaming Center sessions, account errors, save backups,
 storage review, per-app audio, frame graphs, companion notes and the password

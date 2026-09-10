@@ -1516,7 +1516,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 }
 @media (max-width:1150px) {
  .gaming-workspace {grid-template-columns:124px minmax(0,1fr) 240px;gap:14px;padding-right:14px}
- .gaming-menubar {margin-right:-14px;gap:16px}.gaming-edition {display:none}.gaming-nav {padding-left:10px}
+ .gaming-menubar {margin-right:-14px;gap:16px}.gaming-edition {display:none}.gaming-brand {margin-right:auto}.gaming-nav {padding-left:10px}
  .gaming-nav-link {font-size:9px;gap:7px}.gaming-nav-link svg {width:14px}.game-library-body {padding:12px}
  .game-feature {min-height:200px}.game-feature-copy {padding:17px}.game-feature-copy h1 {font-size:28px}
  .game-grid {grid-template-columns:repeat(3,minmax(0,1fr))}.game-toolbar {flex-wrap:wrap}.game-toolbar .game-search {flex-basis:100%}
@@ -1657,9 +1657,28 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 
 /* The primary screen owns the desktop workspace; other outputs are wallpaper. */
 .secondary-desktop > :not(.wallpaper) {display:none!important}
-.workspace-modes {display:flex;gap:4px;margin-left:auto;flex-shrink:0}
-.workspace-modes .btn {font-size:11px;padding:5px 9px;gap:6px}
-.workspace-modes .btn[aria-pressed=true] {border-color:var(--accent);box-shadow:var(--glow-accent);color:var(--accent)}
+/* The mode switch: one recessed track with two stops and a lit thumb on the
+   live one. The thumb slides rather than blinks, and the track is the only
+   pill in the bar, so the control reads as the switch it is. */
+.mode-switch {position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;align-items:stretch;flex-shrink:0;padding:3px;border:1px solid var(--glass-border);border-radius:999px;background:rgb(0 0 0 / .22);box-shadow:inset 0 1px 2px rgb(0 0 0 / .3)}
+.mode-switch-thumb {position:absolute;top:3px;bottom:3px;left:3px;width:calc(50% - 3px);border-radius:999px;background:linear-gradient(180deg,rgb(var(--accent-a) / .30),rgb(var(--accent-a) / .12));box-shadow:0 0 0 1px rgb(var(--accent-a) / .5),0 4px 14px rgb(var(--accent-a) / .22),inset 0 1px 0 rgb(255 255 255 / .18);transition:transform var(--spring);pointer-events:none}
+.mode-switch[data-mode=productivity] .mode-switch-thumb {transform:translateX(100%)}
+.mode-opt {position:relative;z-index:1;display:flex;align-items:center;justify-content:center;gap:7px;min-height:26px;padding:0 13px;border:0;border-radius:999px;background:transparent;color:var(--fg-faint);font:600 10px/1 var(--ui);letter-spacing:.11em;text-transform:uppercase;white-space:nowrap;cursor:pointer;transition:color var(--fast)}
+.mode-opt .ic {flex:none;opacity:.75;transition:opacity var(--fast)}
+.mode-opt:hover {color:var(--fg-dim)}
+.mode-opt:hover .ic {opacity:1}
+.mode-opt[aria-checked=true] {color:var(--accent)}
+.mode-opt[aria-checked=true] .ic {opacity:1}
+.mode-opt:focus-visible {outline:0;box-shadow:var(--ring)}
+/* On the light theme the track is a shallow well rather than a dark one,
+   and the thumb keeps a white body so the lit label stays readable. */
+:root[data-theme=light] .mode-switch {background:rgb(0 0 0 / .05);box-shadow:inset 0 1px 2px rgb(0 0 0 / .08)}
+:root[data-theme=light] .mode-switch-thumb {background:linear-gradient(180deg,#fff,rgb(var(--accent-a) / .12));box-shadow:0 0 0 1px rgb(var(--accent-a) / .4),0 2px 6px rgb(0 0 0 / .12)}
+/* The bar is two clusters: who you are on the left, what you can change on
+   the right. One automatic margin between them, so the right-hand cluster
+   stays a cluster instead of spreading across the bar. */
+.gaming-menubar > .gaming-edition {margin-right:auto}
+.gaming-menubar > .gaming-top-status,.gaming-menubar > .header-actions {margin-left:0}
 .gaming-edition {white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:35vw}
 .system-page-open {grid-template-columns:144px minmax(0,1fr)}
 .desktop-system-panel {grid-column:2;grid-row:2;min-height:0;display:flex;flex-direction:column;border:1px solid var(--glass-border-strong);background:rgb(var(--glass) / .72);box-shadow:var(--shadow-2)}
@@ -1702,7 +1721,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .work-file small {color:var(--fg-faint);font-size:11px}
 .work-notes {display:block;width:calc(100% - 36px);min-height:180px;margin-top:15px;padding:10px;background:var(--surface);border:1px solid var(--hairline);color:var(--fg);resize:vertical;line-height:1.65}
 .workspace-error {position:absolute;bottom:0;left:165px;background:var(--bg-0);padding:12px;color:var(--danger);max-width:80%}
-@media(max-width:1100px) {.workspace-modes .btn{font-size:10px;padding:5px}.gaming-menubar{gap:12px}.gaming-top-status{display:none}.desktop-system-body .app-settings{grid-template-columns:185px minmax(0,1fr)}}
+@media(max-width:1100px) {.mode-opt{padding:0 9px;gap:0}.mode-opt-label{display:none}.gaming-menubar{gap:12px}.gaming-top-status{display:none}.desktop-system-body .app-settings{grid-template-columns:185px minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce) {.gaming-workspace{animation:none!important}}
 .work-file {border:0;border-bottom:1px solid var(--hairline)}
 .work-file:hover {background:var(--surface-hover);color:var(--accent)}

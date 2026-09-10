@@ -120,7 +120,7 @@ export function shellPage(el: HTMLElement): () => void {
   const iconsToggle = toggle(store.state.layout.desktop.icons !== false, (v) => void store.updateLayout((l) => { l.desktop.icons = v; }));
   const modeButtons = h('div', { class: 'segs' }, ...(['gaming', 'productivity'] as const).map((m) =>
     h('button', { class: `seg${(workspace()?.mode ?? 'gaming') === m ? ' on' : ''}`, dataset: { mode: m }, onclick: () => void store.updateLayout((l) => { l.desktop.workspace = { ...l.desktop.workspace, mode: m, notes: l.desktop.workspace?.notes ?? '' }; }) },
-      icon(m === 'gaming' ? 'gamepad' : 'grid', 14), m === 'gaming' ? 'Gaming' : 'Productivity')));
+      icon(m === 'gaming' ? 'gamepad' : 'grid', 14), m === 'gaming' ? 'Gaming' : 'Work')));
   const syncDesktop = () => {
     if (document.activeElement !== activateSel) activateSel.value = workspace()?.activate ?? 'single';
     (iconsToggle.querySelector('input') as HTMLInputElement).checked = store.state.layout.desktop.icons !== false;
@@ -136,7 +136,7 @@ export function shellPage(el: HTMLElement): () => void {
     ),
     card(
       'Desktop',
-      row('Mode', 'Gaming puts your library front and centre. Productivity gives you shortcuts, files and notes. The choice is remembered across restarts.', modeButtons),
+      row('Mode', 'Gaming puts your library front and centre. Work gives you shortcuts, files and notes. The switch is in the top bar, and the choice is remembered across restarts.', modeButtons),
       row('Opening items', 'How many clicks open a shortcut or a file on the desktop. The menu down the left side always takes one.', activateSel),
       row('Show desktop files', 'Lay the contents of your Desktop folder out on the wallpaper.', iconsToggle),
     ),
