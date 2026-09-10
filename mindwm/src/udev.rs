@@ -1,6 +1,5 @@
 use std::{
     collections::hash_map::HashMap,
-    io,
     ops::Not,
     path::Path,
     sync::{atomic::Ordering, Mutex, Once},
@@ -8,6 +7,7 @@ use std::{
 };
 
 use crate::{
+    config::DirectScanout,
     drawing::*,
     ipc::{ModeInfo, OutputInfo},
     render::*,
@@ -37,7 +37,7 @@ use smithay::{
             VrrSupport,
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            CreateDrmNodeError, DrmAccessError, DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmEventMetadata,
+            CreateDrmNodeError, DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmEventMetadata,
             DrmEventTime, DrmNode, DrmSurface, GbmBufferedSurface, NodeType,
         },
         egl::{self, context::ContextPriority, EGLDevice, EGLDisplay},
@@ -45,7 +45,10 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             damage::Error as OutputDamageTrackerError,
-            element::{memory::MemoryRenderBuffer, AsRenderElements, RenderElementStates},
+            element::{
+                memory::MemoryRenderBuffer, AsRenderElements, Element as RenderElement,
+                Id as RenderElementId, RenderElementStates,
+            },
             gles::GlesRenderer,
             multigpu::{gbm::GbmGlesBackend, GpuManager, MultiRenderer},
             DebugFlags, ImportDma, ImportMemWl,
@@ -360,9 +363,13 @@ impl Backend for UdevData {
         for (node, device) in state.backend_data.backends.iter_mut() {
             for (crtc, surface) in device.surfaces.iter_mut() {
                 surface.dirty = true;
-                if surface.repaint_timer.as_ref().is_some_and(|armed| armed.idle) {
-                    // Idle: draw at the next turn of the loop, once this batch
-                    // of events has been handled, rather than at the tick.
+                let idle = surface.repaint_timer.as_ref().is_some_and(|armed| armed.idle);
+                // Nothing armed and nothing in flight is a stopped loop: this
+                // is the last place that can notice before the watchdog does.
+                let stopped = surface.repaint_timer.is_none() && surface.flip.is_none();
+                if idle || stopped {
+                    // Draw at the next turn of the loop, once this batch of
+                    // events has been handled, rather than at the tick.
                     arm_repaint(&state.handle, surface, *node, *crtc, Timer::immediate(), None, false);
                 }
             }
@@ -402,6 +409,13 @@ impl Backend for UdevData {
                     if let Err(err) = surface.drm_output.with_compositor(|c| c.clear()) {
                         warn!(?err, "cannot switch a display off");
                     }
+                    // Clearing drops the queued frame, so its vblank is not
+                    // coming: the deadline would fire on a display that is
+                    // off on purpose.
+                    if let Some(flip) = surface.flip.take() {
+                        state.handle.remove(flip.deadline);
+                    }
+                    surface.flip_scanout = None;
                 }
             }
             return;
@@ -412,6 +426,7 @@ impl Backend for UdevData {
             if let Some(device) = state.backend_data.backends.get_mut(&node) {
                 for surface in device.surfaces.values_mut() {
                     surface.drm_output.reset_buffers();
+                    surface.dirty = true;
                 }
             }
             state
@@ -626,6 +641,17 @@ pub fn run_udev() {
                     }
                     for surface in backend.surfaces.values_mut() {
                         surface.drm_output.reset_buffers();
+                        // The display was off across the handover, so any page
+                        // flip still in flight lost its completion event. Drop
+                        // it here rather than let its deadline reset an output
+                        // that is already being repainted from scratch.
+                        if let Some(flip) = surface.flip.take() {
+                            data.handle.remove(flip.deadline);
+                        }
+                        surface.flip_scanout = None;
+                        surface.last_presentation_time = None;
+                        surface.frame_target = None;
+                        surface.dirty = true;
                     }
                     if let Some(lease_global) = backend.leasing_global.as_mut() {
                         lease_global.resume::<AnvilState<UdevData>>();
@@ -819,6 +845,17 @@ pub fn run_udev() {
         })
         .unwrap();
 
+    // An output whose page flip never completes, or whose repaint loop
+    // stopped without a word, would otherwise stay frozen until the
+    // session ends. Look at every output twice a second.
+    event_loop
+        .handle()
+        .insert_source(Timer::from_duration(WATCHDOG_TICK), move |_, _, data| {
+            data.check_outputs_alive();
+            TimeoutAction::ToDuration(WATCHDOG_TICK)
+        })
+        .expect("failed to arm the output watchdog");
+
     /*
      * Start XWayland if supported
      */
@@ -950,7 +987,6 @@ struct SurfaceData {
         Option<OutputPresentationFeedback>,
         DrmDeviceFd,
     >,
-    disable_direct_scanout: bool,
     connector: connector::Handle,
     /// Every mode the connector advertises (for the Displays settings).
     modes: Vec<DrmMode>,
@@ -970,7 +1006,40 @@ struct SurfaceData {
     repaint_timer: Option<RepaintTimer>,
     /// Something changed since the last repaint began.
     dirty: bool,
+    /// The page flip in flight, if any: when it was queued and the deadline
+    /// that fires if its vblank never arrives.
+    flip: Option<Flip>,
+    /// What the frame in flight put straight on the primary plane, if
+    /// anything. A buffer the compositor does not own is the kind that can
+    /// hold a flip on a fence that never signals, so a flip that times out
+    /// with this set costs the output its direct scan-out.
+    flip_scanout: Option<RenderElementId>,
+    /// Watchdog ticks in a row that found neither a timer armed nor a frame
+    /// in flight. One is a coincidence; two is a dead loop.
+    dead_ticks: u8,
+    /// Recoveries since a frame last reached the screen. Rising means the
+    /// output is not coming back from a surface-level reset.
+    recoveries: u8,
+    /// What this output is allowed to put on the planes. Starts at the
+    /// configured policy and only ever gets narrower, when scanning out
+    /// costs us a frozen output.
+    scanout: DirectScanout,
 }
+
+/// The page flip waiting for its vblank.
+struct Flip {
+    queued_at: Instant,
+    /// Fires if the vblank does not arrive. Removed when it does.
+    deadline: RegistrationToken,
+}
+
+/// How often the watchdog looks at every output. It is the backstop; the
+/// per-flip deadline below is what normally catches a stuck output.
+const WATCHDOG_TICK: Duration = Duration::from_millis(500);
+/// A page flip whose deadline timer somehow never got armed, caught late.
+const FLIP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Surface-level recoveries that fail before the whole device is reset.
+const RECOVERIES_BEFORE_DEVICE_RESET: u8 = 3;
 
 /// A timer that will repaint one CRTC: the one 0.6 frames after a flip,
 /// the retry a frame after an empty repaint, or the slow idle tick.
@@ -1005,22 +1074,62 @@ fn arm_repaint(
     if let Some(armed) = surface.repaint_timer.take() {
         handle.remove(armed.token);
     }
-    let token = handle
-        .insert_source(timer, move |_, _, data| {
-            if let Some(surface) = data
-                .backend_data
-                .backends
-                .get_mut(&node)
-                .and_then(|device| device.surfaces.get_mut(&crtc))
-            {
-                surface.repaint_timer = None;
-            }
-            let target = target.unwrap_or_else(|| data.repaint_target(node, crtc));
-            data.render(node, Some(crtc), target);
-            TimeoutAction::Drop
-        })
-        .expect("failed to schedule frame timer");
-    surface.repaint_timer = Some(RepaintTimer { token, target, idle });
+    let token = handle.insert_source(timer, move |_, _, data| {
+        if let Some(surface) = data
+            .backend_data
+            .backends
+            .get_mut(&node)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
+        {
+            surface.repaint_timer = None;
+        }
+        let target = target.unwrap_or_else(|| data.repaint_target(node, crtc));
+        data.render(node, Some(crtc), target);
+        TimeoutAction::Drop
+    });
+    match token {
+        Ok(token) => surface.repaint_timer = Some(RepaintTimer { token, target, idle }),
+        Err(err) => {
+            // One output has no way to ask for its next frame. The watchdog
+            // finds it within a second and starts it again; taking the whole
+            // session down over it would be worse.
+            error!(?crtc, ?err, "cannot arm the repaint timer for this output");
+            surface.repaint_timer = None;
+        }
+    }
+}
+
+/// Start the clock on the page flip just queued for `crtc`. If its vblank
+/// does not arrive before the deadline, the output is reset rather than left
+/// waiting for an event that is not coming.
+fn arm_flip_deadline(
+    handle: &LoopHandle<'static, AnvilState<UdevData>>,
+    surface: &mut SurfaceData,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    refresh: Option<i32>,
+) {
+    if let Some(flip) = surface.flip.take() {
+        handle.remove(flip.deadline);
+    }
+    let deadline = crate::timing::flip_deadline(refresh);
+    match handle.insert_source(Timer::from_duration(deadline), move |_, _, data| {
+        data.flip_timed_out(node, crtc);
+        TimeoutAction::Drop
+    }) {
+        Ok(deadline) => {
+            surface.flip = Some(Flip {
+                queued_at: Instant::now(),
+                deadline,
+            })
+        }
+        Err(err) => {
+            // Without a deadline the slow watchdog is the only thing left
+            // watching this flip, which is why it still exists.
+            warn!(?crtc, ?err, "cannot arm the page flip deadline");
+            surface.flip = None;
+        }
+    }
 }
 
 impl Drop for SurfaceData {
@@ -1465,7 +1574,15 @@ impl AnvilState<UdevData> {
                 }
             };
 
-            let disable_direct_scanout = std::env::var("ANVIL_DISABLE_DIRECT_SCANOUT").is_ok();
+            // The environment wins over the config, so a machine that will not
+            // behave can be booted into a safe compositor without a rebuild.
+            let scanout = if std::env::var("MINDWM_DISABLE_DIRECT_SCANOUT").is_ok()
+                || std::env::var("ANVIL_DISABLE_DIRECT_SCANOUT").is_ok()
+            {
+                DirectScanout::Off
+            } else {
+                self.config.graphics.direct_scanout
+            };
 
             let vrr_supported = drm_output.with_compositor(|compositor| {
                 matches!(
@@ -1501,7 +1618,6 @@ impl AnvilState<UdevData> {
                 render_node: device.render_node,
                 global: Some(global),
                 drm_output,
-                disable_direct_scanout,
                 connector: connector.handle(),
                 modes,
                 vrr_supported,
@@ -1515,6 +1631,11 @@ impl AnvilState<UdevData> {
                 frame_target: None,
                 repaint_timer: None,
                 dirty: true,
+                flip: None,
+                flip_scanout: None,
+                dead_ticks: 0,
+                recoveries: 0,
+                scanout,
             };
 
             device.surfaces.insert(crtc, surface);
@@ -1680,23 +1801,42 @@ impl AnvilState<UdevData> {
         if let Some(timer_token) = surface.vblank_throttle_timer.take() {
             self.handle.remove(timer_token);
         }
+        // The flip came back: nothing is waiting on its deadline any more,
+        // and whatever recovery got this output here worked.
+        let device_id = surface.device_id;
+        let finished_flip = surface.flip.take();
+        // Whatever was on the plane reached the screen, so it is not
+        // evidence against direct scan-out any more.
+        surface.flip_scanout = None;
+        surface.dead_ticks = 0;
+        surface.recoveries = 0;
+        if let Some(flip) = finished_flip {
+            self.handle.remove(flip.deadline);
+        }
 
-        let output = if let Some(output) = self.space.outputs().find(|o| {
-            o.user_data().get::<UdevOutputId>()
-                == Some(&UdevOutputId {
-                    device_id: surface.device_id,
-                    crtc,
-                })
-        }) {
-            output.clone()
-        } else {
-            // somehow we got called with an invalid output
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.user_data().get::<UdevOutputId>() == Some(&UdevOutputId { device_id, crtc }))
+            .cloned();
+        let Some(output) = output else {
+            // The frame the compositor still holds was never handed back, so
+            // the next one cannot be queued. Start the surface over.
+            self.revive_output(dev_id, crtc, "a page flip finished on an output the space does not know");
             return;
         };
 
-        let Some(frame_duration) = output
-            .current_mode()
-            .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
+        let Some(frame_duration) = output.current_mode().map(|mode| crate::timing::frame_duration(mode.refresh))
+        else {
+            self.revive_output(dev_id, crtc, "a page flip finished on an output without a mode");
+            return;
+        };
+
+        let Some(surface) = self
+            .backend_data
+            .backends
+            .get_mut(&dev_id)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
         else {
             return;
         };
@@ -1736,15 +1876,23 @@ impl AnvilState<UdevData> {
                     sequence: seq,
                     time: DrmEventTime::Monotonic(throttled_time),
                 };
-                let timer_token = self
+                match self
                     .handle
                     .insert_source(Timer::from_duration(vblank_remaining_time), move |_, _, data| {
                         data.frame_finish(dev_id, crtc, &mut Some(throttled_metadata));
                         TimeoutAction::Drop
-                    })
-                    .expect("failed to register vblank throttle timer");
-                surface.vblank_throttle_timer = Some(timer_token);
-                return;
+                    }) {
+                    Ok(timer_token) => {
+                        surface.vblank_throttle_timer = Some(timer_token);
+                        return;
+                    }
+                    Err(err) => {
+                        // Without the timer this vblank would be dropped and
+                        // never redelivered, which stops the output. Take it
+                        // as it came instead: an early frame, not a dead one.
+                        error!(?crtc, ?err, "cannot throttle this vblank");
+                    }
+                }
             }
         }
         surface.last_presentation_time = Some(clock);
@@ -1754,38 +1902,38 @@ impl AnvilState<UdevData> {
             .frame_submitted()
             .map_err(Into::<SwapBuffersError>::into);
 
-        let schedule_render = match submit_result {
+        let after = match submit_result {
             Ok(user_data) => {
                 if let Some(mut feedback) = user_data.flatten() {
                     feedback.presented(clock, Refresh::fixed(frame_duration), seq as u64, flags);
                 }
 
-                true
+                AfterFlip::Repaint
             }
             Err(err) => {
-                warn!("Error during rendering: {:?}", err);
                 match err {
-                    SwapBuffersError::AlreadySwapped => true,
-                    // If the device has been deactivated do not reschedule, this will be done
-                    // by session resume
+                    SwapBuffersError::AlreadySwapped => AfterFlip::Repaint,
+                    // The session is paused (a VT switch, or suspend). Its
+                    // resume handler repaints every output.
                     SwapBuffersError::TemporaryFailure(err)
                         if matches!(err.downcast_ref::<DrmError>(), Some(&DrmError::DeviceInactive)) =>
                     {
-                        false
+                        trace!(?crtc, "page flip finished on an inactive device");
+                        AfterFlip::Wait
                     }
-                    SwapBuffersError::TemporaryFailure(err) => matches!(
-                        err.downcast_ref::<DrmError>(),
-                        Some(DrmError::Access(DrmAccessError {
-                            source,
-                            ..
-                        })) if source.kind() == io::ErrorKind::PermissionDenied
-                    ),
-                    SwapBuffersError::ContextLost(err) => panic!("Rendering loop lost: {}", err),
+                    // Anything else is a frame the hardware would not take.
+                    // Draw the next one rather than stop: a busy or blocked
+                    // device clears on its own, and an output that stops
+                    // asking for frames never starts again.
+                    err => {
+                        warn!(?crtc, "page flip finished with an error: {err:?}");
+                        AfterFlip::Repaint
+                    }
                 }
             }
         };
 
-        if schedule_render {
+        if let AfterFlip::Repaint = after {
             let next_frame_target = clock + frame_duration;
 
             // What are we trying to solve by introducing a delay here:
@@ -1839,6 +1987,41 @@ impl AnvilState<UdevData> {
 
             arm_repaint(&self.handle, surface, dev_id, crtc, timer, Some(next_frame_target), false);
         }
+    }
+
+    /// A page flip whose vblank never arrived inside its deadline. Unless
+    /// the display is off on purpose, the output is stuck.
+    fn flip_timed_out(&mut self, node: DrmNode, crtc: crtc::Handle) {
+        let blanked = self.idle.stage == crate::idle::Stage::Blank;
+        let inactive = self
+            .backend_data
+            .backends
+            .get(&node)
+            .is_none_or(|device| !device.drm_output_manager.device().is_active());
+        let Some(surface) = self
+            .backend_data
+            .backends
+            .get_mut(&node)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
+        else {
+            return;
+        };
+        // The timer that just fired removes itself, so forget the token
+        // before anything else can try to remove it again.
+        let Some(flip) = surface.flip.take() else {
+            // The flip was answered for, or the output was already reset:
+            // this deadline belongs to nothing.
+            return;
+        };
+        let waited = flip.queued_at.elapsed();
+        if blanked || inactive {
+            // The display is off or the session is paused: a page flip that
+            // never completes is exactly what the hardware should do, and
+            // waking up repaints from scratch.
+            trace!(?crtc, "page flip outlived its deadline while the display was off");
+            return;
+        }
+        self.revive_output(node, crtc, &format!("no page flip for {waited:?}"));
     }
 
     /// The presentation time a repaint started now should aim at: the next
@@ -1916,16 +2099,16 @@ impl AnvilState<UdevData> {
             return;
         }
 
-        let output = if let Some(output) = self.space.outputs().find(|o| {
-            o.user_data().get::<UdevOutputId>()
-                == Some(&UdevOutputId {
-                    device_id: node,
-                    crtc,
-                })
-        }) {
-            output.clone()
-        } else {
-            // somehow we got called with an invalid output
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.user_data().get::<UdevOutputId>() == Some(&UdevOutputId { device_id: node, crtc }))
+            .cloned();
+        let Some(output) = output else {
+            // The surface outlived the output it draws. Nothing here can
+            // arm a useful repaint, so hand it to the reset path, which
+            // clears the surface and tries again.
+            self.revive_output(node, crtc, "a repaint was asked for on an output the space does not know");
             return;
         };
 
@@ -1934,12 +2117,14 @@ impl AnvilState<UdevData> {
         let device = if let Some(device) = self.backend_data.backends.get_mut(&node) {
             device
         } else {
+            warn!(?node, "repaint on a device that is gone");
             return;
         };
 
         let surface = if let Some(surface) = device.surfaces.get_mut(&crtc) {
             surface
         } else {
+            warn!(?crtc, "repaint on a surface that is gone");
             return;
         };
 
@@ -2015,8 +2200,9 @@ impl AnvilState<UdevData> {
                 let dmabuf_feedback = surface.dmabuf_feedback.clone();
                 self.post_repaint(&output, frame_target, dmabuf_feedback, &states);
                 if has_rendered {
-                    // The frame is queued: its vblank arms the next repaint.
-                    Repaint::Wait
+                    // The frame is queued: its vblank arms the next repaint,
+                    // and its deadline covers the vblank that never comes.
+                    Repaint::Flipped
                 } else if self.surface_dirty(node, crtc) || self.wants_frame() {
                     Repaint::NextFrame
                 } else {
@@ -2024,56 +2210,59 @@ impl AnvilState<UdevData> {
                 }
             }
             Err(err) => {
-                let inactive = matches!(
-                    &err,
-                    SwapBuffersError::TemporaryFailure(e)
-                        if matches!(e.downcast_ref::<DrmError>(), Some(DrmError::DeviceInactive))
-                );
-                if inactive {
-                    // Session paused (VT switch): the activation handler repaints.
-                    trace!("skipping frame, device inactive");
-                } else {
-                    warn!("Error during rendering: {:#?}", err);
+                // Only a paused session stops the loop. Everything else
+                // gets another frame: a device that is busy, out of slots,
+                // or momentarily not ours clears on its own, and an output
+                // that stops asking for frames never starts again by itself.
+                match err {
+                    SwapBuffersError::TemporaryFailure(err)
+                        if matches!(err.downcast_ref::<DrmError>(), Some(DrmError::DeviceInactive)) =>
+                    {
+                        // A VT switch or suspend. Resuming repaints.
+                        trace!(?crtc, "skipping a frame on an inactive device");
+                        Repaint::Wait
+                    }
+                    SwapBuffersError::ContextLost(err) => {
+                        if let Some(DrmError::TestFailed(_)) = err.downcast_ref::<DrmError>() {
+                            // Most likely a foreign master changed the
+                            // connector-to-CRTC bindings under us during a
+                            // TTY switch. Disable every connector and plane
+                            // and let the next frame set the mode again.
+                            if let Err(err) = device.drm_output_manager.device_mut().reset_state() {
+                                error!(?err, "cannot reset the DRM device after a rejected commit");
+                            }
+                            Repaint::NextFrame
+                        } else {
+                            // The renderer is gone. Slow down rather than
+                            // spin, and rather than take the session down
+                            // with a panic: the GPU may well come back.
+                            error!("the rendering context was lost: {err}");
+                            Repaint::Idle
+                        }
+                    }
+                    err => {
+                        warn!(?crtc, "the frame was not accepted: {err:#?}");
+                        Repaint::NextFrame
+                    }
                 }
-                let retry = match err {
-                    SwapBuffersError::AlreadySwapped => false,
-                    SwapBuffersError::TemporaryFailure(err) => match err.downcast_ref::<DrmError>() {
-                        Some(DrmError::DeviceInactive) => false,
-                        Some(DrmError::Access(DrmAccessError { source, .. })) => {
-                            source.kind() == io::ErrorKind::PermissionDenied
-                        }
-                        _ => false,
-                    },
-                    SwapBuffersError::ContextLost(err) => match err.downcast_ref::<DrmError>() {
-                        Some(DrmError::TestFailed(_)) => {
-                            // reset the complete state, disabling all connectors and planes in case we hit a test failed
-                            // most likely we hit this after a tty switch when a foreign master changed CRTC <-> connector bindings
-                            // and we run in a mismatch
-                            device
-                                .drm_output_manager
-                                .device_mut()
-                                .reset_state()
-                                .expect("failed to reset drm device");
-                            true
-                        }
-                        _ => panic!("Rendering loop lost: {}", err),
-                    },
-                };
-                if retry { Repaint::NextFrame } else { Repaint::Wait }
             }
         };
 
+        // 60 Hz is the fallback everywhere a mode is missing: it is only
+        // ever used to time the next look, and a wrong guess costs a late
+        // frame where returning would cost the whole output.
+        let output_refresh = output.current_mode().map(|mode| mode.refresh).unwrap_or(60_000);
+
         match next {
-            Repaint::Wait => {
+            Repaint::Flipped => {
                 let elapsed = start.elapsed();
                 tracing::trace!(?elapsed, "rendered surface");
+                self.arm_surface_flip_deadline(node, crtc, Some(output_refresh));
+            }
+            Repaint::Wait => {
+                trace!(?crtc, "the repaint loop stops until the session resumes");
             }
             Repaint::NextFrame => {
-                let output_refresh = match output.current_mode() {
-                    Some(mode) => mode.refresh,
-                    None => return,
-                };
-
                 // Either a temporary failure, or more likely nothing changed on
                 // screen while something else still wants a frame (an animation,
                 // a change that came in during the repaint). Look again after
@@ -2104,12 +2293,150 @@ impl AnvilState<UdevData> {
         profiling::finish_frame!();
     }
 
+    /// The watchdog: every output that is lit must have a repaint timer
+    /// armed or a page flip in flight, and a flip must come back within
+    /// `FLIP_TIMEOUT`. One that does not is reset, the way the displays are
+    /// switched off and on again, which is what brings a frozen output back.
+    fn check_outputs_alive(&mut self) {
+        if self.idle.stage == crate::idle::Stage::Blank {
+            return;
+        }
+        let mut revive = Vec::new();
+        let known: Vec<UdevOutputId> = self
+            .space
+            .outputs()
+            .filter_map(|o| o.user_data().get::<UdevOutputId>().copied())
+            .collect();
+        for (node, device) in self.backend_data.backends.iter_mut() {
+            if !device.drm_output_manager.device().is_active() {
+                continue;
+            }
+            for (crtc, surface) in device.surfaces.iter_mut() {
+                // A surface whose output the space has forgotten draws
+                // nothing by design; leaving it alone is not a freeze.
+                if !known.contains(&UdevOutputId {
+                    device_id: *node,
+                    crtc: *crtc,
+                }) {
+                    continue;
+                }
+                if let Some(flip) = surface.flip.as_ref() {
+                    surface.dead_ticks = 0;
+                    let waited = flip.queued_at.elapsed();
+                    if waited > FLIP_TIMEOUT {
+                        revive.push((*node, *crtc, format!("no page flip for {waited:?}")));
+                    }
+                } else if surface.repaint_timer.is_none() && surface.vblank_throttle_timer.is_none() {
+                    surface.dead_ticks = surface.dead_ticks.saturating_add(1);
+                    if surface.dead_ticks >= 2 {
+                        revive.push((*node, *crtc, "the repaint loop stopped: no timer armed, no frame in flight".into()));
+                    }
+                } else {
+                    surface.dead_ticks = 0;
+                }
+            }
+        }
+        for (node, crtc, reason) in revive {
+            self.revive_output(node, crtc, &reason);
+        }
+    }
+
+    /// Bring a frozen output back: drop whatever the CRTC is waiting on,
+    /// start from fresh buffers and a modeset, and repaint.
+    fn revive_output(&mut self, node: DrmNode, crtc: crtc::Handle, reason: &str) {
+        let known = self
+            .space
+            .outputs()
+            .find(|o| o.user_data().get::<UdevOutputId>() == Some(&UdevOutputId { device_id: node, crtc }))
+            .map(|o| o.name());
+        let name = known.clone().unwrap_or_else(|| format!("{crtc:?}"));
+        let Some(surface) = self
+            .backend_data
+            .backends
+            .get_mut(&node)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
+        else {
+            return;
+        };
+        let last_presented = surface.last_presentation_time.map(|t| Time::elapsed(&t, self.clock.now()));
+        let scanout = surface.flip_scanout.take();
+        surface.recoveries = surface.recoveries.saturating_add(1);
+        let recoveries = surface.recoveries;
+        warn!(
+            output = %name,
+            ?crtc,
+            scanout = ?scanout,
+            ?last_presented,
+            recoveries,
+            "{reason}; resetting the output"
+        );
+        if let Some(armed) = surface.repaint_timer.take() {
+            self.handle.remove(armed.token);
+        }
+        if let Some(token) = surface.vblank_throttle_timer.take() {
+            self.handle.remove(token);
+        }
+        if let Some(flip) = surface.flip.take() {
+            self.handle.remove(flip.deadline);
+        }
+        if let Err(err) = surface.drm_output.with_compositor(|c| c.clear()) {
+            warn!(output = %name, ?err, "cannot clear the frozen output");
+        }
+        surface.drm_output.reset_buffers();
+        if scanout.is_some() && surface.scanout != DirectScanout::Off {
+            // The frame that never reached the screen had a client's own
+            // buffer on the primary plane, waiting on a fence only that
+            // client can signal. A game that has to be composed costs a
+            // little latency; a monitor that never updates costs everything.
+            warn!(
+                output = %name,
+                "the stuck frame was scanned out directly, so this output composes from now on; \
+                 set graphics.direct_scanout in mindwm.toml to keep it that way"
+            );
+            surface.scanout = DirectScanout::Off;
+        }
+        surface.dead_ticks = 0;
+        surface.last_presentation_time = None;
+        surface.frame_target = None;
+        surface.dirty = true;
+        if recoveries == RECOVERIES_BEFORE_DEVICE_RESET {
+            // Clearing one surface has not helped. Take the whole device
+            // back from whatever holds it: every connector and plane off,
+            // and the next frame sets the mode again.
+            if let Some(device) = self.backend_data.backends.get_mut(&node) {
+                warn!(output = %name, "the output did not come back, resetting the whole device");
+                if let Err(err) = device.drm_output_manager.device_mut().reset_state() {
+                    error!(output = %name, ?err, "cannot reset the DRM device");
+                }
+            }
+        }
+        if known.is_none() {
+            // Nothing to draw on it. The surface is clean now, and connecting
+            // or reconnecting the output starts it again.
+            return;
+        }
+        self.mindbar.invalidate_graphics();
+        self.handle.insert_idle(move |data| data.render(node, Some(crtc), data.clock.now()));
+    }
+
     fn surface_dirty(&self, node: DrmNode, crtc: crtc::Handle) -> bool {
         self.backend_data
             .backends
             .get(&node)
             .and_then(|device| device.surfaces.get(&crtc))
             .is_some_and(|surface| surface.dirty)
+    }
+
+    /// Start the deadline for the flip just queued on one output.
+    fn arm_surface_flip_deadline(&mut self, node: DrmNode, crtc: crtc::Handle, refresh: Option<i32>) {
+        if let Some(surface) = self
+            .backend_data
+            .backends
+            .get_mut(&node)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
+        {
+            arm_flip_deadline(&self.handle, surface, node, crtc, refresh);
+        }
     }
 
     fn arm_surface_repaint(
@@ -2131,10 +2458,22 @@ impl AnvilState<UdevData> {
     }
 }
 
-/// What to do once a repaint is over.
+/// What to do once a page flip has been answered for.
+enum AfterFlip {
+    /// Draw the next frame.
+    Repaint,
+    /// The session is paused; its resume handler repaints.
+    Wait,
+}
+
+/// What to do once a repaint is over. Every variant arms something, except
+/// `Wait`, which is only for a loop deliberately stopped by something that
+/// will start it again.
 enum Repaint {
-    /// A frame was queued (its vblank continues the loop), or the loop is
-    /// stopped on purpose until the session resumes.
+    /// A frame was queued. Its vblank continues the loop, and a deadline
+    /// watches for the vblank that never comes.
+    Flipped,
+    /// The session is paused or the displays are off. Resuming repaints.
     Wait,
     /// Look again after about one frame.
     NextFrame,
@@ -2267,21 +2606,30 @@ fn render_surface<'a>(
 
     // A game hands over 8-bit buffers while the swapchain is 10-bit: without
     // ALLOW_PRIMARY_PLANE_SCANOUT_ANY they never match the plane's current
-    // format and every frame gets composited instead of scanned out.
-    let frame_mode = if surface.disable_direct_scanout {
-        FrameFlags::empty()
-    } else {
-        FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
+    // format and every frame gets composed instead of scanned out.
+    let frame_mode = match surface.scanout {
+        DirectScanout::Any => FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY,
+        DirectScanout::Matching => FrameFlags::DEFAULT,
+        DirectScanout::Off => FrameFlags::empty(),
     };
-    let (rendered, states) = surface
+    let (rendered, scanout, states) = surface
         .drm_output
         .render_frame(renderer, &elements, clear_color, frame_mode)
         .map(|render_frame_result| {
+            // Which client element, if any, is going straight onto the
+            // primary plane. Named here so a flip that never comes back can
+            // say what was in front of the display controller.
+            let scanout = match &render_frame_result.primary_element {
+                smithay::backend::drm::compositor::PrimaryPlaneElement::Element(element) => {
+                    Some(element.id().clone())
+                }
+                _ => None,
+            };
             #[cfg(feature = "renderer_sync")]
             if let PrimaryPlaneElement::Swapchain(element) = render_frame_result.primary_element {
                 element.sync.wait();
             }
-            (!render_frame_result.is_empty, render_frame_result.states)
+            (!render_frame_result.is_empty, scanout, render_frame_result.states)
         })
         .map_err(|err| match err {
             smithay::backend::drm::compositor::RenderFrameError::PrepareFrame(err) => {
@@ -2301,6 +2649,7 @@ fn render_surface<'a>(
             .drm_output
             .queue_frame(Some(output_presentation_feedback))
             .map_err(Into::<SwapBuffersError>::into)?;
+        surface.flip_scanout = scanout;
     }
 
     Ok((rendered, states))

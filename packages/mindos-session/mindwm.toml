@@ -25,3 +25,16 @@ show_wordmark = true
 # desktop (GSettings) and remembers it; these are only the defaults.
 cursor_theme = "MindOS"
 cursor_size = 24
+
+[graphics]
+# Whether a client's own buffer may go straight to the display hardware
+# instead of being composed into the compositor's frame. Scanning out saves a
+# copy and a frame of latency, which is what a game wants.
+#   any      a fullscreen client's buffer goes to the plane whatever its
+#            format, so an 8-bit game still scans out on a 10-bit display
+#   matching only a buffer the plane already accepts, no format change
+#   off      always compose
+# An output whose display stops updating with a client buffer on the plane
+# drops to "off" by itself for the rest of the session, and says so in the
+# log. Set it here to make that permanent.
+direct_scanout = "any"

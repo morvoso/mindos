@@ -26,6 +26,35 @@ pub struct Config {
     pub theme: Theme,
     pub layout: LayoutConfig,
     pub session: Session,
+    pub graphics: Graphics,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Graphics {
+    /// Whether a client's buffer may go straight to the display hardware
+    /// instead of being composed into the compositor's own frame.
+    pub direct_scanout: DirectScanout,
+}
+
+/// How much of a frame an output may hand straight to the display hardware.
+/// Scanning out a client's buffer saves a copy of the whole screen every
+/// frame, which is why a game wants it; it also puts a buffer the compositor
+/// does not own in front of the display controller, so a client that never
+/// signals its fence can hold the flip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DirectScanout {
+    /// Scan out a client's buffer whatever its format. A game handing over
+    /// 8-bit buffers to a 10-bit swapchain needs this, or every one of its
+    /// frames gets composed instead.
+    #[default]
+    Any,
+    /// Only when the buffer's format already matches the swapchain's. This
+    /// is what smithay itself defaults to.
+    Matching,
+    /// Never: compose every frame. The safe setting.
+    Off,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -295,6 +324,22 @@ mod tests {
             .output().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"HELLO 'WORLD'");
+    }
+
+    #[test]
+    fn the_packaged_config_parses_and_names_a_scanout_policy() {
+        let packaged = include_str!("../../packages/mindos-session/mindwm.toml");
+        let cfg: Config = toml::from_str(packaged).unwrap();
+        assert_eq!(cfg.graphics.direct_scanout, DirectScanout::Any);
+        assert_eq!(
+            toml::from_str::<Config>("[graphics]\ndirect_scanout = 'off'")
+                .unwrap()
+                .graphics
+                .direct_scanout,
+            DirectScanout::Off
+        );
+        // A file that says nothing about graphics still scans out.
+        assert_eq!(Config::default().graphics.direct_scanout, DirectScanout::Any);
     }
 
     #[test]

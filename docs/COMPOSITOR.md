@@ -484,6 +484,9 @@ cursor_size = 24
 [session]
 kiosk = false            # true for the login screen (mindos-greeter): no Mind bar,
                          # no launcher, no shortcut/IPC that starts a program
+
+[graphics]
+direct_scanout = "any"   # any | matching | off, see "The repaint loop" below
 ```
 
 `MIND_SOCKET` in the environment overrides `[mind].socket`; `MINDWM_CONFIG`
@@ -531,6 +534,105 @@ cargo test --release --lib ipc
 For a nested run without the MindOS session scripts, point `MINDWM_CONFIG`
 at a file with `[startup] exec = []` and your terminal in `[apps]`; the IPC
 socket then appears as `$XDG_RUNTIME_DIR/mindwm-wayland-<n>.sock`.
+
+## The repaint loop, and what happens when a display stops
+
+Each output draws on its own. One frame is in flight at a time: mindwm renders
+it, hands it to the kernel, and the page flip's vblank event arms the timer for
+the next one. An output with nothing to draw stops repainting and ticks once a
+second instead; anything that changes the screen pulls that tick forward.
+
+The weakness of that design, which mindwm shares with niri, Hyprland and KWin,
+is that the vblank is the only thing that continues the loop. A page flip the
+kernel accepts but never completes leaves the output waiting for an event that
+is not coming, and the display freezes for the rest of the session while every
+other output keeps working. It happened on MindOS on 2026-09-10, on the 4K
+240 Hz primary, with the compositor alive and idle and nothing in the kernel
+log.
+
+The journal from that morning also carries the loop's fingerprint, twice,
+minutes before the display stopped:
+
+```
+WARN calloop::loop_logic: Received an event for non-existent source
+```
+
+That is a repaint timer that had already fired being removed before its event
+was dispatched, which happens whenever a repaint kicked off from elsewhere
+supersedes an armed one. The event is dropped, and in the old code a repaint
+that then failed armed nothing in its place.
+
+So mindwm no longer trusts the vblank alone:
+
+* **Every page flip has a deadline.** Thirty frames, and never less than a
+  second. If it passes, the output is reset: its surface is cleared, its
+  buffers dropped, and it is drawn again from scratch, which is the same thing
+  that switching the displays off and on does. KWin waits the same second and
+  gives the same reason, that a second "should always be longer than any real
+  pageflip can take, even with PSR and modesets"; unlike KWin, which logs and
+  keeps waiting, mindwm resets the output.
+* **No error stops the loop.** A frame the hardware refuses (busy, out of
+  slots, momentarily owned by someone else, a rejected atomic test) schedules
+  the next frame instead of waiting. Only a paused session stops repainting,
+  and its resume handler starts every output again. Nothing in the render path
+  panics any more: a lost rendering context retries once a second rather than
+  taking the session down.
+* **The scan-out that froze an output loses the privilege.** If the frame that
+  never reached the screen had a client's own buffer on the primary plane, that
+  output composes from then on and says so in the journal. A client's buffer on
+  the plane waits on a fence only that client can signal, and the kernel will
+  not time it out; a composed frame waits on the GPU instead, where the driver
+  does. A game that has to be composed costs a little latency. A monitor that
+  never updates costs everything.
+* **A slow watchdog covers the rest.** Every half second, an output that is lit
+  but has neither a timer armed nor a frame in flight, or a flip older than two
+  seconds, is reset the same way. It is the backstop for the deadline itself
+  failing to arm.
+* **Every state change that strands a flip drops it.** Switching the displays
+  off, and resuming after a VT switch or suspend, both cancel the flip in
+  flight rather than let its deadline fire on a display that is off on purpose.
+  This is what aquamarine calls invalidating the frame, and Hyprland's comment
+  on it describes exactly the black-screen-after-resume this avoids.
+
+`[graphics] direct_scanout` chooses how much of a frame an output may hand
+straight to the display hardware:
+
+| value | meaning |
+| --- | --- |
+| `any` | a fullscreen client's buffer goes to the plane whatever its format, so an 8-bit game still scans out on a 10-bit display (the default) |
+| `matching` | only a buffer whose format the plane already has, which is what Smithay defaults to |
+| `off` | compose every frame |
+
+`MINDWM_DISABLE_DIRECT_SCANOUT=1` in the environment forces `off` without
+touching the config, for a machine that will not behave.
+
+niri defaults to the same relaxed format matching and offers
+`restrict-primary-scanout-to-matching-format` and `disable-direct-scanout` as
+debug switches. Hyprland is the outlier: it disables direct scan-out by
+default and only enables it, on `auto`, for a fullscreen window that declares
+itself a game. KWin re-decides per frame and proves each choice with a
+test-only atomic commit first, falling back to composing on any rejection.
+
+When an output does freeze, the journal is the place to start:
+
+```sh
+journalctl -b _COMM=mindwm | grep -i 'resetting the output'
+```
+
+The line names the output, how long the flip waited, whether a client buffer
+was being scanned out, and how long ago a frame last reached the screen. An
+output can also be recovered by hand without ending the session, by switching
+the displays off and on over the IPC socket:
+
+```sh
+python3 -c 'import os,socket,time
+s=socket.socket(socket.AF_UNIX); s.connect(os.environ["MINDWM_SOCKET"])
+s.sendall(b"{\"id\":1,\"type\":\"blank\"}\n"); time.sleep(0.3)
+s.sendall(b"{\"id\":2,\"type\":\"wake\"}\n"); time.sleep(0.3)'
+```
+
+(`socat - UNIX-CONNECT:"$MINDWM_SOCKET"` does the same where socat is
+installed; it is not part of a MindOS install.)
 
 ## GPUs, software rendering and virtual machines
 
