@@ -231,6 +231,7 @@ fn main() {
 
     // GTK must talk to a Wayland compositor with the layer-shell protocol.
     std::env::set_var("GDK_BACKEND", "wayland");
+    prefer_gl_renderer_on_nvidia();
     if let Err(e) = gtk::init() {
         tracing::error!(%e, "cannot initialise GTK (is WAYLAND_DISPLAY set?)");
         std::process::exit(1);
@@ -260,4 +261,26 @@ fn main() {
 
     main_loop.run();
     tracing::info!("bye");
+}
+
+/// GTK renders with Vulkan by default on Wayland, and on NVIDIA that path
+/// leaks GPU address space: a window painting steadily runs its process out
+/// of it in about eleven thousand frames — a few minutes of screensaver —
+/// after which the driver refuses every mapping (`NVRM: dmaAllocMapping_GM107:
+/// can't alloc VA space for mapping`) and everything the shell draws comes
+/// back as streaks. It is the driver's bug, it is Wayland-only, and NVIDIA has
+/// no fix for it; the GL renderer does not have it, and measured on the same
+/// page it draws better than twice as many frames a second.
+///
+/// So on NVIDIA, and only there, ask for GL. An explicit `GSK_RENDERER` in the
+/// environment still wins, so this can be tested against.
+fn prefer_gl_renderer_on_nvidia() {
+    if std::env::var_os("GSK_RENDERER").is_some() {
+        return;
+    }
+    if !std::path::Path::new("/proc/driver/nvidia/version").exists() {
+        return;
+    }
+    tracing::info!("NVIDIA: rendering with GTK's GL renderer, whose Vulkan counterpart leaks GPU address space here");
+    std::env::set_var("GSK_RENDERER", "gl");
 }

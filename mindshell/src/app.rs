@@ -40,6 +40,40 @@ const GREETER_ALLOWED: &[&str] = &["shell.state", "shell.ready", "shell.reload",
 /// How long a closed window keeps its view alive for late bridge requests.
 const RETIRE_GRACE: Duration = Duration::from_millis(1500);
 
+/// How many mapping refusals in one idle period mean this process's GPU
+/// address space is gone, rather than some other process having a bad moment.
+/// They arrive at the rate the shell paints — around a hundred a second while
+/// the screensaver runs — so a real exhaustion is a flood, never a handful.
+const GPU_MAPPING_FAILURE_BURST: usize = 200;
+
+/// The exit status that asks systemd for a fresh shell (`Restart=on-failure`).
+const EXIT_GPU_ADDRESS_SPACE_LOST: i32 = 87;
+
+/// How many times the kernel refused a GPU mapping in the last `seconds`,
+/// counted no further than the burst that settles the question. The driver is
+/// the only witness: a leaked mapping whose memory is freed shows up in
+/// neither `nvidia-smi` nor this process's own file descriptors.
+///
+/// The tail is capped because a night of this leaves hundreds of thousands of
+/// lines behind, and reading them all would stall the wake for a third of a
+/// second; the last few hundred answer the question just as well.
+fn gpu_mapping_failures(seconds: u64) -> usize {
+    let out = std::process::Command::new("journalctl")
+        .args(["-k", "--quiet", "--output=cat", "--grep", "can't alloc VA space for mapping"])
+        .arg("-n")
+        .arg(GPU_MAPPING_FAILURE_BURST.to_string())
+        .arg("--since")
+        .arg(format!("-{seconds}s"))
+        .output();
+    match out {
+        Ok(out) => out.stdout.iter().filter(|b| **b == b'\n').count(),
+        Err(e) => {
+            tracing::debug!(%e, "cannot read the kernel log; assuming the GPU is well");
+            0
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Options {
     pub devtools: bool,
@@ -112,6 +146,9 @@ struct State {
     /// (active / screensaver / blank), `locked`, `inhibited` and the chosen
     /// screensaver. See `docs/SHELL.md`, "The screensaver and the lock screen".
     idle: Value,
+    /// When the session last left `active`, so that coming back can ask the
+    /// kernel what became of the GPU while the screensaver had the screen.
+    left_active: Option<Instant>,
     /// The XEmbed tray icons as last encoded, by window id: the base64
     /// pixels the compositor sent and the data URL made of them.
     xtray_icons: HashMap<u64, (String, String)>,
@@ -440,15 +477,82 @@ impl App {
         }
         let locked = idle.get("locked").and_then(Value::as_bool).unwrap_or(false);
         let stage = idle.get("stage").and_then(Value::as_str).unwrap_or("active").to_string();
-        self.state.borrow_mut().idle = idle.clone();
+        let was_stage = was.get("stage").and_then(Value::as_str).unwrap_or("active").to_string();
+        let was_locked = was.get("locked").and_then(Value::as_bool).unwrap_or(false);
+        // At work means the desktop is in front of the user and answering:
+        // awake and unlocked. Everything else — screensaver, blank screen,
+        // lock screen — is the session being away, and it is that away period
+        // `heal_after_idle` asks the kernel about. Waking to a password prompt
+        // is still away: the screen comes back before the session does.
+        let working = stage == "active" && !locked;
+        let was_working = was_stage == "active" && !was_locked;
+        {
+            let mut state = self.state.borrow_mut();
+            state.idle = idle.clone();
+            // The clock on the away period, for `heal_after_idle`.
+            if working {
+                state.left_active = None;
+            } else if was_working {
+                state.left_active = Some(Instant::now());
+            }
+        }
         if was.get("locked") != idle.get("locked") || was.get("stage") != idle.get("stage") {
-            tracing::info!(stage, locked, "the session went {}", if stage == "active" && !locked { "back to work" } else { &stage });
+            tracing::info!(stage, locked, "the session went {}", if working { "back to work" } else { &stage });
         }
         self.sync_lock_windows(locked, &stage);
         self.broadcast("lock", &idle);
-        if was.get("stage").and_then(Value::as_str) == Some("blank") && stage != "blank" {
+        if was_stage == "blank" && stage != "blank" {
             self.recover_shell_graphics();
         }
+        if working && !was_working {
+            self.heal_after_idle(&was_stage);
+        }
+    }
+
+    /// Coming back to the desktop after idling.
+    ///
+    /// The NVIDIA driver can run this process out of GPU address space while
+    /// the screensaver draws — `NVRM: dmaAllocMapping_GM107: can't alloc VA
+    /// space for mapping`, at the rate the shell paints. From the first
+    /// refusal onwards every buffer the shell maps comes back unmapped, so
+    /// the desktop and the panels return as horizontal streaks while ordinary
+    /// windows are fine. Nothing inside the process wins that space back:
+    /// reloading the pages does not, and the refusals continue across the
+    /// next screensaver with no fresh grace period. Only a new process does.
+    ///
+    /// So when the kernel says it happened while we were away, step aside and
+    /// let systemd start a fresh shell. The moment the session comes back to
+    /// work is the cheapest one there is for that: no menu is open, and the
+    /// alternative is a desktop the user cannot read. It has to be that moment
+    /// and not the one the screen lights up at, because in between stands the
+    /// lock screen, and restarting under a half-typed password would throw it
+    /// away. The lock itself survives either way — the compositor holds it,
+    /// and a fresh shell asks for it before it draws anything.
+    fn heal_after_idle(self: &Rc<Self>, was_stage: &str) {
+        if self.app_mode.is_some() {
+            return; // an --app window is not the shell
+        }
+        let Some(since) = self.state.borrow().left_active else {
+            return;
+        };
+        // Only systemd puts the shell back; started by hand, limp on rather
+        // than leave the session with no panels at all.
+        if std::env::var_os("INVOCATION_ID").is_none() {
+            return;
+        }
+        let seconds = since.elapsed().as_secs().saturating_add(2);
+        let failures = gpu_mapping_failures(seconds);
+        if failures < GPU_MAPPING_FAILURE_BURST {
+            return;
+        }
+        tracing::error!(
+            failures,
+            seconds,
+            stage = was_stage,
+            "the GPU refused every buffer mapping while the session idled; \
+             restarting, because a new process is the only way that address space comes back"
+        );
+        std::process::exit(EXIT_GPU_ADDRESS_SPACE_LOST);
     }
 
     fn recover_shell_graphics(&self) {
