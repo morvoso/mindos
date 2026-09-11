@@ -42,6 +42,8 @@ pub mod udev;
 #[cfg(feature = "winit")]
 pub mod winit;
 #[cfg(feature = "xwayland")]
+pub mod xprops;
+#[cfg(feature = "xwayland")]
 pub mod xtray;
 
 pub use state::{AnvilState, ClientState};

@@ -13,7 +13,10 @@
   Output bounds support negative, stacked and gapped monitor arrangements.
   Session locking drops mouse grabs and focus; keyboard shortcut inhibition
   follows the focused application. Startup fullscreen works before the first
-  buffer arrives, including output selection on multi-monitor layouts.
+  buffer arrives, including output selection on multi-monitor layouts, and on
+  X11 a game that asks for fullscreen in `_NET_WM_STATE` before its window is
+  mapped — what Wine, Proton and SDL do for a game that opens straight into
+  play — comes up fullscreen rather than as a window with the dock over it.
 * **XWayland** built in, so X11 games and launchers (Steam, Proton/Wine, Lutris)
   run unchanged.
 * **Three window layouts**, switched from the shell's top bar (the icon next
@@ -57,6 +60,21 @@ keyboard focus immediately, and when the focused window closes or crashes the
 top-most remaining window takes over. Clicking a window still focuses and
 raises it; `Super+Tab` cycles, and Super held with the mouse wheel walks the
 tiling order on the screen the pointer is on.
+
+**A game keeps the keyboard.** While a fullscreen window has the focus,
+windows that appear behind it do not take it away: games bring a crowd —
+Wine and Proton map helper windows, launchers, anti-cheat services and chat
+and updater windows open whenever they please — and taking the keyboard away
+also takes the screen, because the fullscreen render path follows the focused
+window, so the dock came back over a running game and the keys went to a
+window nobody could see. Only the game's own windows (a dialog of its own,
+another window of the same X connection or Wayland client) and windows on
+another screen may interrupt it, and a window that asks for fullscreen from
+behind a game gets the size without the screen. The user always can: clicking
+a window, `Super+Tab` and the dock all switch as before. X11 windows that say
+they do not want the keyboard are also left alone — ICCCM's input models
+(`WM_HINTS`, `WM_TAKE_FOCUS`), `_NET_WM_USER_TIME` 0, and the window types
+that are never focusable (splash screens, notifications, tooltips, menus).
 
 Layer-shell surfaces (the shell's panels, popups, wallpaper) follow the
 usual rules: a `top`/`overlay` surface with *exclusive* keyboard

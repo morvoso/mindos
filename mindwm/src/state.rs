@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use smithay::utils::IsAlive;
 use smithay::{
@@ -202,6 +202,10 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     /// The XEmbed tray host, up once XWayland is.
     #[cfg(feature = "xwayland")]
     pub xtray: Option<crate::xtray::XTray>,
+    /// The reader for the X properties the window manager does not get told
+    /// about: what a window asks for before it is mapped.
+    #[cfg(feature = "xwayland")]
+    pub xprops: Option<crate::xprops::XProps>,
 
     #[cfg(feature = "debug")]
     pub renderdoc: Option<renderdoc::RenderDoc<renderdoc::V141>>,
@@ -897,6 +901,8 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             xdisplay: None,
             #[cfg(feature = "xwayland")]
             xtray: None,
+            #[cfg(feature = "xwayland")]
+            xprops: None,
             #[cfg(feature = "debug")]
             renderdoc: renderdoc::RenderDoc::new().ok(),
             show_window_preview: false,
@@ -1009,6 +1015,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     .expect("Failed to set xwayland default cursor");
                     data.xwm = Some(wm);
                     data.xdisplay = Some(display_number);
+                    data.xprops = crate::xprops::XProps::start(display_number);
                     data.start_xtray(display_number);
                     data.xwayland_ready = true;
                     data.run_startup();
@@ -1482,6 +1489,97 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(KeyboardFocusTarget::Window(window.0.clone())), serial);
         }
+    }
+
+    /// Whether a window that has just appeared, or has just asked for the
+    /// whole screen, may take it from a game that is using it.
+    ///
+    /// Games bring a crowd: Wine and Proton map helper windows, launchers and
+    /// anti-cheat services open windows of their own, and chat and updater
+    /// windows arrive whenever they please. Every one of them used to pull
+    /// the keyboard out of the game, and taking the keyboard away also took
+    /// the screen -- the fullscreen render path follows the focused window --
+    /// so the dock came back over a game that was still running fullscreen
+    /// and the keys went to a window nobody could see. While a fullscreen
+    /// window has the keyboard, only its own windows (a dialog of its own,
+    /// another window of the same program) and windows on another screen may
+    /// interrupt it. The user still can, by hand: clicking a window, Alt+Tab
+    /// and the dock all go through `activate_window`.
+    pub fn may_interrupt_fullscreen(&self, window: &WindowElement) -> bool {
+        let Some(game) = self.focused_window() else {
+            return true;
+        };
+        if &game == window || !game.alive() || !window_is_fullscreen(&game) {
+            return true;
+        }
+        // Another screen is not the game's screen.
+        if let (Some(a), Some(b)) = (self.element_output(window), self.element_output(&game)) {
+            if a != b {
+                return true;
+            }
+        }
+        self.same_program(&game, window)
+    }
+
+    /// Give the keyboard to a window that has just been mapped, unless a game
+    /// on that screen is using it.
+    pub fn focus_new_window(&mut self, window: &WindowElement) {
+        if self.may_interrupt_fullscreen(window) {
+            self.focus_window(window);
+            return;
+        }
+        debug!(window = window.id(), "a fullscreen window keeps the keyboard");
+    }
+
+    /// The screen a window is on: where it sits now, else where the layout
+    /// says it belongs.
+    fn element_output(&self, window: &WindowElement) -> Option<Output> {
+        self.space
+            .outputs_for_element(window)
+            .first()
+            .cloned()
+            .or_else(|| self.window_home(window))
+    }
+
+    /// Two windows of the same program: one is a dialog of the other, or both
+    /// came from the same connection. A game's own launcher and its dialogs
+    /// pass; the chat window of something else does not.
+    fn same_program(&self, a: &WindowElement, b: &WindowElement) -> bool {
+        #[cfg(feature = "xwayland")]
+        {
+            let (x, y) = (a.0.x11_surface(), b.0.x11_surface());
+            if let (Some(x), Some(y)) = (x, y) {
+                // A dialog names its parent outright; failing that, the window
+                // ids handed out to one X connection share their top bits.
+                return x.is_transient_for() == Some(y.window_id())
+                    || y.is_transient_for() == Some(x.window_id())
+                    || self
+                        .xprops
+                        .as_ref()
+                        .is_some_and(|p| p.same_client(x.window_id(), y.window_id()));
+            }
+            if x.is_some() != y.is_some() {
+                // XWayland is one Wayland client for every X11 window there
+                // is, so the test below would call them all one program.
+                return false;
+            }
+        }
+        let child_of = |child: &WindowElement, parent: &WindowElement| {
+            child
+                .0
+                .toplevel()
+                .and_then(|t| t.parent())
+                .is_some_and(|s| parent.wl_surface().as_deref() == Some(&s))
+        };
+        if child_of(a, b) || child_of(b, a) {
+            return true;
+        }
+        let client = |w: &WindowElement| {
+            w.wl_surface()
+                .and_then(|s| self.display_handle.get_client(s.id()).ok())
+                .map(|c| c.id())
+        };
+        matches!((client(a), client(b)), (Some(x), Some(y)) if x == y)
     }
 
     /// Game mode: whatever window is on top gets the keyboard when the focused

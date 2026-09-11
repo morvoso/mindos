@@ -51,11 +51,12 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         window.id(); // ids follow creation order
         self.request_repaint();
         place_new_window(&mut self.space, self.pointer.current_location(), &window, true);
-        // A new window gets the keyboard right away, no click needed; the
-        // layout puts it next to the window that had the focus.
+        // A new window gets the keyboard right away, no click needed -- unless
+        // a game has the screen, see `focus_new_window`. The layout puts it
+        // next to the window that had the focus.
         let previous = self.focused_window();
-        self.focus_window(&window);
         *window.tile().output.borrow_mut() = self.space.output_under(self.pointer.current_location()).next().map(|o| o.name());
+        self.focus_new_window(&window);
         self.layout.window_opened(&window, previous);
 
     }
@@ -329,13 +330,18 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
                     state.size = Some(geometry.size);
                     state.fullscreen_output = wl_output;
                 });
-                output.user_data().insert_if_missing(FullscreenSurface::default);
-                output
-                    .user_data()
-                    .get::<FullscreenSurface>()
-                    .unwrap()
-                    .set(window.clone());
-                trace!("Fullscreening: {:?}", window);
+                // Asking for fullscreen from behind a game does not take the
+                // screen from it; the window is fullscreen for when it is next
+                // looked at. (A game asking for it has the keyboard, and passes.)
+                if self.may_interrupt_fullscreen(&window) {
+                    output.user_data().insert_if_missing(FullscreenSurface::default);
+                    output
+                        .user_data()
+                        .get::<FullscreenSurface>()
+                        .unwrap()
+                        .set(window.clone());
+                    trace!("Fullscreening: {:?}", window);
+                }
             }
         }
 

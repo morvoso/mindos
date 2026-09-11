@@ -33,6 +33,22 @@ use super::{
     ResizeState, SurfaceData, TouchMoveSurfaceGrab, WindowElement,
 };
 
+/// Window types that never take the keyboard when they appear, and never take
+/// the screen either: a splash screen, a notification, a tooltip, a menu the
+/// client tore off itself.
+fn decorative(window: &X11Surface) -> bool {
+    matches!(
+        window.window_type(),
+        Some(
+            WmWindowType::Notification
+                | WmWindowType::Tooltip
+                | WmWindowType::Splash
+                | WmWindowType::DropdownMenu
+                | WmWindowType::PopupMenu
+        )
+    )
+}
+
 #[derive(Debug, Default)]
 struct OldGeometry(RefCell<Option<Rectangle<i32, Logical>>>);
 impl OldGeometry {
@@ -69,6 +85,22 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         elem.set_ssd(!window.is_decorated());
         let header = elem.header_height();
 
+        // What the client asked for before anyone mapped its window. Smithay's
+        // window manager reads none of these, and they decide both of the
+        // things that happen next: the screen and the keyboard.
+        let props = self
+            .xprops
+            .as_ref()
+            .map(|x| x.at_map(window.window_id()))
+            .unwrap_or_default();
+        // ICCCM's input models and EWMH's user time: a window may say that it
+        // does not want the keyboard -- Wine's helper windows do, and so does
+        // anything that maps itself in the background -- and a splash screen
+        // or a notification never wants it.
+        let wants_focus = !decorative(&window)
+            && !props.no_focus
+            && (window.hints().and_then(|h| h.input).unwrap_or(true) || props.take_focus);
+
         // ICCCM: a client may state where it wants to sit through WM_NORMAL_HINTS,
         // and a user-specified position is meant to be honoured. Steam positions
         // its Settings window that way, over the main Steam window. Placing it by
@@ -88,6 +120,37 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
             .unwrap_or_else(|| {
                 crate::shell::pointer_output_area(&self.space, self.pointer.current_location())
             });
+
+        // A game that starts fullscreen says so before its window is mapped:
+        // it puts _NET_WM_STATE_FULLSCREEN in _NET_WM_STATE itself, which is
+        // what Wine and Proton do for every game that opens straight into
+        // play, what SDL does, and what EWMH tells the window manager to
+        // honour. Smithay only reports the client *message* that asks for
+        // fullscreen once a window is up, so a game that never sends one came
+        // up as an ordinary window with the dock across the bottom of it.
+        if props.fullscreen && !decorative(&window) {
+            let output = self.space.output_under(area.loc.to_f64()).next().cloned();
+            if let Some(output) = output {
+                let geometry = self.space.output_geometry(&output).unwrap_or(area);
+                self.space.map_element(elem.clone(), geometry.loc, true);
+                *elem.tile().output.borrow_mut() = Some(output.name());
+                let previous = self.focused_window();
+                if self.may_interrupt_fullscreen(&elem) {
+                    // Nothing else is holding the screen: take it.
+                    self.toggle_fullscreen_window(&elem);
+                    if wants_focus {
+                        self.focus_window(&elem);
+                    }
+                } else {
+                    // A game already has this screen. The newcomer gets the
+                    // size it asked for and waits behind it.
+                    let _ = window.set_fullscreen(true);
+                    let _ = window.configure(geometry);
+                }
+                self.layout.window_opened(&elem, previous);
+                return;
+            }
+        }
 
         let dialog_like = window.is_popup()
             || window.is_transient_for().is_some()
@@ -120,8 +183,8 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
             self.space.map_element(elem.clone(), area.loc, true);
         }
         let previous = self.focused_window();
-        self.focus_window(&elem);
         // The window may have been placed on an output other than the pointer's.
+        // Settled before the keyboard question, which asks which screen it is on.
         *elem.tile().output.borrow_mut() = self
             .space
             .outputs_for_element(&elem)
@@ -133,6 +196,9 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
                     .next()
                     .map(|o| o.name())
             });
+        if wants_focus {
+            self.focus_new_window(&elem);
+        }
         self.layout.window_opened(&elem, previous);
     }
 
@@ -288,6 +354,14 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
 
             window.set_fullscreen(true).unwrap();
             window.configure(geometry).unwrap();
+            // Asking for fullscreen from behind a game does not take the
+            // screen from it; the window is fullscreen for when it is next
+            // looked at. (A game asking for it has the keyboard, and passes.)
+            let elem = elem.clone();
+            if !self.may_interrupt_fullscreen(&elem) {
+                trace!("Fullscreen behind a fullscreen window: {:?}", elem);
+                return;
+            }
             output.user_data().insert_if_missing(FullscreenSurface::default);
             output
                 .user_data()
