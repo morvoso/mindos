@@ -21,7 +21,7 @@ MindOS has distinct boot and desktop stages:
 | Limine (installed system) | `term_background: 008c1010`, white foreground and palette, the selected entry inverted to red on white; `mindos-boot config` folds the file into `/boot/limine.conf` | `packages/mindos-theme/limine-theme.conf` |
 | GRUB (UEFI ISO) | `set color_normal=white/black` on a `background_color 140,16,16` menu (black is transparent in gfxterm), highlight `red/white` | `iso/grub/grub.cfg` |
 | syslinux (BIOS ISO) | red menu with white text | `iso/syslinux/` |
-| Kernel console | `linux-mindos` carries a patch that makes the VT default attribute white on red and sets the palette's red to `#8c1010`, so every message from the first kernel line onwards is white on red. On a stock kernel the same look comes from `vt.color=0x4f vt.default_red=... vt.default_grn=... vt.default_blu=...` | `packages/linux-mindos/` |
+| Kernel console | `vt.color=0x4f vt.default_red=... vt.default_grn=... vt.default_blu=...` on the kernel command line makes the VT default attribute white on red and sets the palette's red to `#8c1010`, so every message from the first kernel line onwards is white on red -- no kernel patch, and it works on any kernel | `packages/mindos-base/kernel-cmdline` |
 | Virtual consoles after boot | `mindos-console-theme.service` re-applies the colours to tty1–6, so the tty2 recovery shell stays red | `packages/mindos-theme/console-theme` |
 | Login screen | orbital graphite like the desktop: cyan arcs, a dark card and clear Inter text; rendered by the shell's own UI stack (`mindshell --app greeter`) under mindwm in kiosk mode | `mindshell/ui/src/greeter.ts`, `docs/img/greeter.png` |
 

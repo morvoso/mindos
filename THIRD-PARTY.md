@@ -18,19 +18,22 @@ licence.
 
 ## The kernel — GPL-2.0-only
 
-`packages/linux-mindos/` builds a modified Linux kernel: kernel.org 7.2.y plus
-the BORE scheduler patch (Masahito Suzuki, via Piotr Gorski) and two MindOS
-patches (the console theme, and a Clang fix for DKMS). The Linux kernel is
-GPL-2.0-only and so is `linux-mindos`.
+MindOS does not build a kernel. The ISO and the installed system carry Arch
+Linux's `linux` package, unmodified, exactly as Arch built it, configured only
+from the outside by boot parameters and sysctls. The Linux kernel is
+GPL-2.0-only.
 
-**Source offer.** The complete corresponding source for `linux-mindos` is the
-upstream tarball named in `packages/linux-mindos/PKGBUILD`, plus the three
-patch files and the kernel config in that same directory, all of which are in
-this repository. Anyone who receives a MindOS binary kernel may take that
-source, modify it, rebuild it and redistribute it under the GPL. That right is
-not affected by `LICENSE`.
+**Source.** Because a MindOS ISO redistributes that binary kernel, the
+corresponding source travels with it: it is the kernel tarball and patch set
+named in Arch's own `linux` PKGBUILD, published at
+<https://gitlab.archlinux.org/archlinux/packaging/packages/linux> and mirrored
+as a source package by every Arch mirror. Anyone who receives a MindOS binary
+kernel may take that source, modify it, rebuild it and redistribute it under
+the GPL, and Black Arrow will supply a copy on request. That right is not
+affected by `LICENSE`.
 
-The BORE patch keeps its authorship headers in `0001-bore.patch`.
+The same is true of the NVIDIA open kernel modules: MindOS ships Arch's
+`nvidia-open`, built by Arch against Arch's kernel, not a MindOS build.
 
 ## Arch Linux packages — mixed licences
 
@@ -55,7 +58,7 @@ Notable ones to be aware of:
 | `paru` (`packages/paru/`) | GPL-3.0-or-later | Upstream PKGBUILD, kept as-is with its maintainer line. |
 | Firefox | MPL-2.0 + Mozilla trademark policy | Shipped exactly as Arch builds it, unbranded changes not made. Themed only through the desktop's own dark-mode preference, which is a user setting, not a modification of Firefox. |
 | Steam | Valve Steam Subscriber Agreement | The Arch `steam` package is a bootstrapper; the client itself is downloaded from Valve by the user on first run. Users accept Valve's terms directly. |
-| NVIDIA drivers (`linux-mindos-nvidia-open`, optional `nvidia-open-dkms`, `nvidia-utils`) | Open kernel modules: MIT/GPL-2.0; userspace: NVIDIA Software License Agreement | The prebuilt open modules are compiled from NVIDIA's published source; their package includes `COPYING`. Userspace is redistributed unmodified under NVIDIA's licence, which permits distribution as part of an operating system. |
+| NVIDIA drivers (`nvidia-open`, `nvidia-open-dkms`, `nvidia-utils`) | Open kernel modules: MIT/GPL-2.0; userspace: NVIDIA Software License Agreement | Arch's packages, shipped as Arch built them. The open modules are compiled from NVIDIA's published source; userspace is redistributed unmodified under NVIDIA's licence, which permits distribution as part of an operating system. |
 | `linux-firmware` | Mixed; many blobs are redistributable-only | The package's own `WHENCE` file carries every blob's terms and ships with it. |
 
 ## The language model — Apache-2.0

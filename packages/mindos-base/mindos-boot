@@ -32,7 +32,7 @@ CONF=/etc/mindos/boot.conf
 BOOTD=/etc/mindos/boot.d      # entries for other systems, copied verbatim
 THEME=/usr/share/mindos/limine-theme.conf
 CMDLINE_FILE=/usr/share/mindos/kernel-cmdline
-KERNEL=linux-mindos
+KERNEL=linux         # Arch's kernel; set KERNEL=linux-lts or linux-zen in boot.conf
 BOOT_LOCK=/run/lock/mindos-boot.lock
 # /etc/mindos/boot.conf overrides these.
 TIMEOUT=1            # seconds the menu waits
@@ -72,7 +72,10 @@ has_nvidia() {
 }
 kernel_cmdline() {
   local c=$CMDLINE
-  [[ -n $c ]] || c=$(cat "$CMDLINE_FILE" 2>/dev/null || true)
+  # The packaged file documents each parameter in # comments; strip those and
+  # fold the rest onto one line before it becomes a kernel command line.
+  [[ -n $c ]] || c=$(sed -E '/^[[:space:]]*(#|$)/d' "$CMDLINE_FILE" 2>/dev/null | tr '\n' ' ')
+  c=$(printf '%s' "$c" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
   # The NVIDIA switches only make sense with the card present.
   has_nvidia || c=$(sed -E 's/ ?nvidia_drm\.[a-z]+=[^ ]*//g' <<<"$c")
   printf '%s\n' "$c${CMDLINE_EXTRA:+ $CMDLINE_EXTRA}"
@@ -157,6 +160,27 @@ sync_snapshots() {
 }
 
 # ---- limine.conf -------------------------------------------------------------
+# Limine draws the menu with an 8x16 font and scales it by resolution on its own
+# (1x1 below 2560x1440, 2x2 from there, 4x4 from 5120x2880). On a 4K panel that
+# is a 240-column grid: legible in a screenshot, not from a chair. Pick the scale
+# that puts the menu at roughly 120 columns whatever the panel is, so the boot
+# menu reads at the same size on 1080p and on 4K. The widest connected mode is
+# the one the firmware is most likely to hand Limine.
+font_scale() {
+  local w=0 first m
+  for m in /sys/class/drm/card*-*/modes; do
+    [[ -r $m ]] || continue
+    first=$(head -1 "$m" 2>/dev/null) || continue
+    first=${first%%x*}
+    [[ $first =~ ^[0-9]+$ ]] && (( first > w )) && w=$first
+  done
+  (( w > 0 )) || { echo 1x1; return; }
+  local n=$(( (w + 480) / 960 ))   # w / (120 columns * 8 dots), rounded
+  (( n < 1 )) && n=1
+  (( n > 8 )) && n=8               # Limine refuses a factor outside 1..8
+  echo "${n}x${n}"
+}
+
 entry() {  # depth+title, comment, kernel path, initramfs path, cmdline
   local title=$1 comment=$2 kernel=$3 initrd=$4 cmdline=$5 u
   printf '\n%s\n' "$title"
@@ -178,6 +202,7 @@ write_config() {
     echo "# Written by mindos-boot. Settings: $CONF, then 'mindos-boot config'."
     echo "timeout: $TIMEOUT"
     [[ -r $THEME ]] && grep -v '^\s*#' "$THEME"
+    echo "term_font_scale: $(font_scale)"
     entry "/MindOS" "${ver:+$KERNEL $ver}" "boot():/vmlinuz-$KERNEL" "boot():/initramfs-$KERNEL.img" \
           "root=UUID=$uuid rootflags=subvol=@ rw $cmd"
     if [[ -f $ESP/initramfs-$KERNEL-fallback.img ]]; then
@@ -276,7 +301,7 @@ do_setup() {
 # MindOS: snapshots around the kernel, the graphics stack and the desktop are
 # kept longer (NUMBER_LIMIT_IMPORTANT in /etc/snapper/configs/root).
 [root]
-important_packages = ["linux-mindos", "linux-mindos-headers", "nvidia-open-dkms", "nvidia-utils", "mesa", "mindwm", "mindshell", "mindos-base", "mindos-session"]
+important_packages = ["linux", "linux-headers", "nvidia-open", "nvidia-open-dkms", "nvidia-utils", "mesa", "mindwm", "mindshell", "mindos-base", "mindos-session"]
 important_commands = ["pacman -Syu"]
 INI
   fi

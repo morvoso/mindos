@@ -127,7 +127,7 @@ pub fn policy_for(def: &ToolDef, args: &Value, cfg: &Config) -> Policy {
         }
         "remove_packages" => {
             let pkgs = args["packages"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()).unwrap_or_default();
-            if pkgs.iter().any(|p| ["base", "linux-mindos", "systemd", "pacman", "mindos-base", "mindd", "mindwm", "glibc"].contains(p)) {
+            if pkgs.iter().any(|p| ["base", "linux", "linux-lts", "linux-zen", "systemd", "pacman", "mindos-base", "mindd", "mindwm", "glibc"].contains(p)) {
                 Policy::Forbidden
             } else {
                 Policy::Change

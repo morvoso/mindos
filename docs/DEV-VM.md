@@ -177,8 +177,8 @@ make packages && make repo          # host
 sudo pacman -Syu                    # VM: picks up build/repo from the share
 ```
 
-**Kernel.** `make kernel && make repo` on the host, then in the VM
-`sudo pacman -Syu linux-mindos` and reboot. snap-pac takes a snapshot of the
+**Kernel.** The kernel is Arch's, so a kernel upgrade in the VM is just
+`sudo pacman -Syu` and a reboot. snap-pac takes a snapshot of the
 system before and after, and the boot menu lists it under "Snapshots": pick
 the "before" one if the new kernel does not boot, then `sudo mindos-boot
 restore` (`docs/ROLLBACK.md`). A libvirt snapshot (`make vm-snapshot

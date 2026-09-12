@@ -5,46 +5,39 @@ MindOS installs Mesa's AMD and Intel graphics stack by default, including
 numeric PCI class; a GPU's audio or USB controller is not a second GPU.
 
 For NVIDIA, automatic selection checks the supported-products table shipped
-with the live image's NVIDIA driver. Current supported cards get
-`linux-mindos-nvidia-open`, matching userspace and 32-bit libraries. These
-modules are built and signed for the released MindOS kernel; installing them
-requires no local module compilation. Integrated AMD/Intel graphics are retained on hybrid systems.
-The installer does not change the running live session's GPU driver.
+with the live image's NVIDIA driver. Current supported cards get Arch's
+`nvidia-open`, `nvidia-utils`, the 32-bit libraries and `nvidia-settings`.
+Integrated AMD/Intel graphics are retained on hybrid systems. The installer
+does not change the running live session's GPU driver.
+
+Nothing here is pinned, and that is the whole point. Arch builds `nvidia-open`
+against its own `linux` package and releases the two together, so `pacman -Syu`
+moves the kernel and its modules in one transaction and a driver upgrade can
+never strand the module. MindOS used to ship prebuilt modules signed for a
+kernel of its own, pinned to an exact `nvidia-utils` version; the next Arch
+driver release then refused to upgrade on every installed machine. There is no
+prebuilt-versus-DKMS decision left to make, and no `MINDOS_NVIDIA_MODULES`
+switch, because there is no longer anything to choose between.
 
 Before formatting, the installer refreshes repositories and resolves the full
-package selection using an empty temporary package database. Installed live
-packages cannot hide missing target dependencies. If Arch has advanced beyond
-the prebuilt NVIDIA package's exact userspace dependency, the installer tries
-`nvidia-open-dkms` with matching MindOS headers and Clang/LLVM/LLD instead. The
-review shows this choice. Unresolved dependencies abort before disk changes;
-downloads still require a working connection during installation.
+package selection in a temporary package database it then deletes, so packages
+already present in the live session cannot hide a missing target dependency.
+Unresolved dependencies abort before disk changes; downloads still require a
+working connection during installation.
 
-`MINDOS_NVIDIA_MODULES=prebuilt` requires the prebuilt path;
-`MINDOS_NVIDIA_MODULES=dkms` explicitly chooses local compilation. The default
-is `auto`. These choices apply only when the graphics plan selects NVIDIA.
-
-Prebuilt packages pin both kernel and NVIDIA userspace versions so an upgrade
-cannot silently install incompatible halves. Until matching MindOS packages
-are available, pacman may refuse a full upgrade. To switch an installed system
-to the rolling DKMS path, run a full transaction and accept the provider conflict:
+On a machine running `linux-lts`, `linux-zen` or a hand-built kernel, install
+`nvidia-open-dkms` instead — it compiles against whatever kernel is installed:
 
 ```sh
-sudo pacman -Syu nvidia-open-dkms linux-mindos-headers clang llvm lld
+sudo pacman -Syu nvidia-open-dkms linux-lts-headers
 ```
 
-Check that DKMS and initramfs hooks succeed before rebooting. DKMS uses its own
-signing key; the prebuilt modules use the kernel's embedded build certificate.
-This does not establish Secure Boot support for the distribution.
+Check that DKMS and initramfs hooks succeed before rebooting. This does not
+establish Secure Boot support for the distribution.
 
-For image builders, run `make kernel`, then `make nvidia`, then `make packages`
-and `make iso`. The NVIDIA recipe pins the source checksum, kernel package
-version, kernel release and driver version. Update them together for a release.
-The matching kernel's private signing key must still be available in its build
-tree; `make clean` removes that tree. An archived matching key/certificate can
-be supplied using `MINDOS_MODULE_SIGN_KEY` and `MINDOS_MODULE_SIGN_CERT` (paths
-inside the build container). Neither is copied into the module package. Verify
-the built package against the released kernel using
-`scripts/tests/check_nvidia_package.py` before publishing it.
+For image builders there is no kernel or driver step: `make packages`, then
+`make repo`, then `make iso`. The ISO takes `linux` and `nvidia-open` from
+Arch's own repositories at build time.
 
 Read the proposed graphics plan without starting an installation:
 
@@ -83,6 +76,33 @@ of the automatic installer.
 On AMD and Intel, the installer retains the detected kernel driver for early
 KMS (including `radeon` on older AMD hardware and `i915`/`xe` on Intel).
 The initramfs KMS hook handles the remaining detected display modules.
+
+### How the drivers load, and why not from `MODULES`
+
+The installer writes the detected drivers to `MINDOS_GPU_MODULES` in
+`/etc/mkinitcpio.conf.d/mindos.conf`, and `MODULES` is left empty. The two are
+not interchangeable. Both put a driver in the initramfs, but `MODULES` also
+writes it into `/etc/modules-load.d/MODULES.conf` inside the image, where
+`systemd-modules-load` loads the list one module at a time — and `initrd.target`
+is ordered after that service, so the boot cannot switch root until the slowest
+GPU probe has returned.
+
+That cost is not small. On a two-display NVIDIA machine the root filesystem was
+mounted and fsck'd 5.71s into the boot, and then nothing happened at all until
+`nvidia_drm`'s probe returned at 9.95s — `systemd-modules-load` reported 7.171s
+of CPU over 7.106s of wall clock, one process on one core. Early KMS was buying
+nothing for that: the driver became ready 0.26s before the initramfs ended.
+
+The `mindos-gpu` hook (`/usr/lib/initcpio/install/mindos-gpu`) adds the same
+modules with `add_module` and writes no `modules-load.d` entry. Every display
+driver carries a PCI modalias, so udev's `80-drivers.rules` loads it during
+coldplug from the udev worker pool — in parallel, with no unit ordered behind
+it. `nvidia_uvm` is not in the list at all: it is the CUDA unified-memory
+driver, nothing in early boot opens it, and nvidia-utils' `60-nvidia.rules`
+runs `nvidia-modprobe -c0 -u` to load it for the first CUDA context.
+
+The compositor is the one part of userspace that cannot start before a driver is
+up, so `greetd` alone waits for one, through `ExecStartPre=/usr/lib/mindos/wait-drm`.
 
 ## Session access to graphics devices
 

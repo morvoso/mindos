@@ -179,7 +179,7 @@ async fn verify_last_update(d: &Daemon, findings: &[Finding]) {
     if uptime < 90.0 {
         return;
     }
-    let touched_kernel = lu.packages.iter().any(|p| p.starts_with("linux-mindos") || p.starts_with("nvidia"));
+    let touched_kernel = lu.packages.iter().any(|p| p.starts_with("linux") || p.starts_with("nvidia"));
     let running = sysinfo::kernel();
     let stale = !Path::new("/usr/lib/modules").join(&running).exists();
     if touched_kernel && stale {

@@ -1,1 +1,13 @@
-quiet splash loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 amd_pstate=active zswap.enabled=0 preempt=full audit=0
+# MindOS kernel command line for the installed system.
+#
+# Everything here is a stock-kernel parameter: MindOS runs Arch's `linux`, so
+# the tuning that used to live in a patched kernel config is set at boot instead.
+#
+#   preempt=full        CONFIG_PREEMPT_DYNAMIC is on in Arch's kernel, so full
+#                       preemption is a boot parameter, not a rebuild.
+#   vt.color/default_*  the MindOS console theme (white on MindOS red #8c1010,
+#                       palette slot 4) that used to be a patch to drivers/tty/vt/vt.c.
+#                       setterm in mindos-theme's console-theme re-applies it once
+#                       userspace is up; these make the very first kernel message
+#                       come up already themed.
+quiet splash loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 vt.color=0x4f vt.default_red=0,170,0,170,140,170,0,170,85,255,85,255,85,255,85,255 vt.default_grn=0,0,170,85,16,0,170,170,85,85,255,255,85,85,255,255 vt.default_blu=0,0,0,0,16,170,170,170,85,85,85,85,255,255,255,255 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 amd_pstate=active zswap.enabled=0 preempt=full audit=0

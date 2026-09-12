@@ -7,9 +7,23 @@ from pathlib import Path
 import re
 import sys
 
-NVIDIA_PACKAGES = ['linux-mindos-nvidia-open', 'nvidia-utils', 'lib32-nvidia-utils',
+# Arch builds nvidia-open against its own linux kernel and moves the two
+# together in one transaction, so there is no version to pin here and no
+# prebuilt-vs-DKMS decision to make: the pair is always consistent after -Syu.
+# Machines on linux-lts or linux-zen want nvidia-open-dkms instead; that is a
+# post-install choice, not something the installer has to resolve.
+NVIDIA_PACKAGES = ['nvidia-open', 'nvidia-utils', 'lib32-nvidia-utils',
                    'nvidia-settings']
-NVIDIA_MODULES = ['nvidia', 'nvidia_modeset', 'nvidia_uvm', 'nvidia_drm']
+# These land in MINDOS_GPU_MODULES, which the mindos-gpu mkinitcpio hook adds to
+# the image so udev can load them by modalias during coldplug. nvidia_drm pulls
+# nvidia and nvidia_modeset in as dependencies either way; naming all three keeps
+# the list readable and survives a kernel that splits them differently.
+#
+# nvidia_uvm is deliberately absent. It is the CUDA unified-memory driver,
+# nothing in early boot opens it, and nvidia-utils' 60-nvidia.rules runs
+# `nvidia-modprobe -c0 -u` to load it for the first CUDA context. Measured in the
+# initramfs it cost 1.23s and bought nothing.
+NVIDIA_MODULES = ['nvidia', 'nvidia_modeset', 'nvidia_drm']
 MESA_MODULES = {'amdgpu', 'radeon', 'i915', 'xe', 'nouveau'}
 VENDORS = {0x10de: 'NVIDIA', 0x1002: 'AMD', 0x8086: 'Intel', 0x1af4: 'Virtio'}
 

@@ -34,7 +34,7 @@ export const HOME = '/home/morvoso';
 
 const root: Node = dir('', [
   dir('bin', []),
-  dir('boot', [file('vmlinuz-linux-mindos', 14_800_000, 12), file('initramfs-linux-mindos.img', 36_000_000, 12)]),
+  dir('boot', [file('vmlinuz-linux', 14_800_000, 12), file('initramfs-linux.img', 36_000_000, 12)]),
   dir('etc', [dir('mindos', [file('mind.toml', 1_200, 20), file('shell.toml', 640, 20), file('model-catalog.json', 3_400, 8)]), file('fstab', 512, 60), file('hostname', 11, 60)]),
   dir('home', [
     dir('morvoso', [

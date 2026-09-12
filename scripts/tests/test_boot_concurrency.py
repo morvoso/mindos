@@ -28,6 +28,7 @@ class BootConcurrency(unittest.TestCase):
 ESP="$BOOT_TEST_ROOT/boot"
 STORE="$ESP/mindos"
 SNAPDIR="$BOOT_TEST_ROOT/snapshots"
+BOOTD="$BOOT_TEST_ROOT/boot.d"
 BOOT_LOCK="$BOOT_TEST_ROOT/boot.lock"
 THEME="$BOOT_TEST_ROOT/no-theme"
 need_root() { :; }
@@ -68,7 +69,7 @@ kernel_version() { echo test-kernel; }
         menu = (self.esp / 'limine.conf').read_text()
         self.assertEqual(menu.count('\n/MindOS\n'), 1)
         self.assertIn('root=UUID=test-uuid rootflags=subvol=@ rw quiet\n', menu)
-        self.assertTrue(menu.endswith('module_path: boot():/initramfs-linux-mindos.img\n'))
+        self.assertTrue(menu.endswith('module_path: boot():/initramfs-linux.img\n'))
         self.assertFalse((self.esp / 'limine.conf.new').exists())
 
 

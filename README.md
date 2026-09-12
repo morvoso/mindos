@@ -7,10 +7,12 @@ the NVIDIA and Mesa drivers like any other distribution, and hands system
 administration to an on-device LLM: updates, driver installs, diagnostics and
 configuration are conversations, not man pages.
 
-MindOS is built the way Arch, CachyOS and SteamOS are built: on top of the
-Linux kernel and the Arch package ecosystem, with its own kernel package, its
-own packages, its own repository and its own image. Nothing in the Linux
-driver ecosystem has to be redone. The boot loader and the kernel console are
+MindOS is Arch underneath: Arch's kernel, Arch's drivers, Arch's packages,
+upgraded by Arch's own `pacman -Syu`, with the MindOS parts -- the compositor,
+the desktop shell, the mind and the Windows integration -- shipped as ordinary
+packages in a MindOS repository on top. Nothing in the Linux driver ecosystem
+has to be redone, and no MindOS package pins a version of something it did not
+build, so an Arch update never has to wait for MindOS to catch up. The boot loader and the kernel console are
 white text on MindOS red (`#8c1010`). The desktop uses warm graphite or light
 stone surfaces, orange accents, square panels, a floating bottom shelf and a
 unified installed-game library. Its live circuit background can be switched
@@ -33,8 +35,8 @@ launcher integrations, appearance controls and current boundaries.
 ├─────────────────────────────────────────────────────────────────────┤
 │  systemd · greetd + MindOS login screen · pacman + [mindos] repo     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  linux-mindos ── Linux 7.2 + BORE, 1000 Hz, full preempt, ntsync,   │
-│                  Clang ThinLTO, tuned for Zen 5, white-on-red console│
+│  Arch linux ── stock kernel; preempt=full, 1000 Hz, ntsync, EEVDF   │
+│                or scx_lavd, white-on-red console, all set at boot    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,7 +46,7 @@ Graphics setup and compatibility: [graphics drivers](docs/GRAPHICS.md).
 
 | Component | Where | What it does |
 | --- | --- | --- |
-| `linux-mindos` | `packages/linux-mindos/` | Custom kernel: kernel.org 7.2.y + BORE scheduler + MindOS console theme, built with Clang ThinLTO for generic x86-64 (native CPU optional), 1000 Hz, full preemption, `amd-pstate`, ntsync. Signed in-tree modules and a headers package for DKMS. |
+| the kernel | Arch's `linux` | No custom kernel. Arch's stock kernel, tuned from the command line and from sysctls: `preempt=full` (Arch builds `PREEMPT_DYNAMIC`), the white-on-red console through `vt.color`/`vt.default_*`, ntsync for Wine, `amd-pstate`, and `scx_lavd` loaded live in performance mode through sched_ext. `linux-lts` and `linux-zen` work too — set `KERNEL=` in `/etc/mindos/boot.conf`. |
 | `mindwm` | `mindwm/`, `packages/mindwm/` | The compositor (Rust, Smithay). Three window layouts (floating like KDE, tiles like Hyprland, columns like Niri), title bars in the MindOS look, `Super+F` fullscreens, `Super+Space` opens the **Mind bar** (launcher, shell and LLM chat in one field), Super held with the mouse wheel steps through the windows. Wayland and XWayland. See `docs/COMPOSITOR.md`. |
 | `mindshell` | `mindshell/`, `packages/mindshell/` | The desktop shell: a lean Rust host that opens layer-shell windows and renders them with WebKitGTK; the UI is HTML/CSS/TypeScript. A centred dock (pins, running apps), top bar (Mind status, performance mode, notifications, tray, audio, network, battery, layout switcher, clock), the notification centre and toasts (the shell is the freedesktop notification server), desktop widgets, a KDE-like **edit mode**, the **Settings** app (Mind, updates, performance, games, software, wallpaper, displays, screen, desktop), the screensavers and lock screen, and the login screen. See `docs/SHELL.md`. |
 | `mindos-apps` | `packages/mindos-apps/` | The standard apps, existing ones in the MindOS look: Firefox, Files (Nautilus), Image Viewer (Loupe), Archive Manager (File Roller), Text Editor, Document Viewer (Papers), Celluloid and Calculator; libadwaita colours, default handlers, "Open in Terminal" in Files; their "Set as Background" works through the shell's Wallpaper portal. |
@@ -64,9 +66,7 @@ host needs only Docker, QEMU and Python:
 
 ```sh
 scripts/buildbox.sh --build        # one-time: build the container image
-make kernel                        # packages/linux-mindos → build/packages/ (~20 min on 8 cores)
-make nvidia                        # prebuilt modules, signed with that kernel's build key
-make packages                      # every other MindOS package
+make packages                      # every MindOS package → build/packages/
 make repo                          # build/repo: the [mindos] pacman repository
 make iso                           # build/out/mindos-<date>-x86_64.iso
 make qemu-bios                     # boot the ISO in QEMU (KVM, virtio-gpu, BIOS)
@@ -79,12 +79,10 @@ independent packages), using pacman's version comparison. Older build archives
 remain in `build/packages` for development; they are not copied into the ISO.
 A failed repository build leaves the previously published directory intact.
 
-Kernel and Rust packages default to portable x86-64 code. For a build used
-only on the build machine, `MINDOS_CPU=native make kernel nvidia packages` enables
-CPU-specific optimization. `MINDOS_JOBS=8` limits compiler parallelism and
-`MINDOS_LTO=none` disables kernel ThinLTO for quicker development builds.
-These options are forwarded into the build container; the kernel target
-uses a clean source tree so repeated patch application cannot corrupt a build.
+The MindOS Rust packages default to portable x86-64 code. For a build used
+only on the build machine, `MINDOS_CPU=native make packages` enables
+CPU-specific optimization, and `MINDOS_JOBS=8` limits compiler parallelism.
+Both are forwarded into the build container.
 
 Developing the compositor does not need the container; the shell UI only needs
 Node (`cd mindshell/ui && npm install && npm run build && npm run shot` renders

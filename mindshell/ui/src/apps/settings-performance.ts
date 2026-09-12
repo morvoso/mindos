@@ -45,7 +45,7 @@ export function performancePage(el: HTMLElement): () => void {
   );
 
   // ----- performance mode details --------------------------------------------
-  const scxSel = selectBox([{ value: 'scx_lavd', label: 'scx_lavd (games, latency)' }, { value: 'scx_bpfland', label: 'scx_bpfland (interactive)' }, { value: 'scx_rusty', label: 'scx_rusty (throughput)' }, { value: '', label: 'Kernel default (EEVDF + BORE)' }], 'scx_lavd', (v) => setConfig('SCX_SCHEDULER', v));
+  const scxSel = selectBox([{ value: 'scx_lavd', label: 'scx_lavd (games, latency)' }, { value: 'scx_bpfland', label: 'scx_bpfland (interactive)' }, { value: 'scx_rusty', label: 'scx_rusty (throughput)' }, { value: '', label: 'Kernel default (EEVDF)' }], 'scx_lavd', (v) => setConfig('SCX_SCHEDULER', v));
   const plSel = selectBox([{ value: 'default', label: 'Card default' }, { value: 'max', label: 'Maximum the card allows' }], 'default', (v) => setConfig('NVIDIA_POWER_LIMIT', v));
   const tuneCard = card(
     'Performance mode',

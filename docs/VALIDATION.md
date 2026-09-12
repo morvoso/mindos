@@ -15,6 +15,17 @@ It contains kernel 7.2.3-2.1, compositor 30, shell 47, base 26, session 22
 and installer 11. The sections below are a chronological evidence log;
 earlier test counts and image revisions describe those earlier runs.
 
+**Superseded by the move to a stock Arch kernel.** Everything below that
+concerns `linux-mindos`, prebuilt signed NVIDIA modules or the
+prebuilt-versus-DKMS installer fallback describes a design that no longer
+exists: MindOS now installs Arch's `linux` and Arch's `nvidia-open`, which
+Arch builds and upgrades together. Those entries are kept because this file is
+an evidence log and they were true of the images they name, not because they
+describe the current system. Everything else here — compositor, shell,
+installer, gaming, suspend, capture — is unaffected, since none of it depended
+on which kernel package was installed. The kernel change has not yet been
+re-validated on hardware; a new image and a new entry are owed.
+
 | Requirement | Current evidence and practical limit |
 | --- | --- |
 | Install, boot and recover | Fresh BIOS gaming and UEFI minimal installations, Btrfs snapshot restore and cleanup exercised. r27's fresh UEFI live session boots with healthy services. See [installation](#portable-kernel-fresh-installation-and-idle-rendering) and [preflight](#prebuilt-nvidia-modules-and-installation-preflight). |
@@ -22,7 +33,7 @@ earlier test counts and image revisions describe those earlier runs.
 | Everyday applications and developer flexibility | Browser, files, media, PDF and text apps are packaged; networking/audio controls and optional Games/Developer setup exercised. Developer tools remain an optional bundle, with Docker activation opt-in. |
 | Gaming behavior | GameMode transitions, background-work suppression, DLL swap/restore, pointer constraints and Wayland/XWayland fullscreen switching exercised. Steam reaches sign-in and Xonotic movement/aim/fire passes in virgl; real Steam/Proton gameplay and FPS remain unverified. See [gaming input](#gaming-input-and-accelerated-vm-follow-up). |
 | Keyboard, mouse and media controls | Latest compositor unit run: 58 passed. Native keyboard, pointer and media suites passed again with the new session-access defaults. See [media](#hardware-media-keys-and-fullscreen-feedback) and [graphics access](#active-session-graphics-access). |
-| NVIDIA installation | Five prebuilt modules pass cryptographic/ABI checks and signature-enforced kernel loading reaches device detection. The QA guest has no NVIDIA GPU; rendering and legacy-driver compatibility remain unverified. |
+| NVIDIA installation | Now Arch's `nvidia-open` against Arch's `linux`, upgraded in one transaction, so there is no MindOS-built module to verify and no version pin to strand. Not yet re-tested on hardware; the QA guest has no NVIDIA GPU, so rendering and legacy-driver compatibility remain unverified. |
 | Screenshots and sharing | Screenshot and portal/PipeWire monitor capture exercised, including scale/rotation, cancellation and lock rejection. Hardware GPU-buffer capture and real OBS/Discord game recording remain open. |
 | Suspend | Visible suspend-to-idle recovery, password unlock and application survival pass with the documented PCIe virtio fixture. Q35 S3 fails after a delayed watchdog reset; physical suspend is unverified. See [latest suspend evidence](#virtio-suspend-diagnosis-and-visual-recovery). |
 

@@ -51,7 +51,7 @@ async fn sh(cmd: &str, secs: u64) -> (bool, String) {
 /// What a package's breakage would hit; drives the rule-based risk.
 pub fn tag_for(name: &str) -> &'static str {
     let n = name;
-    if n.starts_with("linux-mindos") || n == "linux-firmware" || n.starts_with("amd-ucode") || n.starts_with("intel-ucode") || n == "mkinitcpio" || n == "limine" || n == "dkms" {
+    if n == "linux" || n.starts_with("linux-") || n.starts_with("amd-ucode") || n.starts_with("intel-ucode") || n == "mkinitcpio" || n == "limine" || n == "dkms" {
         "kernel"
     } else if n.starts_with("nvidia") || n.starts_with("lib32-nvidia") || n.starts_with("mesa") || n.starts_with("lib32-mesa") || n.starts_with("vulkan-") || n.starts_with("lib32-vulkan") {
         "gpu"
@@ -368,7 +368,7 @@ pub async fn apply(d: &Daemon, uid: u32) -> Result<UpdateStatus> {
     d.notify_updates();
     d.notices.dismiss("updates:available");
     if ok {
-        let reboot = updated.iter().any(|p| p.starts_with("linux-mindos") || p.starts_with("nvidia"));
+        let reboot = updated.iter().any(|p| p.starts_with("linux") || p.starts_with("nvidia"));
         let body = format!("{} package{} updated{}. The Mind checks the system in a minute and after the next boot.{}", n, if n == 1 { "" } else { "s" }, lu.pre_snapshot.map(|s| format!(" (snapshot {} taken before)", s)).unwrap_or_default(), if reboot { " A new kernel or GPU driver is installed: reboot when convenient." } else { "" });
         let mut actions = vec![action("Details", "settings", json!("updates"))];
         if reboot {

@@ -21,7 +21,7 @@ search and info request, and it works the same way from a terminal
 
 | Source | What it is | Tool underneath | Example |
 | --- | --- | --- | --- |
-| **MindOS + Arch repositories** | Binary packages: core, extra, multilib and the `[mindos]` repo (kernel, compositor, mind, AUR tools built into the repo such as `paru`) | `pacman` | `discord`, `steam`, `mangohud` |
+| **MindOS + Arch repositories** | Binary packages: core, extra, multilib and the `[mindos]` repo (compositor, shell, mind, AUR tools built into the repo such as `paru`; the kernel comes from Arch) | `pacman` | `discord`, `steam`, `mangohud` |
 | **Flathub** | Sandboxed desktop apps, updated independently of the system | `flatpak` (the remote is added on first use) | `spotify`, `obs-studio` (as `com.obsproject.Studio`) |
 | **AUR** (disabled by default) | User-submitted packages built locally from source | `paru`, running as the unprivileged `mindos-build` user | `octopi`, `protonup-qt` |
 

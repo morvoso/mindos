@@ -55,17 +55,11 @@ uses fake package managers and bypasses root checking only in a temporary copy
 of the helper. It verifies full upgrade transactions, batching, input validation,
 failure handling and installed-package no-ops without changing the host.
 
-Kernel checks inspect the resolved configuration and packaged modules:
-
-```sh
-python3 scripts/tests/check_kernel_config.py build/makepkg/linux-mindos/src/linux-7.2.3/.config
-python3 scripts/tests/check_kernel_package.py build/packages/linux-mindos-7.2.3-2.1-x86_64.pkg.tar.zst
-```
-
-The package check uses Python 3.14's standard-library Zstandard reader. It
-checks every module signature footer, rejects packaged signing keys, and
-verifies that the NTSYNC-MODULE provider matches the built-in driver.
-The VM boot check separately establishes that a module's signing key is trusted.
+MindOS builds no kernel and no kernel modules, so there is nothing here to
+check about either: the kernel is Arch's `linux` package and the NVIDIA
+modules are Arch's `nvidia-open`, both signed and tested by Arch and upgraded
+together by `pacman -Syu`. What MindOS still owns is how the machine boots
+with them, which `test_boot_concurrency.py` covers.
 
 `test_snapshot_prune.py` needs root, Btrfs utilities, `btrfsutil` and loop
 mount support. Run it in a test VM. It creates its own disposable 512 MiB
@@ -157,30 +151,10 @@ write rejection and persistence between page visits at normal/compact sizes.
 
 `python3 -m unittest discover -s scripts/tests -p 'test_install*.py'` checks
 disk/input validation, graphics selection and clean-target package resolution.
-The real pacman cases require root inside the disposable build box:
-
-```sh
-scripts/buildbox.sh --root python3 scripts/tests/test_install_packages_pacman.py
-```
-
-They create a tiny temporary repository with intentionally mismatched NVIDIA
-dependencies, check automatic fallback and explicit failure, and install nothing.
-The resolver uses an empty temporary package DB and removes it afterward.
-
-`make nvidia` runs the artifact verifier after building. It can also be invoked
-independently (adjust all three paths together for a new kernel/driver):
-
-```sh
-scripts/buildbox.sh python3 scripts/tests/check_nvidia_package.py \
-  build/packages/linux-mindos-nvidia-open-610.57.04-2-x86_64.pkg.tar.zst \
-  build/packages/linux-mindos-7.2.3-2.1-x86_64.pkg.tar.zst \
-  build/makepkg/linux-mindos/src/linux-7.2.3/certs/signing_key.x509
-```
-
-It verifies CMS signatures using the same public certificate for a released
-kernel module and all five NVIDIA modules, checks ABI/version/dependencies,
-rejects unsupported x86-64 relocations, and allows only modules and the license
-in the payload. A real GPU test is still required for graphics performance.
+The installer resolves the whole package list against the real repositories
+before it touches a disk, in a temporary package database it then deletes, so
+a set of packages that cannot be satisfied stops the install while the disk is
+still untouched. A real GPU test is still required for graphics performance.
 
 `test_keyboard_vm.py` uses real Wayland and XWayland clients on an empty,
 disposable QA desktop. It checks stable recent-window cycling, reverse/Escape,

@@ -7,14 +7,15 @@ length of a game.
 
 | mode | CPU | scheduler | memory | GPU |
 |---|---|---|---|---|
-| `balanced` (default) | schedutil (powersave on active pstate), EPP `balance_performance`, boost on, platform profile `balanced` | EEVDF + BORE (the kernel's) | THP `always`, proactive compaction on, swappiness 30 | NVIDIA persistence on, each card's default power limit |
+| `balanced` (default) | schedutil (powersave on active pstate), EPP `balance_performance`, boost on, platform profile `balanced` | the kernel's EEVDF | THP `always`, proactive compaction on, swappiness 30 | NVIDIA persistence on, each card's default power limit |
 | `performance` | governor `performance`, EPP `performance`, boost on, platform profile `performance` | sched_ext **`scx_lavd`** when available (`SCX_SCHEDULER` picks another or none) | THP `always`, defrag `defer`, proactive compaction off, swappiness 10, split-lock mitigation off, autogroup off | NVIDIA persistence mode; power limit per `NVIDIA_POWER_LIMIT` (`default` / `max` / watts), resolved separately for each GPU |
-| `quiet` | governor `powersave`, EPP `power`, boost off, platform profile `low-power` | EEVDF + BORE | THP `madvise`, proactive compaction on | persistence off |
+| `quiet` | governor `powersave`, EPP `power`, boost off, platform profile `low-power` | the kernel's EEVDF | THP `madvise`, proactive compaction on | persistence off |
 
 `scx_lavd` is the sched_ext scheduler written for gaming handhelds: it
 finds the latency-critical threads (the game's render and input threads)
-and keeps them on the fast cores with steady frame pacing. The kernel is
-built with `CONFIG_SCHED_CLASS_EXT`; the scheduler runs as a transient
+and keeps them on the fast cores with steady frame pacing. Arch's kernel is
+built with `CONFIG_SCHED_CLASS_EXT`, so no custom kernel is needed for it; the
+scheduler comes from Arch's `scx-scheds`, runs as a transient
 `mindos-scx.service` and is stopped when the mode changes.
 
 ## Using it
@@ -104,7 +105,7 @@ context size and additional server arguments remain configurable in
 ```
 GAME_MODE=performance            # balanced | performance | quiet | "" (leave alone)
 MIND_SLEEPS_WHILE_GAMING=1
-SCX_SCHEDULER=scx_lavd           # any scx_* from scx-scheds, or "" for EEVDF+BORE
+SCX_SCHEDULER=scx_lavd           # any scx_* from scx-scheds, or "" for the kernel's EEVDF
 SCX_ARGS=""
 NVIDIA_POWER_LIMIT=default       # default | max | <watts>
 ```

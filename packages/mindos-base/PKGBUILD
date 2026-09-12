@@ -1,34 +1,37 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-base
 pkgver=0.1.0
-pkgrel=31
-pkgdesc="MindOS base system: branding, gaming kernel and system tuning, performance modes, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
+pkgrel=33
+pkgdesc="MindOS base system: branding, gaming tuning, performance modes, NVIDIA + Mesa stack, Limine boot menu with snapper snapshots"
 arch=(any)
 url="https://github.com/morvoso/mindos"
 license=('LicenseRef-MindOS')
-depends=(base linux-mindos linux-firmware amd-ucode intel-ucode
+depends=(base linux linux-firmware amd-ucode intel-ucode
          mkinitcpio zram-generator plymouth mindos-theme
          networkmanager wireguard-tools bluez bluez-utils sudo limine efibootmgr btrfs-progs dosfstools e2fsprogs
          snapper snap-pac scx-scheds python
          mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader vulkan-radeon lib32-vulkan-radeon
          vulkan-intel lib32-vulkan-intel sof-firmware
          fastfetch flatpak libnotify openssh)
-optdepends=('linux-mindos-nvidia-open: prebuilt kernel driver for supported NVIDIA GPUs'
-            'nvidia-open-dkms: alternative NVIDIA driver built locally for other driver versions'
-            'linux-mindos-headers: build external kernel modules'
+# Arch builds nvidia-open against its own linux package and updates the two
+# together, so a driver upgrade can never strand the kernel module. No version
+# is pinned here; pinning one is what makes `pacman -Syu` refuse to run.
+optdepends=('nvidia-open: NVIDIA kernel modules (Turing and newer), built by Arch for the linux kernel'
+            'nvidia-open-dkms: NVIDIA kernel modules built locally, for linux-lts, linux-zen or a custom kernel'
             'nvidia-utils: NVIDIA graphics userspace'
             'lib32-nvidia-utils: NVIDIA support for 32-bit games'
-            'nvidia-settings: advanced NVIDIA configuration')
+            'nvidia-settings: advanced NVIDIA configuration'
+            'linux-headers: build external kernel modules')
 install=mindos-base.install
 backup=(etc/systemd/zram-generator.conf etc/mindos/boot.conf etc/snapper/configs/root etc/mindos/perf.conf)
 source=(os-release apply-branding 90-mindos-branding.hook 60-mindos-gaming.conf
         60-mindos-ioscheduler.rules 70-mindos-controllers.rules zram-generator.conf
-        mindos-nvidia.conf 60-mindos.conf kernel-cmdline mkinitcpio-mindos.conf
+        mindos-nvidia.conf 60-mindos.conf kernel-cmdline mkinitcpio-mindos.conf mindos-gpu
         mindos-boot boot.conf snapper-root 10-mindos-boot 95-mindos-boot.hook remount-fs-snapshot.conf snapshot-prune fstab-paths mindos-snapshot-seal.service
         mindos-perf perf.conf mindos-perf.service 20-mindos-perf.sudoers mindos-base.sysusers)
 sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP
-            SKIP SKIP SKIP SKIP SKIP SKIP
-            SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+            SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP
+            SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm644 os-release                 "$pkgdir/usr/share/mindos/os-release"
@@ -44,6 +47,7 @@ package() {
   # Installed to /etc/mkinitcpio.conf.d/mindos.conf by the installer (not on the live ISO,
   # whose initramfs is built with the archiso hooks).
   install -Dm644 mkinitcpio-mindos.conf     "$pkgdir/usr/share/mindos/mkinitcpio-mindos.conf"
+  install -Dm644 mindos-gpu                 "$pkgdir/usr/lib/initcpio/install/mindos-gpu"
   # The boot menu (Limine) and the snapshots behind it: mindos-boot writes
   # /boot/limine.conf, keeps a kernel copy per snapper snapshot and restores one.
   install -Dm755 mindos-boot                "$pkgdir/usr/bin/mindos-boot"

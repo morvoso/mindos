@@ -7,7 +7,6 @@
 #   MINDOS_INSTALL_GAMING=1   MINDOS_AUTOLOGIN=0
 #   MINDOS_INSTALL_DEV=0      (the developer stack: compilers, containers, editors)
 #   MINDOS_GPU_DRIVER=auto    (mesa explicitly chooses Nouveau on NVIDIA)
-#   MINDOS_NVIDIA_MODULES=auto (prefer prebuilt; prebuilt or dkms can be forced)
 #
 # Layout: GPT — 1 MiB BIOS boot, 4 GiB EFI (/boot), rest btrfs (@ @home @log @pkg @snapshots).
 # The ESP holds the kernel and initramfs of every snapshot that can be booted, so it
@@ -109,15 +108,34 @@ PKGS+=("${GPU_PKGS[@]}")
 [[ $GAMING == 1 ]] && PKGS+=(mindos-gaming)
 [[ $DEV == 1 ]] && PKGS+=(mindos-dev)
 
-# Resolve from an empty package DB before erasing anything. A rolling Arch
-# userspace update can outpace our prebuilt NVIDIA modules; auto then uses DKMS.
+# Resolve the whole selection against an empty package database before anything
+# is erased. Packages already installed in the live session must not hide a
+# dependency that would be missing on the target.
+#
+# There is no prebuilt-versus-DKMS fallback to make any more: every package here
+# comes from Arch or from the MindOS repo, and none of them pins a version of a
+# package it does not build. A failure here is a genuinely broken selection --
+# a mirror problem or a dropped package -- not a stale pin, so it is fatal
+# rather than something to route around.
 say "Checking package repositories and dependencies"
 if ! grep -q '^Server' /etc/pacman.d/mirrorlist 2>/dev/null; then
   sed -E -i 's/^#(Server = https:)/\1/' /etc/pacman.d/mirrorlist
 fi
-PACKAGE_PLAN=$(/usr/lib/mindos/install-packages.py --nvidia-modules "${MINDOS_NVIDIA_MODULES:-auto}" -- "${PKGS[@]}")
-mapfile -t PKGS < <(python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["packages"]))' <<<"$PACKAGE_PLAN")
-python3 -c 'import json,sys; p=json.load(sys.stdin); print("NVIDIA modules: " + p["nvidia_modules"]) if p["nvidia_modules"] != "none" else None; print("Using DKMS because prebuilt dependencies are unavailable: " + p["fallback_reason"]) if p["fallback_reason"] else None' <<<"$PACKAGE_PLAN"
+RESOLVE_DB=$(mktemp -d /tmp/mindos-install-resolve.XXXXXX)
+mkdir -p "$RESOLVE_DB"/{local,sync,cache}
+resolve() {  # never touches the host's package database
+  pacman --config /etc/mindos/pacman-install.conf --dbpath "$RESOLVE_DB" \
+         --logfile "$RESOLVE_DB/pacman.log" --cachedir "$RESOLVE_DB/cache" --noconfirm "$@"
+}
+if ! RESOLVE_ERR=$(resolve -Sy 2>&1 >/dev/null); then
+  rm -rf "$RESOLVE_DB"
+  die "cannot refresh package repositories before installation: $RESOLVE_ERR"
+fi
+if ! RESOLVE_ERR=$(resolve -Sp --print-format '%n %v' -- "${PKGS[@]}" 2>&1 >/dev/null); then
+  rm -rf "$RESOLVE_DB"
+  die "cannot resolve installation packages; no disk changes were made. $RESOLVE_ERR"
+fi
+rm -rf "$RESOLVE_DB"
 
 echo
 say "Plan"
@@ -198,8 +216,14 @@ say "Configuring the system"
 # mkinitcpio: MindOS hooks, modules trimmed to the GPUs present
 mods=("${GPU_MODULES[@]}")
 mkdir -p "$TARGET/etc/mkinitcpio.conf.d"
-install -Dm644 /usr/share/mindos/linux-mindos.preset "$TARGET/etc/mkinitcpio.d/linux-mindos.preset"
-sed "s/^MODULES=.*/MODULES=(${mods[*]})/" /usr/share/mindos/mkinitcpio-mindos.conf \
+# No preset is installed: Arch's linux package ships /etc/mkinitcpio.d/linux.preset,
+# and it leaves ALL_config commented out -- which is what makes mkinitcpio read the
+# /etc/mkinitcpio.conf.d drop-in below. Naming a config file here would set -c and
+# silently skip it, losing plymouth, sd-volatile and the mindos-gpu hook.
+# The drivers go in MINDOS_GPU_MODULES, not MODULES: the mindos-gpu hook puts
+# them in the image for udev to coldplug in parallel, where MODULES would hand
+# them to systemd-modules-load and hold the whole boot open behind the probe.
+sed "s/^MINDOS_GPU_MODULES=.*/MINDOS_GPU_MODULES=(${mods[*]})/" /usr/share/mindos/mkinitcpio-mindos.conf \
   > "$TARGET/etc/mkinitcpio.conf.d/mindos.conf"
 if [[ $AUTOLOGIN == 1 ]]; then
   cat >> "$TARGET/etc/mindos/greetd.toml" <<GREETD
@@ -254,7 +278,7 @@ cat <<SUMMARY
     MindOS is installed on $DISK.
       hostname $HOSTNAME_   user $USERNAME (wheel, mindos)
       login    $([[ $AUTOLOGIN == 1 ]] && echo "automatic at boot; logging out shows the MindOS login screen" || echo "the MindOS login screen (greetd)")
-      kernel   linux-mindos   boot menu Limine ($([[ $UEFI == 1 ]] && echo UEFI || echo BIOS))
+      kernel   linux (Arch)   boot menu Limine ($([[ $UEFI == 1 ]] && echo UEFI || echo BIOS))
       extras   $([[ $GAMING == 1 ]] && echo "gaming stack" || echo "no gaming stack"), $([[ $DEV == 1 ]] && echo "developer stack (run mindos-dev-setup once)" || echo "no developer stack")
       updates  snapper takes a snapshot before and after every pacman run; the boot menu
                lists them under "Snapshots" and 'mindos-boot restore' rolls back

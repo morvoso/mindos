@@ -12,7 +12,7 @@
 # A mode is a set of knobs applied together: CPU frequency governor and
 # energy-performance preference (amd-pstate / intel_pstate), turbo boost, the
 # ACPI platform profile, the scheduler (sched_ext scx_lavd in performance
-# mode, EEVDF+BORE otherwise), transparent huge pages, proactive compaction,
+# mode, the kernel's own EEVDF otherwise), transparent huge pages, proactive compaction,
 # and NVIDIA persistence mode. Settings live in /etc/mindos/perf.conf, the
 # chosen mode in /var/lib/mindos/perf/mode. Members of the "mindos" group may
 # run "set" and the game hooks through sudo without a password.
@@ -250,7 +250,7 @@ status_read() {
   while [[ $S_THP == *$'\n' ]]; do S_THP=${S_THP%$'\n'}; done
   if [ -d /sys/kernel/sched_ext ]; then
     readval S_SCHEDULER /sys/kernel/sched_ext/root/ops
-    [ -n "$S_SCHEDULER" ] || S_SCHEDULER="eevdf+bore"
+    [ -n "$S_SCHEDULER" ] || S_SCHEDULER="eevdf"
   else
     S_SCHEDULER="eevdf"
   fi
@@ -352,7 +352,7 @@ status_text() {
 
 modes_text() {
   cat <<'EOF'
-balanced     schedutil/EPP balance, boost on, EEVDF+BORE, THP always, proactive compaction on. The default.
+balanced     schedutil/EPP balance, boost on, EEVDF, THP always, proactive compaction on. The default.
 performance  governor performance, EPP performance, boost on, sched_ext scx_lavd, THP always, no proactive
              compaction, swappiness 10, NVIDIA persistence mode. GameMode switches here while a game runs.
 quiet        governor powersave, EPP power, boost off, low-power platform profile, THP madvise.

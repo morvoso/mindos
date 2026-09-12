@@ -1,9 +1,9 @@
 # Roadmap
 
 ## Milestone 1 — bootable MindOS image
-- [x] Pivot from the from-scratch kernel to an Arch-based distribution with a custom kernel (`research/kernel-rs` parked)
+- [x] Pivot from the from-scratch kernel to an Arch-based distribution (`research/kernel-rs` parked)
 - [x] Repository restructure, Docker build box, `make` targets, docs
-- [x] `linux-mindos` package builds (7.2.3 + BORE + console theme, Clang ThinLTO, portable x86-64 by default) and boots under KVM with the white-on-red console
+- [x] Boots under KVM with the white-on-red console. MindOS built its own kernel to get there (`linux-mindos`: 7.2.3 + BORE + a console patch); it now uses Arch's `linux` and gets the same result from `preempt=full` and the `vt.*` boot parameters, so an Arch update can never outrun a MindOS rebuild
 - [x] `mindd` daemon + `mind` CLI: llama.cpp child, tool calling, observe/change/forbidden policy, audit log, Unix-socket protocol
 - [x] `mindwm` compositor: DRM and nested backends, XWayland, game-mode window placement, Mind bar (launcher + shell + chat), wordmark, config file, keybindings
 - [x] `mindos-base`, `mindos-session`, `mindos-theme`, `mindos-gaming`, `mindos-dev`, `mindos-install` packages
@@ -27,8 +27,8 @@
 - [x] Qwen3.5 2B (Apache-2.0) as the default model, switchable at runtime from Settings or `mind model`, with catalog downloads and user-supplied GGUFs
 - [x] `mindos-install` under BIOS firmware: fresh gaming install and snapshot restore boot-tested with a Nehalem CPU model
 - [x] GPU-aware installer plan with NVIDIA support-table checks, hybrid early KMS and explicit Nouveau compatibility; unsupported GPUs stop before disk changes
-- [ ] Validate legacy NVIDIA gaming drivers against the MindOS kernel and hardware
-- [x] `linux-mindos-nvidia-open` prebuilt signed modules; exact kernel/userspace dependencies, installer preflight with DKMS fallback, and signature-enforced VM loading checked (physical NVIDIA gaming remains below)
+- [ ] Validate legacy NVIDIA gaming drivers on hardware
+- [x] NVIDIA is Arch's `nvidia-open`, built by Arch against Arch's `linux` and upgraded with it in one transaction. MindOS used to build and sign the modules itself and pin `nvidia-utils` to the version it built against, which stopped `pacman -Syu` on every installed machine at the next driver release; the installer's pre-format dependency resolution is what survives from that work (physical NVIDIA gaming remains below)
 - [x] Health checks (`mind health`, every 30 min and after every update): failed units, kernel/driver mismatch, disk, pacnew, kernel errors, snapshots — as notices on the desktop
 - [x] Performance modes (`mindos-perf`: balanced / performance / quiet, sched_ext `scx_lavd`, NVIDIA power limit) with GameMode hooks; the Mind sleeps while a game runs (`docs/PERFORMANCE.md`)
 - [x] DLSS / FSR / XeSS swapper (`mindos-dlss`, Settings › Games) (`docs/GAMES.md`)
@@ -38,7 +38,8 @@
 - [ ] Stable S3 deep sleep in the Q35 QA guest: display/password/app recovery works, but a delayed emulated-watchdog reset remains
 - [ ] Full visual suspend/resume on physical gaming hardware (see `docs/VALIDATION.md`)
 - [x] The shell is the session's polkit authentication agent: one themed password dialog for `pkexec`, systemd and the standard apps; GameMode's helpers allowed without a prompt (`docs/SHELL.md`)
-- [x] Preserve in-tree module signatures: all 5,727 modules in kernel 7.2.3-2 checked, and its signed virtio driver boot-tested. Out-of-tree DKMS modules still need separately enrolled keys for verified loading.
+- [x] Module signatures come from Arch, which signs its own kernel's modules; MindOS signs nothing and enrols no key. Out-of-tree DKMS modules still need separately enrolled keys for verified loading.
+- [ ] Re-validate on hardware after the move to Arch's kernel: boot, console theme, NVIDIA, ntsync under Proton
 - [ ] Steam, gamescope, Proton, MangoHud, GameMode verified with a real game on the 4090
 - [x] The Mind can look things up: web search, page reading, the Arch Wiki, Wikipedia and ProtonDB, downloads, all through curl behind a guard that refuses this machine and the local network, with fetched text treated as data and never as instructions (`docs/WEB.md`)
 - [x] The Mind watches for updates: rules + model risk assessment, Arch news, notices with actions, optional auto-apply of low-risk updates (never during a game), post-update verification against the pre-update snapshot, one-click rollback (`docs/UPDATES.md`)

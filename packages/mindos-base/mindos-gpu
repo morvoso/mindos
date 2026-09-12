@@ -1,0 +1,40 @@
+#!/bin/bash
+# MindOS: put the display drivers in the initramfs without putting them on the
+# boot's critical path.
+#
+# mkinitcpio's MODULES= does two separate things: it adds the modules to the
+# image, and it writes their names into /etc/modules-load.d/MODULES.conf inside
+# it. The second one is what costs. systemd-modules-load walks that file one
+# module at a time, in a single process, and initrd.target is ordered after it --
+# so the boot waits for the slowest driver in the list before it will switch
+# root. Measured on a two-display NVIDIA machine: the root filesystem was
+# mounted and fsck'd 5.71s in, and nothing at all happened until nvidia_drm's
+# probe returned at 9.95s. Four and a quarter seconds of a boot spent stopped,
+# with a splash on screen that had no unit events to advance against.
+#
+# Every driver named here carries a PCI modalias, so udev's 80-drivers.rules
+# ("ENV{MODALIAS}==\"?*\", RUN{builtin}+=\"kmod load\"") loads it during coldplug
+# by itself -- in the udev worker pool, in parallel with the rest of the boot,
+# with no unit ordered after it. This hook only has to make sure the modules are
+# in the image for udev to find; nothing here goes into modules-load.d.
+#
+# add_module resolves each module's dependencies and, unlike add_checked_modules,
+# is not filtered by autodetect, so this works wherever it sits in HOOKS.
+
+build() {
+    local m
+    for m in "${MINDOS_GPU_MODULES[@]}"; do
+        # The trailing "?" keeps a machine bootable when a listed driver is not
+        # installed for this kernel -- a Mesa-only box has no nvidia modules.
+        add_module "$m?"
+    done
+}
+
+help() {
+    cat <<HELPEOF
+Adds the display drivers named in MINDOS_GPU_MODULES to the image so that udev
+can load them during coldplug. Unlike MODULES they are not written into
+modules-load.d, so they load in parallel with the rest of the boot instead of
+holding initrd.target open until the slowest GPU probe returns.
+HELPEOF
+}

@@ -17,7 +17,7 @@ the system treats it the same as the ones installed by default.
 
 | Area | Packages |
 | --- | --- |
-| Compilers and build | base-devel, linux-mindos-headers (external kernel modules), clang/llvm/lld, cmake, ninja, mold (linker), sccache (compilation cache), just (task runner) |
+| Compilers and build | base-devel, linux-headers (external kernel modules), clang/llvm/lld, cmake, ninja, mold (linker), sccache (compilation cache), just (task runner) |
 | Runtimes | rustup (Rust), nodejs + npm, python + pip + uv, go |
 | Git and remotes | git, git-lfs, github-cli, lazygit, git-delta, difftastic, openssh |
 | Debugging and profiling | gdb, lldb, strace, ltrace, perf, valgrind, hyperfine, tokei |

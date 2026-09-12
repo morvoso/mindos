@@ -38,7 +38,7 @@ class GraphicsTests(unittest.TestCase):
     def test_supported_nvidia_has_driver_cuda_and_32bit_stack(self):
         plan = self.plan([device()])
         self.assertEqual(plan['driver'], 'nvidia-open')
-        self.assertIn('linux-mindos-nvidia-open', plan['packages'])
+        self.assertIn('nvidia-open', plan['packages'])
         self.assertIn('lib32-nvidia-utils', plan['packages'])
         self.assertNotIn('ggml-cuda', plan['packages'])
         self.assertNotIn('nouveau', plan['modules'])

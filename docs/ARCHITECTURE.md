@@ -16,7 +16,12 @@
 4. Do not redo the ecosystem. Reuse the Linux kernel, systemd, pacman and the
    Arch repositories; ship the MindOS-specific pieces as packages in a MindOS
    repository.
-5. Maximum performance on the development machine (Ryzen 7 9800X3D, RTX 4090)
+5. An update never fails because of MindOS. No MindOS package pins the version
+   of a package it does not itself build, because a pin like that turns every
+   upstream release into a machine that cannot run `pacman -Syu` until someone
+   rebuilds. MindOS is Arch underneath: Arch's kernel, Arch's drivers, Arch's
+   packages, upgraded by Arch's own transaction.
+6. Maximum performance on the development machine (Ryzen 7 9800X3D, RTX 4090)
    without breaking other x86-64 hardware.
 
 ## Why a distribution and not a kernel
@@ -25,45 +30,60 @@ The first MindOS prototype was a from-scratch kernel speaking the Linux syscall
 ABI (see `research/kernel-rs/`). It could run static Linux binaries, but no
 kernel other than Linux can load the NVIDIA driver, Mesa's DRM drivers or any
 other Linux kernel module; graphics, sound, Wi-Fi and anti-cheat would all
-have to be rewritten. A gaming OS needs those today, so MindOS is built the way
-Arch, CachyOS and SteamOS are built: a custom Linux kernel package plus a
-custom userland on top of an existing package ecosystem.
+have to be rewritten. A gaming OS needs those today, so MindOS is built on
+Linux and on Arch.
+
+It is not built the way CachyOS is built, with a kernel of its own. MindOS did
+have one, `linux-mindos`, and it cost more than it returned. Its configuration
+differed from Arch's stock kernel in 124 lines out of 10,590 -- Arch already
+ships `PREEMPT_DYNAMIC`, `SCHED_CLASS_EXT`, 1000 Hz and `NTSYNC` -- and what
+was genuinely left, full preemption and a white-on-red console, turned out to
+be two boot parameters. What it did return was breakage: a custom kernel has
+no distributor shipping matching NVIDIA modules, so MindOS had to build and
+sign them itself and pin `nvidia-utils` to the exact version it had built
+against. The next Arch driver release then stopped `pacman -Syu` on every
+installed machine. A kernel is not a feature; a machine that updates is.
+
+So: Arch's `linux`, Arch's `nvidia-open`, Arch's everything, and the MindOS
+work goes where it is actually visible -- the compositor, the shell, the
+assistant, and the Windows integration.
 
 ## Components
 
-### linux-mindos (packages/linux-mindos)
+### The kernel: Arch's `linux`
 
-Vanilla kernel.org stable (7.2.y) plus a small, reviewable patch set:
+MindOS does not build a kernel. It installs Arch's `linux` package and tunes
+it from userspace, where tuning belongs:
 
-* **BORE** (Burst-Oriented Response Enhancer) scheduler patch for desktop and
-  game responsiveness (`kernel.sched_bore=1`).
-* **MindOS console theme**: the VT default attribute is white on red and the
-  palette's red is MindOS red (`#8c1010`), so every boot message from the
-  kernel onwards is white text on a red background. Red is reserved for this
-  boot stage; the loading screen, compositor and shell are dark.
-* A DKMS/Clang compatibility patch so out-of-tree modules build with the same
-  toolchain as the kernel.
-* Config: `-mindos` local version, Clang + LLD with ThinLTO, portable x86-64
-  code by default (`MINDOS_CPU=native` opts into the build CPU), 1000 Hz, full preemption, `NO_HZ`,
-  `amd-pstate`, ntsync, futex2, zstd modules, BBR + fq, THP controlled by performance mode, KVM and
-  virtio guest support (for the QEMU test harness), amdgpu/i915/xe/nouveau
-  plus SoC/SOF/SoundWire audio, touchscreens, IIO sensors, PCI capture and
-  accessibility. Device modules load on demand. InfiniBand, staging, ISDN
-  and unrelated legacy buses are omitted. In-tree modules are signed during
-  `modules_install`, after stripping, using the kernel build's embedded key.
-* `linux-mindos-nvidia-open` supplies prebuilt modules signed with the released
-  kernel's key. The live ISO needs no DKMS/header/Clang stack for NVIDIA.
-  `linux-mindos-headers` remains available for external modules and is included
-  in the developer bundle. The installer checks NVIDIA hardware support and
-  resolves all target dependencies before formatting. When Arch userspace has
-  advanced beyond the prebuilt module version, it selects DKMS plus headers
-  and compiler tools. Mesa systems skip NVIDIA packages. Unsupported NVIDIA
-  devices stop automatic installation; see [graphics drivers](GRAPHICS.md).
+* **Full preemption** through `preempt=full` on the kernel command line.
+  Arch builds with `CONFIG_PREEMPT_DYNAMIC=y`, so the preemption model is
+  chosen at boot rather than at compile time.
+* **The scheduler** is the kernel's EEVDF by default and `scx_lavd` (sched_ext,
+  from Arch's `scx-scheds`) in performance mode, loaded and unloaded live by
+  `mindos-perf`. Arch builds `CONFIG_SCHED_CLASS_EXT=y`.
+* **The console theme**, white on MindOS red, comes from `vt.color` and
+  `vt.default_red/grn/blu` on the command line, so the first kernel message is
+  already themed; `console-theme` in `mindos-theme` re-applies it with
+  `setterm` once userspace is up.
+* **ntsync**, which Wine and Proton use for Windows synchronisation
+  primitives, is `CONFIG_NTSYNC=m` in Arch's kernel.
+* **1000 Hz**, `amd-pstate`, BBR + fq and zstd modules are Arch defaults;
+  `60-mindos-gaming.conf` sets the rest (`vm.max_map_count`, dirty-page limits,
+  split-lock mitigation off, inotify limits) as ordinary sysctls.
 
-Verified: the package builds in the build box, boots under KVM
-(`Linux version 7.2.3-1-mindos ... clang 22.1.8, LLD 22.1.8 ... SMP
-PREEMPT_DYNAMIC`, `BORE CPU Scheduler modification`) and the console is white
-on red from the first line.
+The whole command line is `/usr/share/mindos/kernel-cmdline`, documented
+parameter by parameter, and `/etc/mindos/boot.conf` replaces or extends it.
+
+`linux-lts` and `linux-zen` work too: set `KERNEL=` in `/etc/mindos/boot.conf`
+and `mindos-boot` builds the menu around that kernel instead.
+
+NVIDIA machines get Arch's `nvidia-open`, which Arch builds against its own
+`linux` and moves in the same transaction, so a driver upgrade can never
+strand the module. On `linux-lts` or `linux-zen`, `nvidia-open-dkms` builds
+locally instead. The installer checks that the GPU is supported and resolves
+every target package against the real repositories before it formats a disk;
+Mesa systems skip the NVIDIA packages entirely. See
+[graphics drivers](GRAPHICS.md).
 
 ### mindwm (mindwm/)
 
@@ -283,9 +303,12 @@ script that exports the Wayland environment (Qt, GTK, SDL, Firefox, Java hints) 
 Once the Wayland socket is up the compositor runs
 `/usr/lib/mindos/session-startup`, which publishes the display to
 `systemd --user` and D-Bus, launches executable hooks in
-`/etc/xdg/mindos/autostart` and `~/.config/mindos/autostart`, and starts
-`mindos-session.target`. This activates `graphical-session.target` and the
-standard XDG application autostart target. Systemd generates app services from
+`/etc/xdg/mindos/autostart` and `~/.config/mindos/autostart`, brings up
+`mindos-shell.service` and waits for the desktop to be on screen, and only
+then starts `mindos-session.target`. This activates `graphical-session.target`
+and the standard XDG application autostart target -- after the desktop, so an
+application that waits for nothing (Discord, Steam) cannot paint over the
+compositor's startup screen. Systemd generates app services from
 `~/.config/autostart`, `/etc/mindos/xdg/autostart` and `/etc/xdg/autostart`,
 honouring desktop exclusions, missing executables and user overrides. The
 configuration search path is provided through `environment.d`; portals
@@ -301,14 +324,14 @@ to greetd's login screen; a root shell stays available on tty2 on the live ISO.
 * **base**: `/etc/os-release`, the kernel command line (`amd_pstate=active
   preempt=full nvidia_drm.modeset=1 nvidia_drm.fbdev=1 quiet splash`), sysctl
   tuning (`vm.max_map_count` for Proton, BBR, dirty-page bounds, split-lock
-  mitigation off, `kernel.sched_bore`), zram swap, I/O scheduler and
+  mitigation off), zram swap, I/O scheduler and
   game-controller udev rules, NVIDIA modprobe defaults, mkinitcpio preset and
   the pacman hook that re-applies branding after updates. Also the boot menu
   and the way back from a bad update: Limine, snapper with snap-pac, and
   `mindos-boot`, which writes `/boot/limine.conf`, keeps a kernel copy on the
   ESP for every snapshot, lists the snapshots in the menu and restores one
-  (`docs/ROLLBACK.md`). Depends on `linux-mindos`,
-  the Mesa stack. NVIDIA packages are optional dependencies selected by the
+  (`docs/ROLLBACK.md`). Depends on `linux`, `linux-firmware`, both microcodes
+  and the Mesa stack. NVIDIA packages are optional dependencies selected by the
   installer for NVIDIA hardware and included on the live ISO.
 * **theme**: the boot menu colours (Limine) and the console theme service (red boot stage), the
   dark animated Plymouth `mindos` theme, the MindOS fonts, wallpaper, icon.
@@ -356,7 +379,7 @@ for the ISO).
 
 ```
 firmware → Limine (white on red; installed system) · GRUB/syslinux on the ISO
-  → linux-mindos (white-on-red VT) → plymouth "mindos" (dark, cyan)
+  → linux (white-on-red VT from vt.* boot parameters) → plymouth "mindos" (dark, cyan)
   → systemd → mindd (llama-server loads the model) · greetd on VT 1
   → mindos-greeter (mindwm kiosk + mindshell --app greeter: the login screen)
   → mindos-session → mindwm (DRM/KMS) → session-startup → mindos-shell.service

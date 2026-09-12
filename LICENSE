@@ -12,10 +12,10 @@ licence needs.
 
 This licence covers the parts of MindOS that Black Arrow wrote: the compositor
 (`mindwm`), the desktop shell (`mindshell`), the mind daemon and CLI (`mindd`,
-`mind`), the MindOS packages under `packages/` other than `linux-mindos` and
-`paru`, the installer, the ISO profile, the artwork, the theme, the icons and
-cursors, the documentation, and the MindOS name and logo. These are the
-"Software".
+`mind`), the MindOS packages under `packages/` other than the third-party
+build recipes kept there (`paru`, `octopi`, `qt-sudo`), the installer, the ISO
+profile, the artwork, the theme, the icons and cursors, the documentation, and
+the MindOS name and logo. These are the "Software".
 
 This licence does NOT cover the third-party software MindOS is built from or
 ships alongside: the Linux kernel, the Arch Linux packages, the fonts, the

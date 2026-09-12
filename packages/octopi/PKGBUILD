@@ -1,12 +1,20 @@
 # Based on upstream's recipe; release sources and its ALPM library are pinned.
+#
+# `libalpm.so>=16` and not a bare `libalpm.so`: makepkg turns the bare form into
+# an exact `libalpm.so=16-64`, and the next pacman release to bump that soname
+# would then make `pacman -Syu` refuse the whole transaction until someone
+# rebuilt this package -- the same way a pinned nvidia-utils once stopped every
+# MindOS machine from updating. A range cannot block an update. If the ALPM ABI
+# really does break, octopi stops starting until it is rebuilt, which is a
+# broken optional app instead of a machine that cannot update.
 pkgname=octopi
 pkgver=0.19.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Visual software manager: browse, install, remove and update packages'
 arch=(x86_64)
 url='https://github.com/aarnt/octopi'
 license=('GPL-2.0-or-later' 'GPL-3.0-or-later')
-depends=(pacman libalpm.so pacman-contrib qt6-base qt6-5compat qt6-multimedia qt6-svg qtermwidget kstatusnotifieritem)
+depends=(pacman 'libalpm.so>=16' pacman-contrib qt6-base qt6-5compat qt6-multimedia qt6-svg qtermwidget kstatusnotifieritem)
 makedepends=(cmake ninja qt6-tools vala)
 optdepends=('paru: optional community package support')
 conflicts=(alpm_octopi_utils)

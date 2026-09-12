@@ -42,8 +42,8 @@ says so; the snapshot then stays out of the boot menu until room is freed.
 ## The boot menu
 
 ```
-    MindOS                      linux-mindos, / on @
-    MindOS (linux)              any other kernel found on /boot
+    MindOS                      linux, / on @
+    MindOS (linux-lts)          any other kernel found on /boot
 [+] Snapshots
     ├─ #12  2026-09-06 22:48  after: pacman -Syu
     ├─ #11  2026-09-06 22:47  before: pacman -Syu

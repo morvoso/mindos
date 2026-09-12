@@ -15,25 +15,14 @@ ISO_OUT     := build/out
 # replaces an image that is currently booted in QEMU.  Override with `make iso ISO_REV=7`.
 ISO_REV     ?= $(shell n=$$(ls $(ISO_OUT)/*.iso 2>/dev/null | wc -l); echo $$((n + 1)))
 
-.PHONY: buildbox kernel nvidia packages repo model iso-stage iso qemu qemu-bios screenshot qemu-stop vm vm-install vm-snapshot vm-console clean help
+.PHONY: buildbox packages repo model iso-stage iso qemu qemu-bios screenshot qemu-stop vm vm-install vm-snapshot vm-console clean help
 
 help:
-	@echo "targets: buildbox kernel nvidia packages repo model iso qemu qemu-bios screenshot qemu-stop clean"
+	@echo "targets: buildbox packages repo model iso qemu qemu-bios screenshot qemu-stop clean"
 	@echo "dev VM:  vm (create on libvirt from the newest ISO) vm-install vm-snapshot NAME=... vm-console"
 
 buildbox:
 	$(BUILDBOX) --build
-
-# The kernel takes ~20 minutes on 8 cores; it is separate from `packages`.
-kernel:
-	mkdir -p build/logs
-	$(BUILDBOX) bash -c 'cd packages/linux-mindos && makepkg -Csf --noconfirm --skippgpcheck'
-
-# Requires the released kernel/headers and its build-time signing key.
-# Headers are installed only in the disposable container, never on the host.
-nvidia:
-	mkdir -p build/logs
-	$(BUILDBOX) bash -c 'cd packages/linux-mindos-nvidia-open && source PKGBUILD && sudo pacman -U --noconfirm /work/build/packages/linux-mindos-headers-$${_kernelver}-x86_64.pkg.tar.zst && makepkg -Cfd --noconfirm --skippgpcheck && python3 /work/scripts/tests/check_nvidia_package.py /work/build/packages/$$pkgname-$$pkgver-$$pkgrel-x86_64.pkg.tar.zst /work/build/packages/linux-mindos-$${_kernelver}-x86_64.pkg.tar.zst "$$_sign_cert"'
 
 # Rust packages resolve their deps with -s; the arch=any packages are only files (-d).
 packages:
