@@ -23,24 +23,35 @@ fn main() {
 
     profiling::register_thread!("Main Thread");
 
-    let arg = std::env::args().nth(1);
+    // Before anything can panic, so a crash leaves a journal entry that says
+    // where it was rather than a session that simply ended.
+    mindwm::recover::say_where_panics_happen();
+
     let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
-    let backend = match arg.as_deref() {
-        Some("--winit") => "winit",
-        Some("--tty-udev") => "udev",
-        Some("--help") | Some("-h") => {
-            println!("USAGE: mindwm [--winit | --tty-udev]");
-            println!("  --winit     nested inside a Wayland/X11 session (development)");
-            println!("  --tty-udev  real session on a TTY via DRM/KMS (default when no display is set)");
-            return;
+    let mut backend = if nested { "winit" } else { "udev" };
+    // A nested instance shares the user's session bus and systemd user
+    // manager with the desktop it runs inside, so it starts no session of
+    // its own unless asked: see `AnvilState::skip_startup`.
+    let mut session_startup = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--winit" => backend = "winit",
+            "--tty-udev" => backend = "udev",
+            "--with-startup" => session_startup = true,
+            "--help" | "-h" => {
+                println!("USAGE: mindwm [--winit | --tty-udev] [--with-startup]");
+                println!("  --winit          nested inside a Wayland/X11 session (development)");
+                println!("  --tty-udev       real session on a TTY via DRM/KMS (default when no display is set)");
+                println!("  --with-startup   run [startup].exec when nested; it takes over the");
+                println!("                   session environment of the desktop you are running in");
+                return;
+            }
+            other => {
+                eprintln!("mindwm: unknown option {other}");
+                std::process::exit(2);
+            }
         }
-        Some(other) => {
-            eprintln!("mindwm: unknown option {other}");
-            std::process::exit(2);
-        }
-        None if nested => "winit",
-        None => "udev",
-    };
+    }
 
     // The pointer, resolved before any backend loads a cursor or the
     // compositor starts a child: what the session exported (mindos-session
@@ -66,7 +77,7 @@ fn main() {
         #[cfg(feature = "winit")]
         "winit" => {
             tracing::info!("mindwm {}: starting nested (winit) backend", env!("CARGO_PKG_VERSION"));
-            mindwm::winit::run_winit();
+            mindwm::winit::run_winit(session_startup);
         }
         #[cfg(feature = "udev")]
         "udev" => {

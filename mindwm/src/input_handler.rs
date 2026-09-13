@@ -32,7 +32,7 @@ use smithay::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1,
         wayland_server::protocol::wl_pointer,
     },
-    utils::{IsAlive, Logical, Point, Serial, Transform, SERIAL_COUNTER as SCOUNTER},
+    utils::{IsAlive, Logical, Point, Rectangle, Serial, Transform, SERIAL_COUNTER as SCOUNTER},
     wayland::{
         compositor::with_states,
         seat::WaylandFocus,
@@ -121,6 +121,54 @@ fn resize_edges(x0: f64, y0: f64, x1: f64, y1: f64, location: Point<f64, Logical
         }
 }
 
+/// The dwindle split whose divider lies along `edges` of tile `i`, given
+/// every tile's rectangle and whether its split is vertical. A dwindle split
+/// always leaves its own tile left of or above the divider, so the divider on
+/// a tile's right or bottom is that tile's own split and the one on its left
+/// or top belongs to an earlier tile. The last tile splits nothing.
+fn dwindle_divider(
+    rects: &[Rectangle<i32, Logical>],
+    split_x: &[bool],
+    i: usize,
+    edges: ResizeEdge,
+    gap: i32,
+) -> Option<usize> {
+    let splits = rects.len().checked_sub(1)?;
+    let r = rects.get(i)?;
+    let near = |a: i32, b: i32| (a - b).abs() <= 1;
+    let find = |vertical: bool, far: bool| {
+        (0..splits).find(|&j| {
+            split_x[j] == vertical
+                && if far {
+                    j == i
+                } else {
+                    j < i
+                        && if vertical {
+                            near(rects[j].loc.x + rects[j].size.w + gap, r.loc.x)
+                        } else {
+                            near(rects[j].loc.y + rects[j].size.h + gap, r.loc.y)
+                        }
+                }
+        })
+    };
+    let sideways = if edges.intersects(ResizeEdge::LEFT) {
+        find(true, false)
+    } else if edges.intersects(ResizeEdge::RIGHT) {
+        find(true, true)
+    } else {
+        None
+    };
+    sideways.or_else(|| {
+        if edges.intersects(ResizeEdge::TOP) {
+            find(false, false)
+        } else if edges.intersects(ResizeEdge::BOTTOM) {
+            find(false, true)
+        } else {
+            None
+        }
+    })
+}
+
 #[cfg(test)]
 mod shortcut_tests {
     use super::*;
@@ -165,6 +213,33 @@ mod shortcut_tests {
         assert_eq!(at(95.0, 95.0), E::TOP_LEFT);
         assert_eq!(at(505.0, 405.0), E::BOTTOM_RIGHT);
     }
+
+    /// A drag on a tile's edge moves the divider that edge sits on, never
+    /// the one on the far side of the tile.
+    #[test]
+    fn a_tile_edge_picks_the_divider_it_sits_on() {
+        use ResizeEdge as E;
+        // three tiles: one on the left, two stacked on the right
+        let rects = [
+            Rectangle::new((0, 0).into(), (956, 1080).into()),
+            Rectangle::new((964, 0).into(), (956, 536).into()),
+            Rectangle::new((964, 544).into(), (956, 536).into()),
+        ];
+        let split_x = [true, false, true];
+        let at = |i, e| dwindle_divider(&rects, &split_x, i, e, 8);
+        assert_eq!(at(0, E::RIGHT), Some(0));
+        assert_eq!(at(1, E::LEFT), Some(0));
+        assert_eq!(at(2, E::LEFT), Some(0));
+        assert_eq!(at(1, E::BOTTOM), Some(1));
+        assert_eq!(at(2, E::TOP), Some(1));
+        // the outside of the layout has no divider
+        assert_eq!(at(0, E::LEFT), None);
+        assert_eq!(at(2, E::RIGHT), None);
+        assert_eq!(at(1, E::TOP), None);
+        // a corner uses whichever of its sides has one
+        assert_eq!(at(2, E::TOP_LEFT), Some(0));
+        assert_eq!(at(1, E::BOTTOM_RIGHT), Some(1));
+    }
 }
 
 impl<BackendData: Backend> AnvilState<BackendData> {
@@ -191,7 +266,8 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             KeyAction::Run(cmd) => {
                 info!(cmd, "Starting program");
 
-                if let Err(e) = Command::new(&cmd)
+                let mut command = Command::new(&cmd);
+                command
                     .envs(
                         self.socket_name
                             .clone()
@@ -203,9 +279,8 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                                 #[cfg(not(feature = "xwayland"))]
                                 None,
                             ),
-                    )
-                    .spawn()
-                {
+                    );
+                if let Err(e) = crate::sched::at_desktop_priority(&mut command).spawn() {
                     error!(cmd, err = %e, "Failed to start program");
                 }
             }
@@ -219,7 +294,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 self.mindbar.toggle();
             }
             KeyAction::Overview => self.overview_shortcut(),
+            KeyAction::ShowDesktop => {
+                self.ipc_shortcut("desktop");
+            }
             KeyAction::Terminal => self.spawn_terminal(),
+            KeyAction::TaskManager => self.open_task_manager(),
             KeyAction::Screenshot { screen } => self.spawn_shell(if screen {
                 "mindos-screenshot screen"
             } else {
@@ -298,14 +377,19 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             if data.keyboard_interactivity == KeyboardInteractivity::Exclusive
                 && (data.layer == WlrLayer::Top || data.layer == WlrLayer::Overlay)
             {
-                let surface = self.space.outputs().find_map(|o| {
+                let found = self.space.outputs().find_map(|o| {
                     let map = layer_map_for_output(o);
                     let cloned = map.layers().find(|l| l.layer_surface() == &layer).cloned();
-                    cloned
+                    cloned.map(|surface| (o.clone(), surface))
                 });
-                if let Some(surface) = surface {
+                if let Some((output, surface)) = found {
                     if self.idle.locked && surface.namespace() != crate::idle::LOCK_NAMESPACE {
                         // Locked: only the lock screen may take the keyboard.
+                        continue;
+                    }
+                    // A panel that is not on screen under a game does not take
+                    // the keyboard away from it either.
+                    if data.layer == WlrLayer::Top && crate::shell::game_screen(&output) {
                         continue;
                     }
                     keyboard.set_focus(self, Some(surface.into()), serial);
@@ -520,14 +604,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         self.activate_window(&window);
         let start_data = PointerGrabStartData { focus: None, button, location };
         if self.layout.is_tiled(&window) {
-            // A column's left edge is the previous column's right edge, and
-            // that is the tile whose share of the strip the drag changes.
-            let target = if edges.contains(ResizeEdge::LEFT) && self.layout.mode == LayoutMode::Columns {
-                self.tile_before(&window).unwrap_or_else(|| window.clone())
-            } else {
-                window.clone()
-            };
-            let Some(grab) = self.tile_resize_grab(&target, start_data) else {
+            let Some(grab) = self.tile_border_grab(&window, edges, start_data) else {
                 return false;
             };
             self.pointer.clone().set_grab(self, grab, serial, Focus::Clear);
@@ -555,9 +632,12 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         };
         let initial_window_location = geo.loc;
         let initial_window_size = window.0.geometry().size;
+        // The commit handler measures the whole frame, title bar included;
+        // the grab sizes the client under it.
+        let frame_size = geo.size;
         with_states(&surface, |states| {
             if let Some(data) = states.data_map.get::<RefCell<SurfaceData>>() {
-                data.borrow_mut().resize_state = ResizeState::Resizing(ResizeData { edges, initial_window_location, initial_window_size });
+                data.borrow_mut().resize_state = ResizeState::Resizing(ResizeData { edges, initial_window_location, initial_window_size: frame_size });
             }
         });
         let grab = PointerResizeSurfaceGrab {
@@ -570,21 +650,6 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         };
         self.pointer.clone().set_grab(self, grab, serial, Focus::Clear);
         true
-    }
-
-    /// The tile laid out before `window` on its own display.
-    fn tile_before(&self, window: &WindowElement) -> Option<WindowElement> {
-        let home = self.window_home(window)?;
-        let tiles: Vec<&WindowElement> = self
-            .layout
-            .outputs
-            .get(&home.name())?
-            .order
-            .iter()
-            .filter(|w| w.alive() && !w.pending_fullscreen())
-            .collect();
-        let i = tiles.iter().position(|w| *w == window)?;
-        i.checked_sub(1).map(|k| tiles[k].clone())
     }
 
     /// The window frame the pointer is resting against and the edges a drag
@@ -692,6 +757,84 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     /// tile's share of the strip sideways; dwindle drags the split the tile
     /// was carved out of, and the tile at the end of a dwindle owns no split,
     /// so it borrows the one before it and pushes it the other way.
+    /// The divider a plain drag on the ring around a tile moves: the one
+    /// under the pointer, and it follows the pointer. (Super + right drag
+    /// instead grows the grabbed tile whichever way it goes.)
+    fn tile_border_grab(
+        &mut self,
+        window: &WindowElement,
+        edges: ResizeEdge,
+        start_data: PointerGrabStartData<Self>,
+    ) -> Option<TileResizeGrab<BackendData>> {
+        let home = self.window_home(window)?;
+        let tiles: Vec<WindowElement> = self
+            .layout
+            .outputs
+            .get(&home.name())?
+            .order
+            .iter()
+            .filter(|w| w.alive() && !w.pending_fullscreen())
+            .cloned()
+            .collect();
+        let i = tiles.iter().position(|w| w == window)?;
+        let gap = self.layout.gap;
+        let frac_of = |w: &WindowElement| {
+            let f = w.tile().width.get();
+            if f <= 0.0 { 0.5 } else { f }
+        };
+        match self.layout.mode {
+            LayoutMode::Columns => {
+                if !edges.intersects(ResizeEdge::LEFT | ResizeEdge::RIGHT) {
+                    return None;
+                }
+                let area = usable_area(&self.space, &home)?;
+                let span = (area.size.w - 2 * self.layout.outer_gap - gap) as f32;
+                // A column's left edge is the previous column's right edge, and
+                // that is the column whose share of the strip the drag changes.
+                // The first column has nothing to its left: it grows itself,
+                // wider as the pointer goes left.
+                let (target, invert) = match edges.intersects(ResizeEdge::LEFT) {
+                    true => match i.checked_sub(1) {
+                        Some(k) => (tiles[k].clone(), false),
+                        None => (window.clone(), true),
+                    },
+                    false => (window.clone(), false),
+                };
+                (span > 1.0).then(|| TileResizeGrab {
+                    start_frac: frac_of(&target),
+                    start_data,
+                    target,
+                    axis_x: true,
+                    invert,
+                    span,
+                    min: 0.15,
+                    max: 1.0,
+                })
+            }
+            LayoutMode::Dwindle => {
+                let rects: Vec<Rectangle<i32, Logical>> =
+                    tiles.iter().map(|w| self.space.element_geometry(w)).collect::<Option<_>>()?;
+                let split_x: Vec<bool> = tiles.iter().map(|w| w.tile().split_x.get()).collect();
+                let k = dwindle_divider(&rects, &split_x, i, edges, gap)?;
+                let rest = rects[k..].iter().copied().reduce(|a, b| a.merge(b))?;
+                let axis_x = split_x[k];
+                let span = (if axis_x { rest.size.w } else { rest.size.h } - gap) as f32;
+                (span > 1.0).then(|| TileResizeGrab {
+                    start_data,
+                    target: tiles[k].clone(),
+                    axis_x,
+                    // the split's own tile is on the near side of its divider
+                    invert: false,
+                    span,
+                    start_frac: frac_of(&tiles[k]),
+                    min: 0.1,
+                    max: 0.9,
+                })
+            }
+            LayoutMode::Floating => None,
+        }
+    }
+
     fn tile_resize_grab(
         &mut self,
         window: &WindowElement,
@@ -782,7 +925,15 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     {
                         #[cfg(feature = "xwayland")]
                         if let Some(surface) = window.0.x11_surface() {
-                            self.xwm.as_mut().unwrap().raise_window(surface).unwrap();
+                            // Xwayland is a separate process that games take
+                            // down with them. A window that will not come to
+                            // the front is a window; taking the click as a
+                            // reason to exit would be the whole session.
+                            if let Some(xwm) = self.xwm.as_mut() {
+                                if let Err(err) = xwm.raise_window(surface) {
+                                    tracing::warn!("Xwayland would not raise a window: {err:?}");
+                                }
+                            }
                         }
                         keyboard.set_focus(self, Some(window.into()), serial);
                         return;
@@ -881,7 +1032,14 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             under = Some((surface, loc + output_geo.loc));
         } else if let Some(focus) = layers
             .layer_under(WlrLayer::Overlay, pos - output_geo.loc.to_f64())
-            .or_else(|| layers.layer_under(WlrLayer::Top, pos - output_geo.loc.to_f64()))
+            // A game with the whole screen is not drawn under the panels, so
+            // it must not be clicked through them either: an invisible bar
+            // that still swallows the pointer is worse than a visible one.
+            .or_else(|| {
+                (!crate::shell::game_screen(output))
+                    .then(|| layers.layer_under(WlrLayer::Top, pos - output_geo.loc.to_f64()))
+                    .flatten()
+            })
             .and_then(|layer| {
                 let layer_loc = layers.layer_geometry(layer).unwrap().loc;
                 layer
@@ -1011,12 +1169,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
         match event {
             InputEvent::Keyboard { event } => match self.keyboard_key_to_action::<B>(event) {
                 KeyAction::ScaleUp => {
-                    let output = self
-                        .space
-                        .outputs()
-                        .find(|o| o.name() == output_name)
-                        .unwrap()
-                        .clone();
+                    let Some(output) = self.space.outputs().find(|o| o.name() == output_name).cloned()
+                    else {
+                        return;
+                    };
 
                     let current_scale = output.current_scale().fractional_scale();
                     let new_scale = current_scale + 0.25;
@@ -1027,12 +1183,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 }
 
                 KeyAction::ScaleDown => {
-                    let output = self
-                        .space
-                        .outputs()
-                        .find(|o| o.name() == output_name)
-                        .unwrap()
-                        .clone();
+                    let Some(output) = self.space.outputs().find(|o| o.name() == output_name).cloned()
+                    else {
+                        return;
+                    };
 
                     let current_scale = output.current_scale().fractional_scale();
                     let new_scale = f64::max(1.0, current_scale - 0.25);
@@ -1043,12 +1197,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 }
 
                 KeyAction::RotateOutput => {
-                    let output = self
-                        .space
-                        .outputs()
-                        .find(|o| o.name() == output_name)
-                        .unwrap()
-                        .clone();
+                    let Some(output) = self.space.outputs().find(|o| o.name() == output_name).cloned()
+                    else {
+                        return;
+                    };
 
                     let current_transform = output.current_transform();
                     let new_transform = match current_transform {
@@ -1071,12 +1223,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             },
 
             InputEvent::PointerMotionAbsolute { event } => {
-                let output = self
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == output_name)
-                    .unwrap()
-                    .clone();
+                let Some(output) = self.space.outputs().find(|o| o.name() == output_name).cloned()
+                else {
+                    return;
+                };
                 self.on_pointer_move_absolute_windowed::<B>(event, &output)
             }
             InputEvent::PointerButton { event } => self.on_pointer_button::<B>(event),
@@ -1680,8 +1830,12 @@ enum KeyAction {
     ToggleMindBar,
     /// Super+W: the shell's overview (or the built-in window preview)
     Overview,
+    /// Super+D: bring the shell's desktop UI forward, or send it back
+    ShowDesktop,
     /// Open the configured terminal
     Terminal,
+    /// Ctrl+Shift+Escape: the Task Manager, raised if it is already open
+    TaskManager,
     Screenshot { screen: bool },
     CloseWindow,
     /// Lock the session now (Super+L).
@@ -1740,6 +1894,9 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
     } else { keysym };
     if keysym == Keysym::Print && !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
         Some(KeyAction::Screenshot { screen: modifiers.shift })
+    } else if modifiers.ctrl && modifiers.shift && !modifiers.alt && keysym == Keysym::Escape {
+        // The reflex every desktop shares.
+        Some(KeyAction::TaskManager)
     } else if modifiers.logo && modifiers.shift && !modifiers.ctrl && !modifiers.alt
         && matches!(keysym, Keysym::S | Keysym::s) {
         Some(KeyAction::Screenshot { screen: false })
@@ -1775,6 +1932,8 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
             modifier: if modifiers.logo { crate::window_cycle::CycleModifier::Super }
                       else { crate::window_cycle::CycleModifier::Alt },
         })
+    } else if modifiers.logo && !modifiers.shift && keysym == Keysym::d {
+        Some(KeyAction::ShowDesktop)
     } else if modifiers.logo && !modifiers.shift && keysym == Keysym::t {
         Some(KeyAction::CycleLayout)
     } else if modifiers.logo && modifiers.shift && keysym == Keysym::F {

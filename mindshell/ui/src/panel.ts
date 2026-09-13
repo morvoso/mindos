@@ -8,7 +8,7 @@ import { glassLayer } from './glass';
 import { icon } from './icons';
 import { isFitPanel, panelById } from './layout';
 import { store } from './state';
-import { allWidgets, getWidget, mergedConfig, type WidgetCtx, type WidgetInstance } from './widgets/registry';
+import { allWidgets, getWidget, mergedConfig, type Flyout, type WidgetCtx, type WidgetInstance } from './widgets/registry';
 import type { Align, Anchor, Edge, MenuAction, PanelDef, PanelLayer, WidgetEntry } from './types';
 
 interface Mounted {
@@ -34,14 +34,19 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
   root.classList.add('panel-window');
   const glow = h('div', { class: 'panel-glow' });
   const widgetsEl = h('div', { class: 'panel-widgets' });
-  const start = h('button', { class: 'panel-start', title: 'Launch, search or ask Mind · Super+Space', 'aria-label': 'Open launcher', onclick: () => bridge.send('mind.toggle') }, icon('grid', 17), h('span', {}, 'Start'));
+  const start = h('button', { class: 'panel-start', title: 'Launch, search or ask Mind · Super+Space', 'aria-label': 'Ask Mind', onclick: () => bridge.send('mind.toggle') }, icon('grid', 17), h('span', {}, 'Mind'));
   const dropInd = h('div', { class: 'drop-ind', hidden: true });
+  // The flyout lives between the settings strip and the bar, so it is on the
+  // inner side of the bar whichever edge the panel is on (the window's flex
+  // direction follows the edge). The window grows by exactly its thickness.
+  const flyoutCard = h('div', { class: 'flyout-card' });
+  const flyoutEl = h('div', { class: 'panel-flyout', hidden: true }, flyoutCard);
   // The island is the visible bar, inset inside the window (app.css); the
   // glass under it shows the wallpaper at the island's screen position.
   const island = h('div', { class: 'panel-island' }, glow, start, widgetsEl, dropInd);
   const bar = h('div', { class: 'panel-bar' }, island);
   const strip = h('div', { class: 'panel-strip', hidden: true });
-  root.append(strip, bar);
+  root.append(strip, flyoutEl, bar);
 
   const mounted = new Map<string, Mounted>();
   let current: PanelDef | undefined;
@@ -66,6 +71,11 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
   root.addEventListener('pointerleave', settle);
   settle();
   let geomKey = '';
+  /** Extra thickness the flyout has asked the host for (0 when it is down). */
+  let flyoutSize = 0;
+  let flyoutKey: string | undefined;
+  let flyoutAnchor: Element | undefined;
+  let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let selected: string | undefined;
   /** Measured length of a fit-to-content panel (0 until known). */
   let fitLen = 0;
@@ -75,7 +85,7 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
   const origin = () => {
     const out = store.output(output);
     if (!current || !out) return { x: 0, y: 0 };
-    const r = panelWindowRect(current, out, editing(), store.state.layout.panels, fitLen || undefined);
+    const r = panelWindowRect(current, out, editing(), store.state.layout.panels, fitLen || undefined, flyoutSize);
     return { x: r.x, y: r.y };
   };
   const glass = glassLayer(island, {
@@ -112,10 +122,24 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     const len = measure();
     if (!len || len === fitLen) return;
     fitLen = len;
-    bridge.send('panel.fit', { length: len });
+    bridge.send('panel.fit', { panel: panelId, length: len });
     glass.update();
   }, 30);
   const sizer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { report(); centre(); }) : undefined;
+  // The window changes thickness when a flyout goes up or comes down, and the
+  // host applies that a frame or two after the page asks for it. Two things
+  // wait on the real size: the frosted wallpaper under the island, positioned
+  // from the window's origin, which moves even though the island does not;
+  // and the card itself, which is held back until there is room for it, or
+  // its first frames would be drawn outside the window and clipped.
+  const settleFlyout = () => {
+    glass.update();
+    if (!flyoutKey || !current || flyoutEl.classList.contains('ready')) return;
+    const have = isVertical(current) ? root.clientWidth : root.clientHeight;
+    if (have >= current.size + flyoutSize - 1) flyoutEl.classList.add('ready');
+  };
+  const rootSizer = typeof ResizeObserver === 'function' ? new ResizeObserver(settleFlyout) : undefined;
+  rootSizer?.observe(root);
 
   // ----- centring ---------------------------------------------------------
   // With two expanding spacers the widgets between them are centred on the
@@ -150,6 +174,105 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     if (spacer.style.flex !== value) spacer.style.flex = value;
   };
 
+  // ----- the flyout ------------------------------------------------------
+  // A card beside a widget, drawn in the panel window: the window grows by
+  // the card's thickness (`panel.flyout`, the runtime twin of edit mode's
+  // settings strip) so the card has somewhere to be, while the exclusive
+  // zone stays put and no window on the screen moves. The pointer never
+  // crosses a surface boundary going from the widget to the card.
+
+  const FLYOUT_GAP = 8;
+  const FLYOUT_MARGIN = 6;
+
+  const setFlyoutSize = (size: number) => {
+    const want = Math.max(0, Math.round(size));
+    if (want === flyoutSize) return;
+    flyoutSize = want;
+    root.style.setProperty('--flyout-size', `${want}px`);
+    bridge.send('panel.flyout', { panel: panelId, size: want });
+  };
+
+  /** Line the card up with the widget it belongs to, kept inside the window. */
+  const placeFlyout = () => {
+    if (!flyoutAnchor || !current || !flyoutAnchor.isConnected) return;
+    const vertical = isVertical(current);
+    const a = rectIn(root, flyoutAnchor);
+    const card = rectIn(root, flyoutCard);
+    const span = vertical ? root.clientHeight : root.clientWidth;
+    const size = vertical ? card.h : card.w;
+    const mid = (vertical ? a.y + a.h / 2 : a.x + a.w / 2) - size / 2;
+    const at = clamp(mid, FLYOUT_MARGIN, Math.max(FLYOUT_MARGIN, span - size - FLYOUT_MARGIN));
+    if (vertical) {
+      flyoutCard.style.top = `${Math.round(at)}px`;
+      flyoutCard.style.left = '';
+    } else {
+      flyoutCard.style.left = `${Math.round(at)}px`;
+      flyoutCard.style.top = '';
+    }
+    setFlyoutSize((vertical ? card.w : card.h) + FLYOUT_GAP);
+  };
+
+  const hideFlyout = (key?: string) => {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = undefined;
+    if (!flyoutKey || (key !== undefined && key !== flyoutKey)) return;
+    flyoutKey = undefined;
+    flyoutAnchor = undefined;
+    flyoutEl.hidden = true;
+    flyoutEl.classList.remove('ready');
+    flyoutCard.replaceChildren();
+    setFlyoutSize(0);
+    // The window is still tall for a frame or two; the glass is redrawn when
+    // it has actually shrunk, not now, or it would flash at the wrong place.
+    if (!rootSizer) glass.update();
+  };
+
+  const flyout: Flyout = {
+    show(key, content, anchorEl) {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = undefined;
+      flyoutKey = key;
+      flyoutAnchor = anchorEl;
+      flyoutCard.replaceChildren(content);
+      flyoutEl.hidden = false;
+      wake();
+      // The card is absolutely positioned, so it can be measured before the
+      // host has given the window the room for it.
+      placeFlyout();
+      requestAnimationFrame(() => {
+        if (flyoutKey !== key) return;
+        placeFlyout();
+        settleFlyout();
+      });
+      // If the host never reports the room (no resize observer, or it refused
+      // the size), show the card anyway rather than leave the hover dead.
+      setTimeout(() => {
+        if (flyoutKey === key) flyoutEl.classList.add('ready');
+      }, 300);
+    },
+    hide: hideFlyout,
+    shown: () => flyoutKey,
+  };
+
+  // The card stays while the pointer is on it or back on the bar; anywhere
+  // else in the (now taller) window and it goes, after a beat so a diagonal
+  // sweep from the widget to the card does not lose it.
+  root.addEventListener('pointermove', (e) => {
+    if (!flyoutKey) return;
+    const t = e.target as Element | null;
+    const inside = !!t && (flyoutCard.contains(t) || bar.contains(t));
+    if (inside) {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = undefined;
+    } else if (!hideTimer) {
+      hideTimer = setTimeout(() => hideFlyout(), 180);
+    }
+  });
+  root.addEventListener('pointerleave', () => hideFlyout());
+  root.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideFlyout();
+  });
+
   // A widget's anchor for popups. Along the bar it is the widget itself, so the
   // popup lines up with what was clicked; across it, it is the whole island, so
   // the popup opens clear of the shelf and not over its padding.
@@ -179,6 +302,7 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
       store,
       origin,
       anchorOf,
+      flyout,
       openPopup: (name, arg, opts) => actions.openPopup(name, arg, opts),
       togglePopup: (name, arg, opts) => actions.togglePopup(name, arg, opts),
       setConfig: (patch) =>
@@ -447,7 +571,9 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     root.classList.toggle('editing', edit);
     root.classList.toggle('fit', isFitPanel(p));
     root.classList.toggle('bare', p.opacity <= 0.02);
-    root.classList.toggle('edge', !panelFloats(p));
+    const floats = panelFloats(p);
+    root.classList.toggle('floating', floats);
+    root.classList.toggle('edge', !floats);
     root.style.setProperty('--panel-size', `${p.size}px`);
     root.style.setProperty('--panel-opacity', String(clamp(p.opacity, 0, 1)));
     root.style.setProperty('--edit-extra', `${EDIT_EXTRA}px`);
@@ -456,6 +582,7 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     const key = `${p.edge}:${p.size}`;
     if (key !== geomKey) {
       geomKey = key;
+      hideFlyout();
       for (const id of Array.from(mounted.keys())) unmount(id);
     }
     reconcile(
@@ -495,15 +622,18 @@ export function renderPanel(root: HTMLElement, panelId: string, output: string):
     else fitLen = 0;
     requestAnimationFrame(() => {
       centre();
+      placeFlyout();
       glass.update();
     });
   };
 
   render();
-  const offs = [store.on('layout', render), store.on('editMode', render), store.on('outputs', render)];
+  const offs = [store.on('layout', render), store.on('editMode', render), store.on('outputs', render), store.on('editMode', () => hideFlyout())];
   return () => {
     offs.forEach((off) => off());
+    hideFlyout();
     sizer?.disconnect();
+    rootSizer?.disconnect();
     glass.dispose();
     for (const id of Array.from(mounted.keys())) unmount(id);
     root.replaceChildren();

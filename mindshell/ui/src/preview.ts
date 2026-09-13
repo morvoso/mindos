@@ -28,6 +28,7 @@ export function renderPreview(root: HTMLElement): void {
 
   const panelWins = new Map<string, { box: HTMLElement; dispose: () => void }>();
   const fitLens = new Map<string, number>();
+  const flyouts = new Map<string, number>();
   const layoutPanels = () => {
     const panels = panelsForOutput(store.state.layout, out.name);
     const seen = new Set<string>();
@@ -40,7 +41,7 @@ export function renderPreview(root: HTMLElement): void {
         w = { box, dispose: renderPanel(box, p.id, out.name) };
         panelWins.set(p.id, w);
       }
-      const r = panelWindowRect(p, out, store.state.editMode, store.state.layout.panels, fitLens.get(p.id));
+      const r = panelWindowRect(p, out, store.state.editMode, store.state.layout.panels, fitLens.get(p.id), flyouts.get(p.id));
       w.box.style.left = `${r.x}px`;
       w.box.style.top = `${r.y}px`;
       w.box.style.width = `${r.w}px`;
@@ -60,6 +61,10 @@ export function renderPreview(root: HTMLElement): void {
   store.on('editMode', layoutPanels);
   mockHooks.panelFit = (id, length) => {
     fitLens.set(id, length);
+    layoutPanels();
+  };
+  mockHooks.panelFlyout = (id, size) => {
+    flyouts.set(id, size);
     layoutPanels();
   };
   // App windows open as floating boxes on the stage, roughly where the compositor would put them.
@@ -190,6 +195,18 @@ export function renderPreview(root: HTMLElement): void {
   if (params.get('stack') === '1') {
     void store.updateLayout((l) => {
       for (const p of l.panels) for (const w of p.widgets) if (w.type === 'clock') Object.assign(w.config, { stack: true, dateFormat: 'numeric' });
+    });
+  }
+  // Panel thickness and the float switch, so a screenshot can show what a
+  // taller bar or an island actually looks like without editing the layout.
+  const psize = Number(params.get('psize') ?? 0);
+  const pfloat = params.get('float');
+  if (psize || pfloat !== null) {
+    void store.updateLayout((l) => {
+      for (const p of l.panels) {
+        if (psize) p.size = psize;
+        if (pfloat !== null) p.float = pfloat === '1';
+      }
     });
   }
   if (params.get('labels') === '1') {

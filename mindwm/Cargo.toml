@@ -40,6 +40,14 @@ version = "0.13"
 default-features = false
 features = ["composite", "xtest"]
 
+# The integration tests (tests/headless) run the compositor with no GPU and
+# talk to it the way programs do: over Wayland and the shell's IPC socket.
+[dev-dependencies]
+tempfile = "3"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+
 [features]
 default = ["egl", "winit", "udev", "xwayland"]
 egl = []
@@ -53,3 +61,9 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 debug = 1
+
+# smithay 0.7.0 with an XWM backport: _NET_ACTIVE_WINDOW names the focused
+# window, clients may ask for it, and _NET_WM_STATE set before mapping counts.
+# See vendor/smithay/MINDOS-PATCHES.md.
+[patch.crates-io]
+smithay = { path = "vendor/smithay" }

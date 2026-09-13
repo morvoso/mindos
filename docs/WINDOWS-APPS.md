@@ -6,11 +6,19 @@ is app-specific; this does not promise that every Windows program works.
 
 Double-click an EXE/MSI in Files, or use **Settings → Software → Choose installer**.
 Choose **Install** for setup programs or **Run app** for portable EXEs. The
-helper creates a themed prefix, opens the installer, and publishes shortcuts.
-If an installer creates no shortcut, a file chooser can add its installed EXE.
-The Mind popup shows app icons, clickable quick launches and Linux/Windows
-labels. Its index refreshes in the background, so installs appear without
-restarting the desktop. GIO handles desktop-entry paths and escaping.
+helper creates a themed prefix, opens the installer in a Windows desktop of
+its own, adds any Microsoft runtime the program needs, and publishes
+shortcuts. If an installer creates no shortcut, a file chooser can add its
+installed EXE. The Mind popup shows app icons, clickable quick launches and
+Linux/Windows labels. Its index refreshes in the background, so installs
+appear without restarting the desktop. GIO handles desktop-entry paths and
+escaping.
+
+Once installed the program is an app like any other: it has a desktop icon
+and a Start Menu entry, it is opened with a click, and it is removed from the
+same right-click menu as a native app. Its shortcuts on the desktop -- the
+`.lnk` the installer wrote and the `.desktop` Wine made from it -- are one
+icon, drawn with the program's own name.
 
 ## What runs where
 
@@ -22,6 +30,11 @@ restarting the desktop. GIO handles desktop-entry paths and escaping.
 | `mindshell` UI (`widgets/taskbar.ts`) | draws the badge on Wine groups and says "Windows application (Wine)" in the tooltip |
 | `mindwm` (`src/launcher.rs`, `src/mindbar.rs`) | the Mind bar tags Wine entries `WINDOWS` |
 | `mindos-win` (package `mindos-gaming`) | one themed Wine prefix per program |
+| `mindos-win-open` | the graphical install flow: the file handler for EXE/MSI |
+| `mindos-uninstall` | one uninstaller for every kind of app (pacman, Flathub, Wine) |
+| `mindshell` (`src/fs.rs`) | draws a `.desktop` or `.lnk` on the desktop as the app it points at, and opens it by starting that app rather than handing the file to a text editor |
+| `mindwm` (`src/shell/element.rs`) | keeps a setup program's Windows desktop, and any window that says it cannot be resized, floating at its own size |
+| `mindwm` (`src/shell/x11.rs`) | gives a window the MindOS title bar only while it has no caption of its own, and takes the bar away again if the program grows one after opening |
 
 ## Installing a program: `mindos-win`
 
@@ -39,6 +52,52 @@ lists the desktop entries Wine's menu builder generated from the program's
 Start Menu shortcuts. Those entries carry `WINEPREFIX` in their Exec line,
 so they belong to that prefix, show up in the dock and the Mind bar at once,
 and are removed again by `mindos-win remove`.
+
+The prefix's `Desktop` folder is the user's own `~/Desktop`, so a program
+that offers "create a desktop shortcut" during setup puts its icon where the
+person expects it, exactly as on Windows.
+
+The installer runs inside `wine explorer /desktop=mindos-setup-<name>,WxH`.
+A Windows setup program paints a full-screen background form behind its
+wizard; with no Windows desktop to paint it on, that form is a bare window
+the desktop has to find room for -- the stray white rectangle beside the
+wizard. Its own desktop is where it belongs, and it keeps the wizard, its
+message boxes and its progress windows together in one place, the way they
+look on Windows. The desktop is 1024x768 grown by the display scale and
+never larger than the screen. The compositor recognises it by name and
+leaves it floating and centred.
+
+DPI defaults to the scale the desktop itself is drawn at (read from the
+compositor's `get_outputs`), so a Windows program on a HiDPI screen comes out
+the size everything else is rather than half of it. `--dpi N` overrides it.
+
+## Runtimes
+
+Windows ships the Microsoft runtimes with the system; a fresh Wine prefix has
+none, so a program built on .NET closes the moment it is started -- LINQPad
+does exactly this. `mindos-win needs NAME` reads the installed program for a
+`hostfxr` import or a "requires .NET N" string and prints the winetricks verb
+that satisfies it (`dotnetdesktop9`); `mindos-win provide NAME VERB...` adds
+it. The graphical install flow runs both, so the offer to add the runtime
+comes up during the install and the app opens the first time it is asked.
+
+## Uninstalling
+
+`mindos-uninstall [APP]` removes an app whichever world it came from, and
+asks first. It is on the right-click menu of a desktop icon and of a Mind
+shortcut, and on its own in the launcher; with no argument it lists every app
+that can be removed. `APP` may be a desktop-entry path, a desktop id or the
+name a person would say.
+
+* A Windows program goes to `mindos-win uninstall <name>`, which runs the
+  program's own uninstaller (the `UninstallString` it recorded under
+  `Software\Microsoft\Windows\CurrentVersion\Uninstall`, in a setup desktop
+  like the installer had), then deletes the prefix, its generated desktop
+  entries and its desktop shortcuts.
+* A repository or Flathub app goes to `pkexec mindos-pkg remove <package>`,
+  found from the desktop entry with `pacman -Qo` or the entry's `X-Flatpak`.
+* A hand-written shortcut in the user's own applications folder is just
+  removed, and says so.
 
 `run` starts an entry (the first one, or the one whose name matches the
 argument) or, given an `.exe` path, that program in the prefix, and stays in
@@ -58,6 +117,34 @@ smoothing, and flags the dark app theme for programs that read it. Wine
 ships no dark msstyles theme, so the classic renderer with these colours is
 the dark theme; programs that draw their own chrome (Notepad++'s editor,
 browsers) keep their own.
+
+### One title bar, not two
+
+A Windows program either lets Windows draw its caption or draws its own, and
+it says which through the `_MOTIF_WM_HINTS` property that Wine forwards to the
+window manager. `mindwm` reads it: a program with no caption of its own gets
+the MindOS title bar and looks like every other window on the desk; a program
+that draws its own -- LINQPad, Visual Studio, anything built on WPF's custom
+chrome -- is left to it, and gets no second bar above the one it drew.
+
+A program can change its mind after it opens. WPF paints a plain caption
+first and replaces it once the .NET interface is up, so the answer at the
+moment the window appears is not the final one; `mindwm` follows the property
+for the life of the window rather than reading it once.
+
+### WPF programs
+
+WPF asks for a Direct3D render target that Wine cannot give it, and when it
+does not get one it paints nothing at all -- the program opens as a black
+rectangle with a working title bar and menus that respond to nothing. The
+theme turns its hardware path off
+(`Software\Microsoft\Avalon.Graphics\DisableHWAcceleration`) and its software
+renderer draws the same window.
+
+The theme file gains settings like this one as more kinds of program are made
+to work, so a prefix compares its copy against the installed theme each time
+it runs a program and takes the newer one. A DPI chosen by hand with
+`mindos-win theme NAME --dpi N` survives the refresh.
 
 ## Tray icons
 
@@ -104,6 +191,11 @@ request, so the window would not come back from the tray.
 * The graphical Windows handler offers Install or Run app and creates a Mind
   shortcut for portable programs. The original EXE must remain at its chosen
   location. `mindos-win run NAME path/to/program.exe` is also available.
+* `needs` recognises the .NET Desktop runtimes. A program that wants some
+  other runtime still has to be given it by hand with `mindos-win provide`.
+* An installer that records no `UninstallString` cannot be uninstalled the
+  Windows way; `mindos-uninstall` then removes the prefix, which takes the
+  program and its settings with it.
 
 ## macOS applications
 

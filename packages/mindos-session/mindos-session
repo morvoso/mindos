@@ -56,16 +56,73 @@ trap cleanup_session EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-systemctl --user stop mindos-session.target 2>/dev/null || true
 
-# Compositor output goes to the journal: journalctl -t mindwm
-if command -v systemd-cat >/dev/null 2>&1; then
-  systemd-cat -t mindwm mindwm --tty-udev &
-else
-  mindwm --tty-udev &
-fi
-compositor_pid=$!
-wait "$compositor_pid"
-compositor_status=$?
-compositor_pid=
-exit "$compositor_status"
+# What the session itself has to say goes to the journal: journalctl -t mindos-session
+session_log() {
+  local priority=$1
+  shift
+  if command -v systemd-cat >/dev/null 2>&1; then
+    printf '%s\n' "$*" | systemd-cat -t mindos-session -p "$priority"
+  else
+    printf 'mindos-session: %s\n' "$*" >&2
+  fi
+}
+
+# A compositor crash takes every window with it, but it does not have to take
+# the login too. When mindwm dies abnormally -- killed by a signal (the loop
+# watchdog aborts a frozen compositor: SIGABRT, status 134; a segfault is 139)
+# or exiting non-zero (70 when it cannot get past a panic) -- the desktop starts
+# again in this session instead of dropping to the greeter. Stopping
+# mindos-session.target takes the shell, the portals and the autostart
+# applications down with the old display, and the new compositor's
+# session-startup brings them back against the new one, as at login. Exit 0 is
+# a logout and 2 a usage error; a signal to this script (HUP, INT, TERM: a
+# logout, greetd stopping) ends the session through the traps above and never
+# gets here. A compositor that cannot stay up is not started forever: after
+# three restarts inside ten minutes the session ends with the compositor's
+# status, and greetd shows the greeter.
+restart_limit=3
+restart_window=600
+restarts=()
+while :; do
+  systemctl --user stop mindos-session.target 2>/dev/null || true
+
+  # Compositor output goes to the journal: journalctl -t mindwm
+  if command -v systemd-cat >/dev/null 2>&1; then
+    systemd-cat -t mindwm mindwm --tty-udev &
+  else
+    mindwm --tty-udev &
+  fi
+  compositor_pid=$!
+  wait "$compositor_pid"
+  compositor_status=$?
+  dead_pid=$compositor_pid
+  compositor_pid=
+  case $compositor_status in
+    0|2) exit "$compositor_status" ;;
+  esac
+
+  if (( compositor_status > 128 )) && signal=$(kill -l "$((compositor_status - 128))" 2>/dev/null); then
+    how="mindwm (pid $dead_pid) was killed by SIG$signal (status $compositor_status)"
+  else
+    how="mindwm (pid $dead_pid) exited with status $compositor_status"
+  fi
+  # Seconds since boot: a clock that NTP or the user setting the time cannot move.
+  read -r now _ </proc/uptime
+  now=${now%.*}
+  recent=()
+  for at in "${restarts[@]}"; do
+    if (( now - at < restart_window )); then recent+=("$at"); fi
+  done
+  restarts=("${recent[@]}")
+  if (( ${#restarts[@]} >= restart_limit )); then
+    session_log err "$how after $restart_limit restarts in $((restart_window / 60)) minutes; ending the session"
+    exit "$compositor_status"
+  fi
+  restarts+=("$now")
+  session_log warning "$how; starting it again (restart ${#restarts[@]} of $restart_limit in $((restart_window / 60)) minutes)"
+  # A moment for logind to take the seat back from the dead compositor before
+  # the next one asks for it. `wait`, so a logout meanwhile is not held up.
+  sleep 2 &
+  wait $!
+done

@@ -6,6 +6,29 @@ import type { OutputInfo, PanelDef } from './types';
 /** Extra thickness a panel window gains in edit mode (the settings strip). */
 export const EDIT_EXTRA = 140;
 
+/** How far down its screen the desktop's own bar reaches, in logical px, 0 for
+ *  a screen without one. It already counts any user panel above the bar. The
+ *  workspace measures it -- the bar is the one part of the home screen that
+ *  stays when the windows have the screen -- and whatever else sits on the
+ *  wallpaper keeps clear of it the same way it keeps clear of the panels. */
+let barBottom = 0;
+const barWatchers = new Set<() => void>();
+
+export function desktopBar(): number {
+  return barBottom;
+}
+
+export function setDesktopBar(px: number): void {
+  if (px === barBottom) return;
+  barBottom = px;
+  for (const fn of [...barWatchers]) fn();
+}
+
+export function onDesktopBar(fn: () => void): () => void {
+  barWatchers.add(fn);
+  return () => { barWatchers.delete(fn); };
+}
+
 export interface Rect {
   x: number;
   y: number;
@@ -29,11 +52,13 @@ export function panelsOn(all: PanelDef[], output: string): PanelDef[] {
  * order the host creates the layer surfaces in. A panel with length 0 fits
  * its widgets: `fitLen` is the measured length (a third of the edge until it
  * is known); in edit mode such a panel temporarily spans the whole edge so
- * the settings strip has room.
+ * the settings strip has room. `flyout` is the extra thickness a widget has
+ * asked for to show a card beside itself (the task bar's window list); the
+ * exclusive zone does not grow with it, so windows stay where they are.
  */
-export function panelWindowRect(p: PanelDef, out: OutputInfo, editing: boolean, all: PanelDef[] = [], fitLen?: number): Rect {
+export function panelWindowRect(p: PanelDef, out: OutputInfo, editing: boolean, all: PanelDef[] = [], fitLen?: number, flyout = 0): Rect {
   const vertical = isVertical(p);
-  const thick = p.size + (editing ? EDIT_EXTRA : 0);
+  const thick = p.size + (editing ? EDIT_EXTRA : 0) + Math.max(0, flyout);
   let inset0 = 0;
   let inset1 = 0;
   if (vertical) {

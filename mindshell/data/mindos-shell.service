@@ -3,20 +3,44 @@ Description=MindOS desktop shell (panels, dock, tray, desktop widgets)
 Documentation=file:///usr/share/doc/mindshell/README.md
 PartOf=graphical-session.target
 After=graphical-session.target
-# Never hold the session hostage with a crash loop: five restarts a minute is enough.
-StartLimitIntervalSec=60
-StartLimitBurst=5
-# The compositor starts this through /etc/xdg/mindos/autostart/50-mindshell once
-# its Wayland socket and IPC socket are up.
+# No start limit. Five restarts a minute used to be the cap, and the failure it
+# produced was the worst one available: a session with windows, a working
+# compositor and no desktop at all -- no panel, no dock, no tray -- for as long
+# as the user stayed logged in, because systemd had decided to stop trying and
+# nothing in a running session ever tells it to start again. Whatever takes the
+# shell down is usually something that passes, and a desktop that comes back a
+# minute later is worth far more than one that gave up. What keeps a hopeless
+# loop cheap is the restart delay below, which grows to half a minute; that
+# costs nothing and never closes the door.
+# The compositor's session-startup brings this up once its Wayland socket and
+# IPC socket are up, and waits for it before it releases the session's
+# autostart applications.
+StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+# Active means the desktop is on screen, not that the process started. The
+# session holds its autostart applications -- Discord, Steam, the tray applets
+# -- until then, so they stop painting over the compositor's startup screen
+# while the desktop is still coming up. mindshell says ready the moment its
+# desktop view maps, and after fifteen seconds regardless, so the deadline
+# below is only reached by a shell that is wedged rather than slow.
+Type=notify
+TimeoutStartSec=30
 ExecStart=/usr/bin/mindshell
 # Only the host gets SIGTERM; it tears the views down itself and WebKit's
 # helper processes follow (with KillMode=control-group they die first and
 # every view reports a crash during shutdown).
 KillMode=mixed
 TimeoutStopSec=5
-Restart=on-failure
+# `always`, not `on-failure`: the desktop shell has no reason to exit while the
+# session is up, so a clean exit is as much a fault as a crash and leaves the
+# user just as stranded. A stop -- session teardown, `systemctl stop`, a package
+# upgrade -- is a stop job and never restarts, so this does not fight shutdown.
+Restart=always
+# One second for the first try, doubling to thirty. A shell that crashed once is
+# back before the user has finished noticing; a shell that cannot start at all
+# tries twice a minute forever instead of pinning a core.
 RestartSec=1
+RestartSteps=5
+RestartMaxDelaySec=30
 Slice=session.slice

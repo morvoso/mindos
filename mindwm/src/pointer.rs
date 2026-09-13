@@ -109,16 +109,20 @@ pub(crate) fn clamp_to_outputs_along(
                 (c.x - pos.x).abs()
             }
         };
-        // The screens the pointer is level with across that edge.
+        // The screens the pointer is level with across that edge. The pointer
+        // has to be entering them along that axis, not already level with
+        // them: pushing down off the short screen lands at a height only the
+        // tall one has, and that is no reason to jump sideways onto it.
         let across: Vec<Rectangle<i32, Logical>> = rects
             .iter()
             .copied()
             .filter(|r| {
                 let c = clamp_into(*r, pos);
+                let was = clamp_into(*r, previous);
                 if horizontal {
-                    c.x == pos.x
+                    c.x == pos.x && was.x != previous.x
                 } else {
-                    c.y == pos.y
+                    c.y == pos.y && was.y != previous.y
                 }
             })
             .collect();
@@ -128,6 +132,11 @@ pub(crate) fn clamp_to_outputs_along(
         {
             return clamp_into(best, pos);
         }
+    }
+    // Nothing to cross to: stop at the edge of the screen being left, even
+    // when another screen's edge happens to be nearer.
+    if let Some(from) = rects.iter().find(|r| clamp_into(**r, previous) == previous) {
+        return clamp_into(*from, pos);
     }
     clamp_to_outputs(pos, rects.into_iter())
 }
@@ -466,6 +475,17 @@ mod tests {
         );
         assert_eq!(floor.x, 1000.0);
         assert!(floor.y > 1727.0 && floor.y < 1728.0);
+        // The short screen is the same: pushing down off it stays on it, even
+        // though that height belongs to the tall screen beside it.
+        for x in [4000.0, 3075.0] {
+            let short_floor = clamp_to_outputs_along(
+                (x, 1439.5).into(),
+                (x, 1450.0).into(),
+                outputs.iter().copied(),
+            );
+            assert_eq!(short_floor.x, x);
+            assert!(short_floor.y > 1439.0 && short_floor.y < 1440.0, "{short_floor:?}");
+        }
         // Nor is there anything past the far right edge.
         let far = clamp_to_outputs_along(
             (5600.0, 700.0).into(),

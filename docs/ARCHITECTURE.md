@@ -314,10 +314,19 @@ honouring desktop exclusions, missing executables and user overrides. The
 configuration search path is provided through `environment.d`; portals
 activate on demand with the imported display environment.
 
-The wrapper stops the session target on logout, compositor failure or a
-termination signal. This stops the managed autostart apps, shell and session
-portals even when the user manager stays running. A compositor failure returns
-to greetd's login screen; a root shell stays available on tty2 on the live ISO.
+The wrapper stops the session target before each compositor start, on logout
+and on a termination signal. This stops the managed autostart apps, shell and
+session portals even when the user manager stays running. A compositor that
+dies abnormally -- killed by a signal, such as the loop watchdog's abort, or
+exiting non-zero, such as the 70 of a compositor that cannot get past a panic
+-- is started again in the same login, and its `session-startup` brings the
+shell, portals and autostart apps back; the windows are lost, the login is
+not. Exit 0 (a logout), exit 2 (a usage error) and a signal to the wrapper
+itself (greetd stopping, logind ending the session) end the session. So does
+a failure after three restarts inside ten minutes, which returns to greetd's
+login screen. `journalctl -t mindos-session` has each restart with the status,
+the signal and the count. A root shell stays available on tty2 on the live
+ISO.
 
 ### mindos-base, mindos-theme, mindos-gaming, mindos-dev (packages/)
 

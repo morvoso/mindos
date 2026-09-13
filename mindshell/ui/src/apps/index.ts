@@ -7,6 +7,7 @@ import { store } from '../state';
 import { renderGameLibrary } from '../game-library';
 import { renderSettings } from './settings';
 import { renderGaming } from './gaming';
+import { renderTasks } from './tasks';
 
 export function renderApp(root: HTMLElement, name: string, arg: unknown): void {
   root.classList.add('app-window');
@@ -21,6 +22,9 @@ export function renderApp(root: HTMLElement, name: string, arg: unknown): void {
       break;
     case 'settings':
       renderSettings(root, a.page);
+      break;
+    case 'tasks':
+      renderTasks(root, a.page);
       break;
     default:
       root.appendChild(h('div', { class: 'app-empty' }, `There is no app called “${name}”.`));

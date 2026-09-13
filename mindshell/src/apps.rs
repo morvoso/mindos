@@ -80,12 +80,17 @@ pub fn fingerprint() -> Vec<(PathBuf, Option<SystemTime>)> {
 }
 
 /// Scan the desktop entries and resolve their icons (call off the main thread).
-pub fn load_apps(icon_theme: &str, icon_size: u16) -> Vec<AppEntry> {
-    let current_desktop: Vec<String> = std::env::var("XDG_CURRENT_DESKTOP")
+/// The desktop names an entry's `OnlyShowIn`/`NotShowIn` are matched against.
+pub fn current_desktop() -> Vec<String> {
+    std::env::var("XDG_CURRENT_DESKTOP")
         .unwrap_or_else(|_| "MindOS".into())
         .split(':')
         .map(|s| s.to_string())
-        .collect();
+        .collect()
+}
+
+pub fn load_apps(icon_theme: &str, icon_size: u16) -> Vec<AppEntry> {
+    let current_desktop = current_desktop();
     let mut apps: BTreeMap<String, AppEntry> = BTreeMap::new();
     for base in application_dirs() {
         let mut stack = vec![base.clone()];

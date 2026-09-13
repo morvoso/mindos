@@ -160,6 +160,252 @@ export interface Stats {
   uptime?: number;
 }
 
+/* The Task Manager's view of the machine, from `system.overview`. Rates are
+   per second; sizes are bytes; temperatures are degrees Celsius; clocks are
+   MHz. Anything the machine does not measure is absent rather than zero. */
+
+export interface CpuInfo {
+  model: string;
+  vendor: string;
+  cores: number;
+  threads: number;
+  usage: number;
+  perCore: number[];
+  kinds: { user: number; system: number; iowait: number; irq: number };
+  freq: number[];
+  freqAvg?: number | null;
+  freqMax?: number | null;
+  governor?: string | null;
+  driver?: string | null;
+  epp?: string | null;
+  temp?: number | null;
+  tempLabel?: string | null;
+  load: number[];
+  procs: number;
+  running: number;
+  ctxtRate: number;
+  intrRate: number;
+  forkRate: number;
+}
+
+export interface MemoryInfo {
+  total: number;
+  used: number;
+  available: number;
+  free: number;
+  buffers: number;
+  cached: number;
+  shared: number;
+  dirty: number;
+  slab: number;
+  kernel: number;
+  swapTotal: number;
+  swapUsed: number;
+  swapFree: number;
+  zram: { name: string; size: number; stored: number; compressed: number; used: number; algorithm?: string | null }[];
+  swaps: { name: string; kind: string; size: number; used: number; priority?: number | null }[];
+}
+
+export interface GpuInfo {
+  name: string;
+  vendor: string;
+  util?: number | null;
+  memUtil?: number | null;
+  mem?: number | null;
+  memTotal?: number | null;
+  temp?: number | null;
+  power?: number | null;
+  powerLimit?: number | null;
+  clock?: number | null;
+  memClock?: number | null;
+  fan?: number | null;
+  fanPercent?: number | null;
+  driver?: string | null;
+}
+
+export interface DiskInfo {
+  device: string;
+  model?: string | null;
+  size: number;
+  rotational: boolean;
+  removable: boolean;
+  scheduler?: string | null;
+  readRate: number;
+  writeRate: number;
+  util: number;
+  iops: number;
+}
+
+export interface FilesystemInfo {
+  device: string;
+  mount: string;
+  fstype: string;
+  readOnly: boolean;
+  size: number;
+  used: number;
+  avail: number;
+  percent: number;
+}
+
+export interface NetInfo {
+  iface: string;
+  kind: 'ethernet' | 'wifi' | 'vpn' | 'bridge' | 'virtual';
+  state: string;
+  mac?: string | null;
+  mtu?: number | null;
+  speed?: number | null;
+  addrs: string[];
+  rx: number;
+  tx: number;
+  rxRate: number;
+  txRate: number;
+  errors: number;
+}
+
+export interface SensorInfo {
+  temps: { chip: string; label: string; value: number }[];
+  fans: { chip: string; label: string; rpm: number }[];
+  power: { chip: string; label: string; watts: number }[];
+}
+
+export interface HostInfo {
+  hostname: string;
+  os: string;
+  osId: string;
+  kernel?: string | null;
+  arch: string;
+  uptime: number;
+  boot: number;
+  product?: string | null;
+  board?: string | null;
+  bios?: string | null;
+  packages?: number | null;
+  session?: string | null;
+  shell: string;
+  user: string;
+}
+
+export interface ProcessRow {
+  pid: number;
+  ppid: number;
+  name: string;
+  state: string;
+  cpu: number;
+  rss: number;
+  vsize: number;
+  threads: number;
+  prio: number;
+  nice: number;
+  started: number;
+  /* Present only in the full table, not the readout's short list. */
+  uid?: number;
+  user?: string;
+  cmd?: string;
+  wine?: boolean;
+  own?: boolean;
+  readRate?: number;
+  writeRate?: number;
+}
+
+export interface ProcessTable {
+  processes: ProcessRow[];
+  total: number;
+  matched: number;
+  threads: number;
+  states: Record<string, number>;
+  cores: number;
+  uid: number;
+}
+
+export interface ProcessDetail {
+  pid: number;
+  name: string;
+  cmd: string;
+  exe?: string | null;
+  cwd?: string | null;
+  state: string;
+  ppid?: number | null;
+  threads?: number | null;
+  vmPeak?: number | null;
+  vmSize?: number | null;
+  vmRss?: number | null;
+  vmSwap?: number | null;
+  fds?: number | null;
+  read: number;
+  written: number;
+  cgroup?: string | null;
+  wine: boolean;
+  voluntary?: number | null;
+  involuntary?: number | null;
+}
+
+export interface ContainerRow {
+  engine: 'docker' | 'podman';
+  id: string;
+  name: string;
+  image: string;
+  command: string;
+  status: string;
+  state: string;
+  running: boolean;
+  ports: string | number;
+  created: string;
+  size?: string;
+  cpu?: number | null;
+  mem?: string | null;
+  memPercent?: number | null;
+  net?: string | null;
+  block?: string | null;
+  pids?: string | null;
+}
+
+export interface ContainerEngine {
+  available: boolean;
+  running: boolean;
+  containers: ContainerRow[];
+  error?: string;
+}
+
+export interface Containers {
+  docker: ContainerEngine;
+  podman: ContainerEngine;
+}
+
+export interface UnitRow {
+  unit: string;
+  load: string;
+  active: string;
+  sub: string;
+  description: string;
+}
+
+export interface UnitScope {
+  available: boolean;
+  running: number;
+  failed: UnitRow[];
+  units: UnitRow[];
+}
+
+export interface Services {
+  available: boolean;
+  system: UnitScope;
+  user: UnitScope;
+}
+
+export interface Overview {
+  at: number;
+  cpu: CpuInfo;
+  memory: MemoryInfo;
+  gpus: GpuInfo[];
+  disks?: DiskInfo[];
+  filesystems?: FilesystemInfo[];
+  net?: NetInfo[];
+  sensors?: SensorInfo;
+  host?: HostInfo;
+  containers?: Record<'docker' | 'podman', { available: boolean; running: number; total: number }>;
+  top?: ProcessRow[];
+}
+
 export interface AudioState {
   volume: number;
   muted: boolean;
@@ -471,6 +717,8 @@ export interface ShellState {
   tray: TrayItem[];
   layout: Layout;
   editMode: boolean;
+  /** The primary screen is showing the home screen rather than the windows. */
+  desktopHome: boolean;
   config: ShellConfig;
   mind?: MindStatus;
   notify?: NotifyState;
@@ -659,6 +907,9 @@ export interface FsEntry {
   mime: string;
   icon: string;
   image: boolean;
+  /** A `.desktop` or Windows `.lnk` shortcut: `label` is what it points at. */
+  shortcut?: boolean;
+  label?: string | null;
   /** A ready-made thumbnail URL (the mock); the host serves mindos://shell/thumb/ instead. */
   thumb?: string;
 }

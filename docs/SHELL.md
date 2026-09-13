@@ -45,9 +45,9 @@ data with a nicer UI.
 | default layout | `/usr/share/mindos/shell/layout.json` |
 | user layout | `~/.config/mindos/shell/layout.json` |
 | host config | `/etc/mindos/shell.toml`, `~/.config/mindos/shell.toml` |
-| user service | `mindos-shell.service` (systemd --user, `Restart=on-failure`), started by `/etc/xdg/mindos/autostart/50-mindshell` |
+| user service | `mindos-shell.service` (systemd --user, `Type=notify`, `Restart=on-failure`), started and waited for by `session-startup` |
 | log | `journalctl --user -u mindos-shell` |
-| app windows | `mindshell --app settings [--page home\|performance\|games\|software\|connections\|mind\|updates\|wallpaper\|displays\|screen\|shell\|about]`: an ordinary toplevel (app id `mindos-settings`) with the compositor's title bar; desktop entries `mindos-settings`, `mindos-displays`, `mindos-wallpaper`. Files is Nautilus (`mindos-apps`), not a shell window |
+| app windows | `mindshell --app settings [--page home\|performance\|games\|software\|connections\|mind\|updates\|wallpaper\|displays\|screen\|shell\|about]`: an ordinary toplevel (app id `mindos-settings`) with the compositor's title bar; desktop entries `mindos-settings`, `mindos-displays`, `mindos-wallpaper`. `--app library`, `--app gaming` and `--app tasks` (the Task Manager, `mindos-tasks.desktop`, `Ctrl+Shift+Escape`) open the same way. Files is Nautilus (`mindos-apps`), not a shell window |
 
 Environment: `WAYLAND_DISPLAY` (from the compositor), `MINDWM_SOCKET` (the
 compositor IPC socket, exported by mindwm to everything it spawns and imported
@@ -150,13 +150,16 @@ on the wallpaper and no desktop widgets. It is only a default: edit mode
 moves panels to any edge, adds a dock (a fit-to-content panel) or a top bar,
 adds widgets and re-orders them. `version` is the layout format: a saved
 layout from before version 2 gains the `perf` and `notifications` widgets
-beside its `mind` widget when it loads, and one from before version 3 gains
-the `updates` indicator in front of its bell (`Layout::sanitized` migrates,
-and the next save writes version 4).
+beside its `mind` widget when it loads, one from before version 3 gains the
+`updates` indicator in front of its bell, one from before version 4 loses the
+`network` and `vpn` widgets from any panel that has a `tray`, and one from
+before version 5 gains the `desktop-view` indicator at the near end of its
+first panel (`Layout::sanitized` migrates, `normalizeLayout` does the same in
+the UI for a layout the host never saw, and the next save writes version 5).
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "panels": [
     {
       "id": "bar",
@@ -171,6 +174,7 @@ and the next save writes version 4).
       "float": true,
       "autohide": false,
       "widgets": [
+        { "id": "view", "type": "desktop-view", "config": {} },
         { "id": "sp-l", "type": "spacer", "config": { "expand": true } },
         { "id": "tasks", "type": "taskbar", "config": { "pins": ["firefox.desktop", "org.gnome.Nautilus.desktop", "kitty.desktop", "steam.desktop", "mindos-settings.desktop"] } },
         { "id": "sp-r", "type": "spacer", "config": { "expand": true } },
@@ -209,8 +213,10 @@ and the next save writes version 4).
   `autohide` slides the panel away until the pointer touches its edge.
   `float`: `true` draws the bar as a rounded island inset from the edge,
   `false` flush with the edge (one hairline on the inner side); when unset a
-  panel thicker than 30 px floats and a thinner one is flush (`--inset` and
-  `--r-island` in `app.css`).
+  panel thicker than 30 px floats and a thinner one is flush. The renderer
+  puts a `floating` or `edge` class on the panel window and `app.css` gives
+  `floating` a non-zero `--inset` whatever the thickness, so the switch bites
+  on a thin bar too.
 * Widgets are ordered left→right (or top→bottom on vertical panels). A
   `spacer` with `expand: true` pushes what follows to the far end. With two
   expanding spacers the widgets between them are centred on the bar itself
@@ -230,11 +236,12 @@ and the next save writes version 4).
 
 | type | container | what |
 |---|---|---|
-| `taskbar` | panel | pinned apps + running windows (the dock); click focuses (a second click minimises in floating mode; tiles are never minimised, the columns strip slides to the window instead), middle-click new instance, right-click pin/unpin/close. Windows programs (a window with `wine: true`, or an entry with `wine: true`) show a small four-pane badge on the icon's corner and say so in the tooltip; the entry is matched to its windows through `wmClass` first. Settings: `pins` (desktop ids), `showRunning` (off = a launcher of pinned apps only), `onlyThisOutput`, `labels`, `maxLabel`, `indicator` |
+| `taskbar` | panel | the shortcuts, a separator, then the open windows grouped by application: `<pins> │ <running>`. A pin is a launcher and never moves as windows come and go (it carries a faint ring while its application is open); `mergePinned` folds the windows back into their pin, which is how the widget used to behave. Click a group of one focuses it (a second click minimises in floating mode; tiles are never minimised, the columns strip slides to the window instead), a group of several opens its window list, middle-click starts a new instance, scroll cycles the group's windows, right-click gives the per-window menu plus pin/unpin/close. Under each icon is one mark per window — filled open, hollow minimised, long and lit for the focused one — with a count chip past one window. A corner badge says where the windows come from: the four panes for a Windows program (Wine or Proton: a window with `wine: true`, or an entry with `wine: true`), an X for Xwayland, the penguin for a native client; `osBadge` chooses `off`, `foreign` (Wine and X11 only, the default) or `all`. Entries are matched to their windows through `wmClass` first. Icons grow with the panel unless `iconSize` pins them. Settings: `pins` (desktop ids), `showRunning` (off = a launcher of pinned apps only), `mergePinned`, `separator`, `onlyThisOutput`, `preview`, `previewDelay`, `labels`, `maxLabel`, `indicator`, `osBadge`, `iconSize` (0 = follow the panel) |
 | `spacer` | panel | flexible or fixed gap (`expand`, `size`) |
 | `clock` | panel | time (+ date); click opens the calendar popup. Settings: `hour24` (default false: 12-hour with AM/PM), `suffix`, `leadingZero`, `seconds`, `date`, `dateFormat` (`short` Sun 6 Sep / `long` / `numeric` / `iso` / `weekday`), `stack` (date under the time), `size` (`small`/`normal`/`large`), `weekStart` (`monday`/`sunday`, for the calendar) |
 | `layout-mode` | panel | the compositor's window layout (floating / tiles / columns) as an icon; click opens the layout picker popup. Setting: `label` |
-| `tray` | panel | StatusNotifierItems plus the compositor's XEmbed icons (Wine, older X11 programs; `xembed: true`, ids `x11:<window>`, no menu of their own: right-click is replayed as a right-click); left-click activate, right-click menu, scroll. Settings: `hidePassive`, `iconSize` |
+| `desktop-view` | panel | which of the two views the primary screen is in: a small screen mark, lit with an accent fill for the home screen and showing a grey window shape for the windows. It is the one thing on screen in both views, which is why it lives in the panel. Click switches, the same as Super + D (`desktop.toggle`); it dims when nothing is open, since the home screen is then the only view there is. Setting: `label` (Home / Windows beside the mark) |
+| `tray` | panel | StatusNotifierItems plus the compositor's XEmbed icons (Wine, older X11 programs; `xembed: true`, ids `x11:<window>`, no menu of their own: right-click is replayed as a right-click); left-click activate, right-click menu, scroll. The icon follows the panel's thickness unless a size is set. Settings: `hidePassive`, `iconSize` (0 = follow the panel) |
 | `audio` | panel | default sink volume; scroll adjusts, click opens the slider popup, middle-click mutes. Settings: `percent`, `scroll`, `step`, `hideWhenMuted` |
 | `network` | panel | wired/wifi state. Settings: `name`, `ip` |
 | `vpn` | panel | WireGuard tunnels (NetworkManager connections of type `wireguard`): a shield, lit green while a tunnel is up, with the tunnel's name; click opens the tunnel list popup (a switch per tunnel, details on click: interface, address, endpoint, connect at start-up, remove; *Import…* opens a file chooser for a wg-quick `.conf`), middle-click drops the active tunnel or brings up the only one. Settings: `name`, `hideWhenNone` |
@@ -243,10 +250,11 @@ and the next save writes version 4).
 | `updates` | panel | the updates indicator: how many package updates the Mind's watcher found, amber when it rates them high-risk or they need a hand; hidden while the system is up to date; click opens Settings › Updates. Settings: `count`, `alwaysShow` |
 | `notifications` | panel | the bell: applications' notifications plus the Mind's notices that need attention, with a count badge (do-not-disturb crosses the bell out); click opens the notification centre popup. Setting: `count` |
 | `perf` | panel | the performance mode (`mindos-perf`: balanced / performance / quiet) as an icon, pulsing while GameMode has a game running; click opens the mode picker popup. Setting: `label` |
-| `sysmon` | panel | compact CPU / memory / GPU bars. Settings: `cpu`, `memory`, `gpu`, `interval` |
+| `sysmon` | panel | compact CPU / memory / GPU bars; click opens the Task Manager. Settings: `cpu`, `memory`, `gpu`, `interval` |
 | `power` | panel | power menu button. Setting: `label` |
 | `desktop-clock` | desktop | large clock + date. Settings: the clock's time/date ones plus `year`, `size` (px), `align`, `glow` |
 | `desktop-sysmon` | desktop | CPU / memory / GPU graphs. Settings: `title`, `cpu`, `gpu`, `memory`, `interval`, `history` (samples), `fill` |
+| `desktop-tasks` | desktop | the system readout: the processor/graphics graph, three meters, the network, disk and container line, the busiest processes and a link to the Task Manager — the same card the desktop rails carry, off the same shared sample. Settings: `title`, `graph`, `traffic`, `processes`, `link`, `interval` |
 | `desktop-notes` | desktop | a sticky note (plain text, stored in the widget config). Settings: `title`, `fontSize`, `mono` |
 
 Every widget's settings are reachable without edit mode: right-click the
@@ -259,6 +267,11 @@ Adding a widget type = one TypeScript module registering `{ type, name,
 description, containers, defaults, settings?, create(ctx) }` in the widget
 registry.
 
+Only a clickable surface lights up under the pointer. `panelItem()`
+(`widgets/common.ts`) adds the `tap` class that the hover rule keys off, and
+a widget with nothing to press passes `tap = false` — a spacer, a meter or a
+read-out stays put when the pointer crosses it.
+
 ## Windows the host creates
 
 One WebKit view per window; all views share one web process (`related-view`)
@@ -266,15 +279,95 @@ and one `mindos://shell/` origin.
 
 | kind | layer-shell | where |
 |---|---|---|
-| `desktop` (one per output) | `background`, anchored to all edges, exclusive −1, keyboard `none` (`on-demand` while in edit mode) | wallpaper, desktop icons, desktop widgets, edit-mode toolbar, right-click menu |
-| `panel` (one per panel × output) | `top`/`bottom` per layout, anchored to the panel edge (+ both sides when `length` = 100), exclusive zone = `size` + `margin`, keyboard `none` | the panel and its widgets; in edit mode the window is enlarged by 140 px toward the screen centre (exclusive zone unchanged) to show the panel settings strip |
+| `desktop` (one per output) | `background` normally and `top` while it is forward (`desktop.panel`, see *The home screen and the windows*), anchored to all edges, exclusive −1, keyboard `on-demand` | wallpaper, desktop icons, desktop widgets, the home screen, edit-mode toolbar, right-click menu, and the system pages (Settings, the Gaming Center, the library) |
+| `panel` (one per panel × output) | `top`/`bottom` per layout, anchored to the panel edge (+ both sides when `length` = 100), exclusive zone = `size` + `margin`, keyboard `none` | the panel and its widgets; in edit mode the window is enlarged by 140 px toward the screen centre (exclusive zone unchanged) to show the panel settings strip, and at runtime by whatever a flyout asks for (`panel.flyout`) |
 | `popup` (transient) | `overlay`, anchored to all edges (full output, transparent), keyboard `exclusive` when `keyboard: true` else `on-demand` (the compositor hands an on-demand popup the keyboard as soon as it maps) | calendar, layout picker, audio slider, power menu, tray menus, widget catalog, widget settings, context menus, the authentication dialog. Clicking the transparent area or pressing Escape closes it |
-| `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | the Settings app; one process per window, `app.close` ends it |
+| `app` (`mindshell --app <name>`) | a normal xdg toplevel, no client decorations (the compositor draws the title bar), app id `mindos-<name>` | Settings, the Library, the Gaming Center and the Task Manager; one process per window, `app.close` ends it |
 | `toast` (one, on the primary output) | `overlay`, anchored top + right with a 12 px margin, exclusive zone 0, keyboard `none`; sized by the UI (`toast.fit`) and hidden while empty | the notification toasts: new application notifications and Mind notices slide in here and expire (never for critical ones) |
 | `lock` (one per output, while the screensaver is up or the session is locked) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output while locked and `none` otherwise; namespace `mindshell-lock`, which is how the compositor tells it apart | the screensaver and the lock screen. The compositor creates the need for it (its `idle` event) and enforces it: while the session is locked nothing but these surfaces is drawn or reachable |
 | `greeter` (`mindshell --app greeter`, one per output) | `overlay`, anchored to all edges, exclusive −1, keyboard `exclusive` on the first output and `none` on the others | the login screen: wallpaper and clock everywhere, the login card, the other accounts, the session and the power buttons on the first output. Started by greetd through `mindos-greeter` (see *The login screen* below) |
 
 ![Toasts in the dev VM: three `notify-send` notifications, the critical one in the danger colour](img/toasts.png)
+
+### The home screen and the windows
+
+The home screen — the workspace the primary display shows, in either mode —
+is an overlay, not a permanent ground. With nothing open it is the whole
+screen. The moment a window opens it crossfades away and leaves the windows
+over the wallpaper, the desktop icons and any desktop widgets. Closing the
+last window brings it back. **Super + D** asks for it over the top of the
+windows in between, and the panel's `desktop-view` widget says which of the
+two views the screen is in and switches between them.
+
+Settings, the Gaming Center and the library are pages on the home screen, not
+toplevels: they never join the tiling, never take a column and never need a
+window of their own. The price is that the desktop lives *behind* the windows,
+so it has to come forward to be read, and the rule for when it does has to be
+one the user can predict:
+
+* It comes forward when the user asks for it — a system page opens (`desktop.open`,
+  the menu down the left, the panel), **Super + D**, or the view indicator.
+* It goes back when a window takes the keyboard, and only then. A window
+  taking focus is a *transition* in the compositor's `windows` event: the same
+  window reporting focus again is a relayout, a title change or a window
+  opening on another screen, and none of those touch the desktop. Switching
+  between tiles and columns with a page open leaves the page where it is.
+* Escape sends it back too, and so does the panel, which stays above the
+  desktop as the way out.
+
+Being forward is state (`ShellWindow::presenting`), not a one-off layer change:
+every `apply_geometry` honours it, or a panel edit or a monitor change would
+drop an open page behind the tiles.
+
+**Two different fades**, and which one runs is the whole trick
+(`ui/src/workspace.ts`). At ground level — a window opening, the last one
+closing — the surface never moves: only the workspace element's own opacity
+changes, so there is no layer change, no repaint of the ground, and nothing
+for the compositor's startup screen to show through. Summoning it *over* the
+windows is the surface's own fade, run by the host in the same frame as the
+layer change (`present_desktop`), with the workspace element set straight to
+full opacity underneath it — fading both at once would show the crossfade
+twice over. Coming back down, the element holds its opacity until the surface
+fade is over (`desktop.away`) for the same reason. Summoned over windows that
+have since closed, the home screen is the ground again: it drops back a layer
+with `fade: false`, which nothing on screen can see.
+
+Going away is instant; coming back waits 180 ms. An application that replaces
+its own window — a splash screen, a relaunch — would otherwise flash the home
+screen between the two.
+
+**The bar stays; the room it takes is reserved.** The bar along the top of
+the home screen is on screen in both views — it does not fade with the rest —
+so windows have to be kept out of the strip it covers. Nothing reserves that
+strip through layer-shell: the desktop window is anchored to every edge, so
+reserving from it would claim the whole screen. Instead the page measures how
+far down the bar reaches and reports it (`desktop.bar` → `desktop_bar` IPC),
+and the compositor takes it off the usable area (see *Maximised means the
+usable area* in COMPOSITOR.md). The measurement is sent again whenever the bar
+resizes or the user's panels move it, and only when it has changed. The user's
+own panels stay visible in both views as they always did, and tiles and
+columns fit between them and the bar. The desktop icons keep clear of it too:
+the same measurement is handed to `geometry.ts` (`setDesktopBar`), and the
+icon grid takes the larger of it and the top panel's edge (the measurement
+already counts a panel above the bar) as its top padding.
+
+**While it is off screen it stops sampling.** Everything below the bar is
+taken out of the layout (`.gaming-workspace.is-away`) rather than left
+transparent, and `.gaming-active` takes the desktop icons
+and desktop widgets out of the layout the other way round, so exactly one of
+the two sets of widgets is drawn at a time. `every()` skips a tick for
+anything that is not drawn (`dom.ts`), so a widget behind the home screen
+stops reading the machine; `shell.resume` makes the ones that come back take
+their skipped tick at once instead of waiting out an interval.
+
+When the fade out is over, `desktop.away` tells the page to put the system
+page away — it stays mounted, so summoning the desktop again returns to it,
+but what shows between the windows is the desktop and not a settings page
+nobody is looking at. With nothing open the home screen is still being looked
+at, so nothing is put away.
+
+While a game is fullscreen the compositor draws the game alone, layer surfaces
+included, so the desktop cannot come forward over it.
 
 Every window loads `mindos://shell/app/index.html?kind=<kind>&id=<id>&output=<name>`
 (`&popup=<name>&arg=<json>` for popups). `?kind=preview` renders every
@@ -301,7 +394,7 @@ data so the UI can be developed in Chromium/Firefox.
 
 | method | params → result |
 |---|---|
-| `shell.state` | → `{ user, host, uptime, outputs, windows, focused, apps, tray, layout, editMode, config, polkit }` |
+| `shell.state` | → `{ user, host, uptime, outputs, windows, focused, apps, tray, layout, editMode, desktopHome, config, polkit }` |
 | `shell.ready` | the view has rendered its first frame |
 | `shell.setEditMode` | `{ enabled }` → broadcasts `edit_mode` |
 | `shell.exec` | `{ cmd }` runs a command line in the session (`sh -c`) |
@@ -338,7 +431,12 @@ data so the UI can be developed in Chromium/Firefox.
 | `polkit.respond` | `{ id, password }` from the `auth` popup: the password for the authorisation the host is waiting on |
 | `polkit.cancel` | `{ id }`: the user dismissed the authentication dialog |
 | `shell.run` | `{ argv }` runs one of the system helpers and → `{ status, ok, stdout, stderr, json }` (`json` is the parsed stdout when it is JSON). Allowed: `mindos-perf status\|get\|modes\|set\|config\|apply` (also behind `sudo -n`), `mindos-dlss …`, `mindos-dev-setup …`, `mindos-boot list`, `pacman -Q…`, `checkupdates`, `nvidia-smi …`, `pkexec systemctl enable\|disable --now <docker.service\|sshd.service>`, `pkexec usermod -aG <docker\|kvm\|libvirt\|uucp\|wireshark> <the session user>`, `pkexec mindos-pkg install <a package from `DEV_PACKAGES`>` (those three go through the authentication dialog below), and unprivileged `ssh-keygen -t ed25519 … -f ~/.ssh/id_ed25519`, `cat ~/.ssh/*.pub`, `git config --global user.name\|user.email <value>` |
-| `panel.fit` | `{ length }` (content length in logical pixels) from a `length: 0` panel: the host resizes the panel window and answers `{ length }` |
+| `panel.fit` | `{ panel, length }` (content length in logical pixels) from a `length: 0` panel: the host resizes the panel window and answers `{ length }` |
+| `panel.flyout` | `{ panel, size }` (extra thickness in logical pixels, 0 to give it back): the panel window grows toward the screen centre so a widget can draw a card beside itself. The exclusive zone is untouched, so nothing on the screen moves; the runtime twin of edit mode's settings strip |
+| `desktop.panel` | `{ active, fade? }` from a desktop window: bring the home screen forward over the windows, or send it back behind them. The host fades the surface and changes the layer together (see *The home screen and the windows*). `fade: false` skips the fade, for the case where the same page is on screen before and after and only the layer under it moves |
+| `desktop.bar` | `{ size }` from a desktop window: how far down the screen the home screen's bar reaches, in logical px, 0 for a screen without one. Forwarded to the compositor as `desktop_bar` when it has changed, which is what keeps windows out of the strip (see *The home screen and the windows*) |
+| `desktop.view` | `{ home }` from a desktop window: which view the primary screen is in. Kept in `shell.state.desktopHome` and broadcast as `desktop_view`, so a panel that starts later still knows |
+| `desktop.toggle` | none, from the panel's view indicator: broadcasts `shortcut` `desktop`, the same route Super + D takes — the desktop decides what the switch means, and there is one rule for it |
 | `wm.layoutMode` | → `{ mode, label, modes: [{ mode, label, description }] }` |
 | `wm.setLayoutMode` / `wm.cycleLayoutMode` | `{ mode }` / none → the new `{ mode, label }`; also broadcast as `layout_mode` |
 | `wm.outputs` | → `{ outputs }` with the compositor's full output records (modes, position, transform, VRR, primary) |
@@ -351,7 +449,7 @@ data so the UI can be developed in Chromium/Firefox.
 | `fs.list` | `{ path, hidden? }` → `{ path, parent, entries: [{ name, path, dir, size, mtime, hidden, symlink, mime, icon, image }] }` |
 | `fs.trash` | `{ paths }` → `{ count }` (through GIO, so it lands in the freedesktop trash) |
 | `fs.open` | `{ path }` → opens with the default application for the file's MIME type (GIO; a folder opens in the file manager, `Terminal=true` entries get the configured terminal) |
-| `shell.openApp` | `{ name: "settings", page?, arg? }` → spawns `mindshell --app` |
+| `shell.openApp` | `{ name: "settings" \| "library" \| "gaming" \| "tasks", page?, arg? }` → settings, library and gaming are handed to the workspace when one is open, everything else spawns `mindshell --app` |
 | `app.close` / `app.setTitle` | none / `{ title }` (app windows only) |
 | `system.power` | `{ action: "shutdown" \| "reboot" \| "suspend" \| "logout" }` |
 | `greeter.info` | → `{ users: [{ name, display, avatar? }], sessions: [{ id, name, exec }], last: { user?, session? }, host }` (login screen only; accounts with a login shell and a uid from 1000, `/usr/share/wayland-sessions`, `/var/lib/AccountsService/icons`) |
@@ -359,6 +457,12 @@ data so the UI can be developed in Chromium/Firefox.
 | `greeter.done` | after `started`: asks the compositor to quit so greetd starts the session |
 | `greeter.power` | `{ action: "poweroff" \| "reboot" \| "suspend" }` |
 | `system.stats` | → `{ cpu, memUsed, memTotal, gpu?: { util, temp, mem, memTotal, name }, load, uptime }` |
+| `system.overview` | `{ parts?: ["storage", "net", "sensors", "host", "containers"], top?: n }` → `{ at, cpu, memory, gpus }` plus the parts asked for (no `parts` means all of them) and the `top` busiest processes. One call is the whole readout |
+| `system.processes` | `{ query?, sort?, order?, limit?, mine? }` → `{ processes, total, matched, threads, states, cores, uid }`: filtered, sorted and cut in the host, so a thousand processes never cross the bridge |
+| `system.process` | `{ pid }` → one process in full: command line, executable, working directory, parent, threads, the four `Vm*` figures, open descriptors, bytes read and written, cgroup, context switches, and whether it is running under Wine |
+| `system.kill` | `{ pid, signal?: "TERM" \| "KILL" \| … }` → `{ pid }` (a plain `kill(2)`; the caller's own privileges apply) |
+| `system.containers` | `{ stats?: true }` → `{ docker, podman }`, each `{ available, running, total, containers: […] }`; neither engine is asked anything until its socket answers |
+| `system.services` | → `{ available, system, user }`: systemd's units, cached five seconds |
 | `audio.get` | → `{ volume, muted, sink }` |
 | `audio.set` | `{ volume }` (0..1.5) |
 | `audio.toggleMute` | |
@@ -398,10 +502,14 @@ data so the UI can be developed in Chromium/Firefox.
 | `audio` | `{ volume, muted }` |
 | `vpn` | the `vpn.list` payload whenever NetworkManager reports a change (the host follows `nmcli monitor`) or a `vpn.*` call changed something |
 | `network` | the `network.status` payload, on the same cue |
-| `shortcut` | `{ name }` forwarded from the compositor (`overview`) |
+| `shortcut` | `{ name }` forwarded from the compositor: `overview`, and `desktop` (Super + D) which toggles the home screen over the windows. The panel's view indicator broadcasts the same thing (`desktop.toggle`) |
 | `layout_mode` | `{ mode, label, modes? }` whenever the compositor's window layout changes |
 | `prefs` | `{ prefs }` whenever a compositor preference changes |
 | `desktop.changed` | `{ path }` when something in the Desktop folder changed (debounced) |
+| `desktop.open` | `{ name, page?, arg? }`: open a system page on the desktop (from `shell.openApp`, or another process over the workspace socket) |
+| `desktop.present` | `{ active: false }` to the desktop that is forward when a window takes the keyboard: fade out |
+| `desktop.away` | the desktop has finished fading out; the page it had open is put away, so what shows between the windows is the desktop |
+| `desktop_view` | `{ home }` whenever the primary screen changes view (see `desktop.view`); what the `desktop-view` widget draws |
 | `config` | `{ config }` when a host setting changed while the shell runs — today the icon theme, when the desktop's icon pack changes |
 | `lock` | `{ stage: "active" \| "screensaver" \| "blank", locked, inhibited, saver }` whenever the compositor's idle state changes (also in `shell.state.lock`) |
 | `game` | `{ running }` when GameMode starts or ends a game (the host watches `/run/mindos/perf/game`); the UI goes quiet — `:root.quiet`, no animations, samplers slowed five times, the desktop's stopped |
@@ -477,9 +585,16 @@ What `mindshell` (the Rust host in `mindshell/`) does beyond the tables above:
   host exits with status 1 when the compositor has no layer-shell.
 * **Service.** `mindos-shell.service` uses `KillMode=mixed` so only the host
   gets SIGTERM (WebKit's helper processes follow it), `Restart=on-failure`
-  with a 5-per-minute limit. `50-mindshell` imports `WAYLAND_DISPLAY`,
+  with a 5-per-minute limit. `session-startup` imports `WAYLAND_DISPLAY`,
   `DISPLAY` and `MINDWM_SOCKET` into `systemd --user` and restarts the unit;
   without a user manager it runs `mindshell` detached.
+* **Ready.** The unit is `Type=notify`: it reaches `active` when the desktop
+  view maps (`shell.ready`, `src/ready.rs` sends `READY=1` on `$NOTIFY_SOCKET`),
+  and after 15 seconds regardless so a shell that cannot draw a desktop does
+  not hold the session or get killed into a restart loop. `session-startup`
+  waits for that before it starts `mindos-session.target`, which is what keeps
+  the XDG autostart applications from painting over the compositor's startup
+  screen.
 
 ## The compositor IPC (mindwm)
 
@@ -494,6 +609,7 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `subscribe` | | `{}` then a `windows`, an `outputs` and a `mindbar` event immediately, and every change afterwards |
 | `get_windows` | | `{ windows, focused }` (same shape as the `windows` event) |
 | `get_outputs` | | `{ outputs }` |
+| `get_graphics` | | `{ session_active, software_rendering, loop_stall_ms, outputs: [{ output, device_active, refresh_mhz, frames, repaints, late_frames, resets, render_last_us, render_recent_us, render_worst_us, since_render_ms, flip_in_flight, timer_armed, direct_scanout }] }` — how each display is actually being driven; `late_frames` counts frames that missed their refresh (see *How late the repaint starts* in `COMPOSITOR.md`), and `loop_stall_ms` is the longest the whole compositor has stopped for, zero unless it ever has (see *When every display stops at once*) |
 | `focus` | `window` | raise, unminimise and focus |
 | `close` | `window` | |
 | `minimize` / `unminimize` / `toggle_minimize` | `window` | |
@@ -512,6 +628,7 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `blank` | | switch the displays off now (and lock, when *Lock when the displays turn off* is set) |
 | `inhibit_idle` | `on` | hold the session awake while this client is connected — what the shell does while a game runs. Dropped with the connection |
 | `game_scene` | `on` | clear the game's screen (`true`) or give everything back (`false`) — what the shell sends 2.5 s after GameMode reports a game, and at once when it ends. Nothing on a single display |
+| `desktop_bar` | `output`, `size` | how much of the top of a screen the shell's own bar covers, so windows are kept below it. `output` is a connector name or absent; `0` gives the strip back. See *The home screen and the windows* |
 | `tray_click` | `icon` (the `id` from the `tray` event), `button` (1 left, 2 middle, 3 right, 4/5 wheel up/down, 6/7 wheel left/right) | replays the click on the XEmbed icon at the pointer's position, so the program's own menu opens under the cursor |
 | `set_output` | `name`, then any of `width` + `height` + `refresh` (mHz), `scale`, `position: [x, y]`, `transform`, `enabled`, `vrr`, `primary` | applies the mode/scale/position/rotation/VRR/primary change, persists it and sends an `outputs` event |
 
@@ -613,10 +730,38 @@ render and calls `panel.fit` with the content length; the host resizes the
 window (keeping `align`) and the panel background is drawn by the UI, so
 `opacity: 0` gives free-floating icons.
 
+**Flyouts.** A widget that needs a card beside itself — the task bar's window
+list — gets one from `ctx.flyout` (`show(key, content, anchor)` / `hide`).
+The card is drawn *inside* the panel window: `panel.ts` measures it, asks the
+host for that much extra thickness with `panel.flyout`, and lines the card up
+with the widget along the bar. It is not a popup on purpose. A popup is an
+overlay surface anchored to all four edges of the output, so it would swallow
+the pointer everywhere and make hovering from one task to the next
+impossible; growing the panel window keeps the pointer on one surface the
+whole way. The card goes when the pointer leaves both it and the bar (after a
+beat, so a diagonal sweep does not lose it), on Escape, and when edit mode
+starts.
+
+The host grants the extra thickness a frame or two after the page asks for it,
+and that lag is the whole difficulty. Neither the bar nor the card may be laid
+out from the size the page *wants*. `.panel-bar` and `.panel-strip` are the
+window's only flex items and the window packs them to `flex-end`, which is the
+panel's own edge on all four edges (the flex direction is reversed for top and
+left), so the bar sits at the same place on screen whatever thickness the
+window happens to be at. `.panel-flyout` is out of flow, pinned `var(--panel-size)`
+in from that edge, so the card's screen position is right from its first frame
+too — it is simply clipped by the window until the room arrives. `panel.ts`
+watches the window with a `ResizeObserver` and adds `.ready` once the thickness
+is really there, which is what fades the card in; the same observer redraws the
+frosted glass under the island, whose origin moves when the window grows even
+though the island does not. Get any of this wrong and the bar visibly jumps
+out of the window and back every time a card opens and closes.
+
 ![Settings › Mind: tool lines, thinking, the model catalog](img/settings-mind.png)
 
-**App windows.** `?kind=app&app=<name>&page=<page>&arg=<json>` renders the
-Settings (`settings`) app in an ordinary window. Apps use
+**App windows.** `?kind=app&app=<name>&page=<page>&arg=<json>` renders one of
+Settings (`settings`), the Library (`library`), the Gaming Center (`gaming`)
+and the Task Manager (`tasks`) in an ordinary window. Apps use
 the same widgets, theme and bridge as the panels; `app.setTitle` updates the
 compositor's title bar and `app.close` ends the process. Settings pages:
 `mind` (tool lines, thinking, model catalog and downloads through
@@ -626,6 +771,53 @@ per output; advanced: position, rotation, VRR, primary, enable, through
 `wm.outputs` / `wm.setOutput`), `shell` (layout mode, panels, edit mode),
 `software` (Octopi package management, Windows setup and graphics help),
 `about`.
+
+## The Task Manager
+
+`mindshell --app tasks` (`Ctrl+Shift+Escape`, the `sysmon` widget, the *Open
+Task Manager* link in the desktop rails, `mindos-tasks.desktop`) is the
+complete picture of the machine: nine pages behind the ordinary app sidebar.
+
+| page | what it shows |
+|---|---|
+| Overview | the four load heroes (processor, memory, graphics, storage), the scrolling load graph, the per-core grid, network and disk throughput, the busiest processes, containers and failed units |
+| Processes | the table, sorted by any column, filtered by name, command line or pid, *Only mine* to hide the system's own; a row opens the detail sheet (command line, executable, working directory, parent, memory, descriptors, I/O, cgroup, context switches) and *End task* sends `TERM`, *Kill* `KILL` |
+| Performance | the processor in full (model, cores, threads, clock, governor, load average, context switches), memory and swap, and a card per GPU |
+| Storage | read/write throughput, a row per block device (size, kind, rates, operations, busy %) and a bar per mounted filesystem |
+| Network | throughput in and out, the totals, and a card per interface (state, address, MAC, MTU, link speed, errors) |
+| Sensors | temperatures, fans and power rails from `hwmon`, each with a bar scaled to what the reading means |
+| Containers | Docker and Podman side by side when either is installed: name, image, state, uptime, CPU, memory and published ports |
+| Services | systemd's failed units first, then the system and user unit tables |
+| System | the host, the hardware and the software: hostname, OS, kernel, uptime, boot time, product, board, BIOS, packages and session |
+
+`src/metrics.rs` is the whole host side. It keeps the previous sample of every
+counter it reads (`/proc/stat`, `/proc/diskstats`, `/proc/net/dev`, each
+process's `stat` and `io`) so it can answer in rates rather than totals, caches
+the answers that come from other programs (`nvidia-smi`, `docker`, `podman`,
+`systemctl`, the package database) for as long as they stay true, and asks a
+container engine nothing until its socket is there to answer. Every
+`system.*` method runs on a worker thread: a frame missed walking `/proc` is a
+frame missed in whatever game is running.
+
+The UI side has one sampler for the whole shell. `monitor.ts` unions the
+*demands* of everything on screen — the rail readout wants the network, the
+disks and three processes; the Storage page wants the disks; a page that says
+nothing wants everything — and makes one `system.overview` call per beat,
+handing the same payload to each of them. It also draws the shared
+instruments (`chart`, `meter`, `bar`, the core grid) and formats every number
+(`bytes`, `rate`, `percent`, `duration`, `degrees`), so a reading looks the
+same wherever it appears. `poll()` samples only while its element is on
+screen: a rail scrolled away, a page behind another page and a desktop with a
+game running (see `quiet.ts`) all cost nothing.
+
+`readout.ts` is that vocabulary at rail width: the load graph, three meters,
+the network/disk/container line, the three busiest processes and the link
+through to the Task Manager. Both desktop rails carry it — the gaming rail's
+System card and the workspace rail's — and the `desktop-tasks` widget hosts
+it as well, all off the same sample. It asks the container engines about
+themselves once every ten beats (about half a minute) because a container
+that appeared two seconds ago can wait and a subprocess every three seconds
+cannot.
 
 ## The authentication dialog (polkit)
 

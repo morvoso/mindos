@@ -47,11 +47,14 @@ pub struct Graphics {
 pub enum DirectScanout {
     /// Scan out a client's buffer whatever its format. A game handing over
     /// 8-bit buffers to a 10-bit swapchain needs this, or every one of its
-    /// frames gets composed instead.
-    #[default]
+    /// frames gets composed instead, but the primary plane then changes
+    /// format each time scan-out starts or stops.
     Any,
     /// Only when the buffer's format already matches the swapchain's. This
-    /// is what smithay itself defaults to.
+    /// is what smithay itself defaults to, and what mindwm ran before `Any`
+    /// arrived on 2026-09-09, the day before the first display that stopped
+    /// with a client buffer on its plane.
+    #[default]
     Matching,
     /// Never: compose every frame. The safe setting.
     Off,
@@ -330,7 +333,14 @@ mod tests {
     fn the_packaged_config_parses_and_names_a_scanout_policy() {
         let packaged = include_str!("../../packages/mindos-session/mindwm.toml");
         let cfg: Config = toml::from_str(packaged).unwrap();
-        assert_eq!(cfg.graphics.direct_scanout, DirectScanout::Any);
+        assert_eq!(cfg.graphics.direct_scanout, DirectScanout::Matching);
+        assert_eq!(
+            toml::from_str::<Config>("[graphics]\ndirect_scanout = 'any'")
+                .unwrap()
+                .graphics
+                .direct_scanout,
+            DirectScanout::Any
+        );
         assert_eq!(
             toml::from_str::<Config>("[graphics]\ndirect_scanout = 'off'")
                 .unwrap()
@@ -338,8 +348,9 @@ mod tests {
                 .direct_scanout,
             DirectScanout::Off
         );
-        // A file that says nothing about graphics still scans out.
-        assert_eq!(Config::default().graphics.direct_scanout, DirectScanout::Any);
+        // A file that says nothing about graphics still scans out what
+        // matches.
+        assert_eq!(Config::default().graphics.direct_scanout, DirectScanout::Matching);
     }
 
     #[test]

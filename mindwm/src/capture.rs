@@ -4,6 +4,7 @@
 //! and damage tracking are kept separate so newer capture protocols can use
 //! the same output path. No rendering or readback is done without a request.
 
+use crate::recover::LockAnyway;
 use crate::state::{AnvilState, Backend, ClientState};
 use smithay::{
     backend::{
@@ -286,7 +287,7 @@ impl<B: Backend + 'static> Dispatch<ZwlrScreencopyFrameV1, FrameData> for AnvilS
             frame::Request::CopyWithDamage { buffer } => (buffer, true),
             _ => return,
         };
-        let mut used = data.used.lock().unwrap();
+        let mut used = data.used.lock_anyway();
         if *used {
             object.post_error(
                 frame::Error::AlreadyUsed,
@@ -471,7 +472,7 @@ impl CaptureState {
                 }
             }
             for p in jobs {
-                let previous = p.manager.last.lock().unwrap().get(&key).copied();
+                let previous = p.manager.last.lock_anyway().get(&key).copied();
                 if p.damage && previous == Some((cache.generation, p.info.region)) {
                     self.pending.push(p);
                     continue;
@@ -507,8 +508,7 @@ impl CaptureState {
                 if copied.is_some() {
                     p.manager
                         .last
-                        .lock()
-                        .unwrap()
+                        .lock_anyway()
                         .insert(key.clone(), (cache.generation, p.info.region));
                     p.buffer.release();
                     // Smithay renders these offscreen targets with top-down rows.

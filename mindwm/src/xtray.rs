@@ -16,6 +16,19 @@
 //! Nothing here depends on the window manager side of the compositor: the
 //! host is a plain X client of XWayland, and the containers are ordinary
 //! override-redirect windows the WM leaves alone.
+//!
+//! The host runs on **its own thread**, with its own X11 connection and its
+//! own event loop, and reaches the compositor through two channels and
+//! nothing else. That is not tidiness. Every X11 request that wants an
+//! answer blocks until XWayland sends one, and reading the icons back is a
+//! round-trip per icon every [`POLL`], for as long as the session lasts. A
+//! round-trip that lands between a vblank and the repaint it was meant for
+//! costs that frame: at 240 Hz the whole frame is 4.17 ms. Worse, XWayland
+//! is itself a Wayland client of this compositor, so if it ever blocks
+//! writing to a socket the compositor is not reading -- because the
+//! compositor is blocked waiting for an X reply -- both ends wait forever
+//! and every display stops at once. On its own thread the tray can wait as
+//! long as it likes and the desktop never notices.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -32,6 +45,9 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::CURRENT_TIME;
 
+use smithay::reexports::calloop::channel::{channel, Channel, Event as ChannelEvent, Sender};
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::calloop::EventLoop;
 use smithay::utils::x11rb::X11Source;
 
 /// Icons are asked to be this big (logical X pixels).
@@ -41,8 +57,8 @@ const PARK: (i32, i32) = (-4 * ICON_SIZE as i32, -4 * ICON_SIZE as i32);
 /// How long a container stays under the pointer after a click, so the
 /// program's own popup (a menu) can find it there.
 const CLICK_HOLD: Duration = Duration::from_millis(600);
-/// How often the icons are read back.
-pub const POLL: Duration = Duration::from_millis(400);
+/// How often the icons are read back, on the host thread.
+const POLL: Duration = Duration::from_millis(400);
 
 const SYSTEM_TRAY_REQUEST_DOCK: u32 = 0;
 const XEMBED_EMBEDDED_NOTIFY: u32 = 0;
@@ -81,6 +97,212 @@ pub struct TrayItem {
     pub pixels: String,
 }
 
+/// The compositor's handle on the tray host: commands out, icons in.
+///
+/// Nothing on this side touches X11, so nothing on this side can block. An
+/// XWayland that stops answering costs the tray icons and only the tray
+/// icons.
+pub struct TrayHost {
+    commands: Sender<Command>,
+    items: Vec<TrayItem>,
+    /// The published list changed since `snapshot` was last taken.
+    dirty: bool,
+    /// The host thread has finished; nothing more is coming.
+    gone: bool,
+}
+
+impl std::fmt::Debug for TrayHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrayHost")
+            .field("icons", &self.items.len())
+            .field("gone", &self.gone)
+            .finish()
+    }
+}
+
+/// What the compositor asks of the host. Both are fire and forget: the
+/// answer, when there is one, comes back as an [`Update`].
+enum Command {
+    Click { id: u32, button: u8, pointer: (i32, i32) },
+    Withdraw(Window),
+}
+
+/// What the host tells the compositor.
+#[derive(Debug)]
+pub enum Update {
+    /// The published icons, whenever they change.
+    Items(Vec<TrayItem>),
+    /// The host stopped, and why.
+    Gone(String),
+}
+
+/// Start the tray host on its own thread.
+///
+/// The X11 connection is made over there too, so a slow or absent XWayland
+/// delays the compositor by nothing at all; failure turns up later as
+/// [`Update::Gone`]. The returned channel has to be put in the compositor's
+/// event loop, and its messages handed to [`TrayHost::on_update`].
+pub fn spawn(display_number: u32) -> Result<(TrayHost, Channel<Update>), String> {
+    let (commands, command_rx) = channel::<Command>();
+    let (update_tx, updates) = channel::<Update>();
+    std::thread::Builder::new()
+        .name("mindwm-tray".into())
+        .spawn(move || run(display_number, command_rx, update_tx))
+        .map_err(|err| err.to_string())?;
+    let host = TrayHost {
+        commands,
+        items: Vec::new(),
+        dirty: false,
+        gone: false,
+    };
+    Ok((host, updates))
+}
+
+impl TrayHost {
+    /// Fold in what the host thread just sent.
+    pub fn on_update(&mut self, update: Update) {
+        match update {
+            Update::Items(items) => {
+                if self.items != items {
+                    self.items = items;
+                    self.dirty = true;
+                }
+            }
+            Update::Gone(why) => {
+                warn!(why, "the tray host stopped; legacy tray icons are gone");
+                self.gone = true;
+                if !self.items.is_empty() {
+                    self.items.clear();
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    /// True after anything the shell should hear about changed.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::replace(&mut self.dirty, false)
+    }
+
+    /// The published items, in docking order.
+    pub fn snapshot(&self) -> Vec<TrayItem> {
+        self.items.clone()
+    }
+
+    /// ICCCM bookkeeping smithay skips: once a client has unmapped its own
+    /// top-level window, WM_STATE must read Withdrawn. Wine waits for that
+    /// before it treats the hide as finished, and a Windows program that
+    /// hides a window and shows it again (a tray restore, a splash screen,
+    /// most dialogs) otherwise never gets its window mapped again.
+    pub fn withdraw(&self, window: Window) {
+        let _ = self.commands.send(Command::Withdraw(window));
+    }
+
+    /// Replay a click on an icon: buttons 1/2/3, 4/5 for wheel up/down, 6/7
+    /// for wheel left/right. `pointer` is where the pointer is, in X
+    /// (logical) coordinates. The click itself happens on the host thread;
+    /// what is answered here is only whether it was worth sending.
+    pub fn click(&mut self, id: u32, button: u8, pointer: (i32, i32)) -> Result<(), String> {
+        if self.gone {
+            return Err("no tray host".into());
+        }
+        if !self.items.iter().any(|item| item.id == id) {
+            return Err(format!("no such tray icon: {id}"));
+        }
+        if !(1..=7).contains(&button) {
+            return Err(format!("no such button: {button}"));
+        }
+        self.commands
+            .send(Command::Click { id, button, pointer })
+            .map_err(|_| "the tray host is not listening".to_string())
+    }
+}
+
+/// The host thread: its own X11 connection, its own event loop, and the two
+/// channels. Everything that can block on XWayland happens in here.
+fn run(display_number: u32, commands: Channel<Command>, updates: Sender<Update>) {
+    let (tray, source) = match XTray::start(display_number) {
+        Ok(started) => started,
+        Err(err) => {
+            let _ = updates.send(Update::Gone(err));
+            return;
+        }
+    };
+    let mut event_loop = match EventLoop::<Host>::try_new() {
+        Ok(event_loop) => event_loop,
+        Err(err) => {
+            let _ = updates.send(Update::Gone(err.to_string()));
+            return;
+        }
+    };
+    let handle = event_loop.handle();
+    let inserted = (|| -> Result<(), String> {
+        handle
+            .insert_source(source, |event, _, host: &mut Host| match event {
+                ChannelEvent::Msg(event) => host.tray.handle_event(event),
+                // The reader thread only gives up when the connection breaks.
+                ChannelEvent::Closed => host.stop("the X11 connection closed"),
+            })
+            .map_err(|err| err.to_string())?;
+        handle
+            .insert_source(commands, |event, _, host: &mut Host| match event {
+                ChannelEvent::Msg(Command::Click { id, button, pointer }) => {
+                    if let Err(err) = host.tray.click(id, button, pointer) {
+                        warn!(id, err, "tray icon click could not be replayed");
+                    }
+                }
+                ChannelEvent::Msg(Command::Withdraw(window)) => host.tray.withdraw(window),
+                // The compositor let go of the handle: the session is over.
+                ChannelEvent::Closed => host.stop("the compositor let go"),
+            })
+            .map_err(|err| err.to_string())?;
+        handle
+            .insert_source(Timer::from_duration(POLL), |_, _, host: &mut Host| {
+                host.tray.poll();
+                TimeoutAction::ToDuration(POLL)
+            })
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    })();
+    if let Err(err) = inserted {
+        let _ = updates.send(Update::Gone(err));
+        return;
+    }
+
+    let mut host = Host {
+        tray,
+        running: true,
+        why: String::from("the tray event loop ended"),
+    };
+    while host.running {
+        if let Err(err) = event_loop.dispatch(None, &mut host) {
+            host.stop(&format!("the tray event loop failed: {err}"));
+            break;
+        }
+        if host.tray.take_dirty() && updates.send(Update::Items(host.tray.snapshot())).is_err() {
+            // Nobody left to tell.
+            return;
+        }
+    }
+    let _ = updates.send(Update::Gone(host.why));
+}
+
+/// The host thread's own state.
+struct Host {
+    tray: XTray,
+    running: bool,
+    why: String,
+}
+
+impl Host {
+    fn stop(&mut self, why: &str) {
+        if self.running {
+            self.running = false;
+            self.why = why.to_string();
+        }
+    }
+}
+
 struct Icon {
     container: Window,
     title: String,
@@ -93,16 +315,7 @@ struct Icon {
     parked_again_at: Option<Instant>,
 }
 
-impl std::fmt::Debug for XTray {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("XTray")
-            .field("selection", &self.selection)
-            .field("icons", &self.icons.len())
-            .finish()
-    }
-}
-
-pub struct XTray {
+struct XTray {
     conn: Arc<RustConnection>,
     root: Window,
     atoms: Atoms,
@@ -118,7 +331,7 @@ pub struct XTray {
 impl XTray {
     /// Take the tray selection on display `:<display>`; returns the host and
     /// the calloop source that delivers its X events.
-    pub fn start(display_number: u32) -> Result<(XTray, X11Source), String> {
+    fn start(display_number: u32) -> Result<(XTray, X11Source), String> {
         let (conn, screen_num) = x11rb::connect(Some(&format!(":{display_number}"))).map_err(|e| e.to_string())?;
         let conn = Arc::new(conn);
         let setup = conn.setup();
@@ -201,20 +414,13 @@ impl XTray {
     }
 
     /// True after anything the shell should hear about changed.
-    pub fn take_dirty(&mut self) -> bool {
+    fn take_dirty(&mut self) -> bool {
         std::mem::replace(&mut self.dirty, false)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.icons.is_empty()
-    }
-
-    /// ICCCM bookkeeping smithay skips: once a client has unmapped its own
-    /// top-level window, WM_STATE must read Withdrawn. Wine waits for that
-    /// before it treats the hide as finished, and a Windows program that
-    /// hides a window and shows it again (a tray restore, a splash screen,
-    /// most dialogs) otherwise never gets its window mapped again.
-    pub fn withdraw(&self, window: Window) {
+    /// WM_STATE = Withdrawn on a window its client unmapped; see
+    /// [`TrayHost::withdraw`].
+    fn withdraw(&self, window: Window) {
         let wm_state = self.atoms.WM_STATE;
         if self.conn.change_property32(PropMode::REPLACE, window, wm_state, wm_state, &[0, 0]).is_ok() {
             let _ = self.conn.flush();
@@ -223,7 +429,7 @@ impl XTray {
 
     /// The published items, in docking order (icons that unmapped themselves
     /// or have not drawn yet are left out).
-    pub fn snapshot(&self) -> Vec<TrayItem> {
+    fn snapshot(&self) -> Vec<TrayItem> {
         self.icons
             .iter()
             .filter(|(_, icon)| icon.mapped)
@@ -242,7 +448,7 @@ impl XTray {
             .collect()
     }
 
-    pub fn handle_event(&mut self, event: Event) {
+    fn handle_event(&mut self, event: Event) {
         match event {
             Event::ClientMessage(ev) if ev.window == self.selection && ev.type_ == self.atoms._NET_SYSTEM_TRAY_OPCODE => {
                 let data = ev.data.as_data32();
@@ -450,7 +656,7 @@ impl XTray {
 
     /// Read every mapped icon back and park containers whose click hold is
     /// over. Called from a timer every `POLL`.
-    pub fn poll(&mut self) {
+    fn poll(&mut self) {
         let now = Instant::now();
         let ids: Vec<Window> = self.icons.keys().copied().collect();
         for id in ids {
@@ -475,10 +681,14 @@ impl XTray {
             }
             match self.capture(container) {
                 Ok(pixels) => {
-                    let icon = self.icons.get_mut(&id).unwrap();
-                    if icon.pixels.as_ref() != Some(&pixels) {
-                        icon.pixels = Some(pixels);
-                        self.dirty = true;
+                    // The icon can have gone between the list being taken and
+                    // the read-back finishing: a tray application that quits
+                    // takes its window with it.
+                    if let Some(icon) = self.icons.get_mut(&id) {
+                        if icon.pixels.as_ref() != Some(&pixels) {
+                            icon.pixels = Some(pixels);
+                            self.dirty = true;
+                        }
                     }
                 }
                 Err(err) => debug!(icon = id, err, "tray icon read-back failed"),
@@ -500,14 +710,11 @@ impl XTray {
         Ok(to_rgba(&image.data, image.depth, self.lsb_first, usize::from(ICON_SIZE) * usize::from(ICON_SIZE)))
     }
 
-    /// Replay a click on an icon: buttons 1/2/3, 4/5 for wheel up/down,
-    /// 6/7 for wheel left/right. `pointer` is where the pointer is, in X
-    /// (logical) coordinates.
-    pub fn click(&mut self, id: u32, button: u8, pointer: (i32, i32)) -> Result<(), String> {
+    /// Replay a click on an icon, where the pointer is, in X (logical)
+    /// coordinates. Validated on the compositor's side; by the time it gets
+    /// here the icon may still have gone.
+    fn click(&mut self, id: u32, button: u8, pointer: (i32, i32)) -> Result<(), String> {
         let container = self.icons.get(&id).map(|i| i.container).ok_or_else(|| format!("no such tray icon: {id}"))?;
-        if !(1..=7).contains(&button) {
-            return Err(format!("no such button: {button}"));
-        }
         let conn = &self.conn;
         let half = i32::from(ICON_SIZE / 2);
         let (px, py) = pointer;
@@ -589,6 +796,53 @@ mod tests {
         assert_eq!(to_rgba(&[255, 3, 2, 1], 32, false, 1), vec![3, 2, 1, 255]);
         // short data is padded with transparent pixels
         assert_eq!(to_rgba(&[], 32, true, 1), vec![0, 0, 0, 0]);
+    }
+
+    fn item(id: u32) -> TrayItem {
+        TrayItem {
+            id,
+            title: String::new(),
+            class: String::new(),
+            pid: None,
+            width: ICON_SIZE,
+            height: ICON_SIZE,
+            pixels: String::new(),
+        }
+    }
+
+    /// The compositor's end answers out of what the host last sent it, and
+    /// never waits on X11 to do it.
+    #[test]
+    fn the_handle_answers_from_the_last_icons_it_was_sent() {
+        let (commands, _keep_the_channel_open) = channel::<Command>();
+        let mut host = TrayHost {
+            commands,
+            items: Vec::new(),
+            dirty: false,
+            gone: false,
+        };
+        // Nothing docked yet: a click has nowhere to land and says so.
+        assert!(host.click(7, 1, (0, 0)).is_err());
+        assert!(!host.take_dirty());
+
+        host.on_update(Update::Items(vec![item(7)]));
+        assert!(host.take_dirty());
+        assert!(!host.take_dirty());
+        assert_eq!(host.snapshot().len(), 1);
+        assert!(host.click(7, 1, (0, 0)).is_ok());
+        assert!(host.click(7, 9, (0, 0)).is_err()); // no such button
+        assert!(host.click(8, 1, (0, 0)).is_err()); // no such icon
+
+        // The same icons again is not news for the shell.
+        host.on_update(Update::Items(vec![item(7)]));
+        assert!(!host.take_dirty());
+
+        // The host going takes the icons with it: the shell hears about it,
+        // and clicks stop being sent into the dark.
+        host.on_update(Update::Gone("XWayland went away".into()));
+        assert!(host.take_dirty());
+        assert!(host.snapshot().is_empty());
+        assert!(host.click(7, 1, (0, 0)).is_err());
     }
 
     #[test]

@@ -15,6 +15,7 @@ const SHORTCUTS: [string, string][] = [
   ['Media keys', 'Play / pause, stop, next or previous track'],
   ['Super + Space', 'Open the Mind bar'],
   ['Super + Return', 'Terminal'],
+  ['Super + D', 'Show the desktop over the windows, or send it back'],
   ['Print / Super + Shift + S', 'Select an area to save and copy'],
   ['Shift + Print', 'Save and copy all displays'],
   ['Alt + F4 / Super + Q', 'Close the window'],

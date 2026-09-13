@@ -69,12 +69,6 @@ impl IsAlive for PointerFocusTarget {
     }
 }
 
-impl From<PointerFocusTarget> for WlSurface {
-    #[inline]
-    fn from(target: PointerFocusTarget) -> Self {
-        target.wl_surface().unwrap().into_owned()
-    }
-}
 
 impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for PointerFocusTarget {
     fn enter(

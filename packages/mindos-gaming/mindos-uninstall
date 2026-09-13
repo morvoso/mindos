@@ -1,0 +1,204 @@
+#!/usr/bin/python3
+"""Remove an app, whichever world it came from.
+
+Windows programs run their own Windows uninstaller, then give up their Wine
+prefix; repository and Flathub apps go through mindos-pkg. The person doing it
+sees one dialog either way, and never has to know which kind of app it was.
+"""
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+# Where a desktop entry can live, most specific first.
+def entry_dirs():
+    data = os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local/share')
+    dirs = [data] + (os.environ.get('XDG_DATA_DIRS') or '/usr/local/share:/usr/share').split(':')
+    return [Path(d) / 'applications' for d in dirs if d]
+
+
+def dialog(*args):
+    return subprocess.run(['zenity', '--title=Uninstall', *args], text=True, capture_output=True)
+
+
+def progress(text):
+    return subprocess.Popen(['zenity', '--progress', '--pulsate', '--no-cancel', '--auto-close',
+                             '--title=Uninstall', '--text=' + text],
+                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def read_entry(path):
+    """The [Desktop Entry] keys, and nothing from the action groups below it."""
+    keys = {}
+    try:
+        text = path.read_text('utf-8', 'replace')
+    except OSError:
+        return keys
+    inside = False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith('['):
+            inside = line == '[Desktop Entry]'
+        elif inside and '=' in line and not line.startswith('#'):
+            key, _, value = line.partition('=')
+            keys.setdefault(key.strip(), value.strip())
+    return keys
+
+
+def find_entry(wanted):
+    """An app named by path, by desktop id, or by the name a person would say."""
+    candidate = Path(wanted).expanduser()
+    if candidate.suffix == '.desktop' and candidate.is_file():
+        return candidate.resolve()
+    for directory in entry_dirs():
+        for suffix in ('', '.desktop'):
+            direct = directory / (wanted + suffix)
+            if direct.is_file():
+                return direct.resolve()
+    lowered = wanted.lower()
+    for directory in entry_dirs():
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob('*.desktop')):
+            keys = read_entry(path)
+            if keys.get('Name', '').lower() == lowered or path.stem.lower() == lowered:
+                return path.resolve()
+    return None
+
+
+def windows_app(path, keys):
+    """The Wine prefix this entry belongs to, or None if it is not a Windows app."""
+    result = subprocess.run(['mindos-win', 'list', '--json'], text=True, capture_output=True)
+    if result.returncode:
+        return None
+    try:
+        apps = json.loads(result.stdout)
+    except ValueError:
+        return None
+    for app in apps:
+        if any(Path(entry['file']).resolve() == path for entry in app.get('entries', [])):
+            return app
+    # Entries this system wrote itself point at the prefix by name.
+    try:
+        argv = shlex.split(keys.get('Exec', '').replace('%%', '%'))
+    except ValueError:
+        argv = []
+    if len(argv) >= 3 and Path(argv[0]).name == 'mindos-win' and argv[1] == 'run':
+        for app in apps:
+            if app['slug'] == argv[2]:
+                return app
+    return None
+
+
+def native_package(path, keys):
+    """('flatpak'|'pacman', name) for an app the package manager installed."""
+    if keys.get('X-Flatpak'):
+        return ('flatpak', keys['X-Flatpak'])
+    if 'flatpak' in path.parts:
+        return ('flatpak', path.stem)
+    owner = subprocess.run(['pacman', '-Qoq', str(path)], text=True, capture_output=True)
+    if owner.returncode == 0 and owner.stdout.strip():
+        return ('pacman', owner.stdout.strip().split('\n')[0])
+    return (None, None)
+
+
+def choose():
+    """Every app that can actually be removed, for when none was named."""
+    rows, seen = [], set()
+    for directory in entry_dirs():
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob('*.desktop')):
+            keys = read_entry(path)
+            name = keys.get('Name')
+            if not name or keys.get('NoDisplay', '').lower() == 'true' or name in seen:
+                continue
+            seen.add(name)
+            rows += [name, str(path)]
+    if not rows:
+        raise ValueError('There are no apps to uninstall.')
+    result = dialog('--list', '--width=560', '--height=520', '--print-column=2', '--hide-column=2',
+                    '--text=Which app would you like to uninstall?',
+                    '--column=App', '--column=Entry', *rows)
+    return Path(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip() else None
+
+
+def confirm(name, detail):
+    answer = dialog('--question', '--width=460', '--ok-label=Uninstall', '--cancel-label=Keep it',
+                    '--default-cancel', f'--text=Uninstall {name}?\n{detail}')
+    return answer.returncode == 0
+
+
+def run_windows(app):
+    name = app['name']
+    if not confirm(name, 'Its own Windows uninstaller runs first, then everything it\n'
+                         'installed here is removed. Its settings go with it.'):
+        return
+    bar = progress(f'Uninstalling {name}. Follow the Windows uninstaller if it opens.')
+    try:
+        result = subprocess.run(['mindos-win', 'uninstall', app['slug']], text=True, capture_output=True)
+    finally:
+        bar.communicate(b'100\n')
+    if result.returncode:
+        raise ValueError(f'{name} could not be uninstalled.\n\n{result.stderr.strip()[-600:]}')
+    dialog('--info', '--no-markup', '--width=420', f'--text={name} has been uninstalled.')
+
+
+def run_native(kind, package, name):
+    where = 'from Flathub' if kind == 'flatpak' else 'from the system'
+    if not confirm(name, f'It was installed {where} as {package}.\n'
+                         'Anything installed only for it is removed too.'):
+        return
+    bar = progress(f'Uninstalling {name}.')
+    try:
+        # mindos-pkg needs root to change the system; polkit asks for the password.
+        result = subprocess.run(['pkexec', 'mindos-pkg', 'remove', package], text=True, capture_output=True)
+    finally:
+        bar.communicate(b'100\n')
+    if result.returncode == 126 or result.returncode == 127:
+        return  # The password prompt was dismissed.
+    if result.returncode:
+        raise ValueError(f'{name} could not be uninstalled.\n\n'
+                         f'{(result.stderr.strip() or result.stdout.strip())[-600:]}')
+    dialog('--info', '--no-markup', '--width=420', f'--text={name} has been uninstalled.')
+
+
+def main():
+    if os.geteuid() == 0:
+        raise ValueError('Uninstall apps from your desktop account.')
+    if len(sys.argv) > 1:
+        entry = find_entry(sys.argv[1])
+        if entry is None:
+            raise ValueError(f'There is no app called {sys.argv[1]} here.')
+    else:
+        entry = choose()
+        if entry is None:
+            return
+    keys = read_entry(entry)
+    name = keys.get('Name') or entry.stem
+    app = windows_app(entry, keys)
+    if app:
+        run_windows(app)
+        return
+    kind, package = native_package(entry, keys)
+    if kind:
+        run_native(kind, package, name)
+        return
+    # An entry nothing owns: a hand-written launcher, or one this system wrote.
+    if entry.is_relative_to(entry_dirs()[0]):
+        if confirm(name, 'This is a shortcut you or MindOS added. Removing it takes\n'
+                         'away the shortcut; no program is uninstalled.'):
+            entry.unlink(missing_ok=True)
+            dialog('--info', '--no-markup', '--width=420', f'--text={name} has been removed.')
+        return
+    raise ValueError(f'{name} is part of the system and cannot be uninstalled on its own.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        dialog('--error', '--no-markup', '--width=460', '--text=' + str(error))
+        sys.exit(1)

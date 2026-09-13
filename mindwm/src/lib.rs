@@ -22,6 +22,7 @@ pub mod text;
 pub mod timing;
 mod pointer;
 pub mod focus;
+pub mod headless;
 pub mod idle;
 pub mod input_handler;
 pub mod input_config;
@@ -31,10 +32,13 @@ mod osd;
 pub mod ipc;
 pub mod layout;
 pub mod prefs;
+pub mod recover;
 pub mod procinfo;
 pub mod render;
+pub mod sched;
 pub mod shell;
 pub mod state;
+pub mod watchdog;
 #[cfg(feature = "udev")]
 pub mod edid;
 #[cfg(feature = "udev")]

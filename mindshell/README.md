@@ -31,7 +31,7 @@ file is the host's operating notes.
 | `src/system.rs` | `systemctl` power, `/proc` statistics, `nvidia-smi`, `wpctl`, `nmcli`, sysfs battery |
 | `src/layout.rs` | `layout.json` model, validation (`sanitized`), atomic save, reset |
 | `src/config.rs` | `shell.toml` model and overlay of `/etc` + `~/.config` |
-| `data/` | default `layout.json`, `shell.toml`, `mindos-shell.service`, `50-mindshell` autostart, the `mindos-settings` / `mindos-displays` / `mindos-wallpaper` desktop entries, `mindos-lock.pam` (the lock screen's PAM service), `mindos.portal` and the D-Bus activation file of the Wallpaper portal backend |
+| `data/` | default `layout.json`, `shell.toml`, `mindos-shell.service`, the `mindos-settings` / `mindos-displays` / `mindos-wallpaper` desktop entries, `mindos-lock.pam` (the lock screen's PAM service), `mindos.portal` and the D-Bus activation file of the Wallpaper portal backend |
 | `ui/` | the TypeScript UI (built by `ui/build.sh <outdir>` with esbuild) |
 
 ## Runtime model

@@ -430,14 +430,20 @@ bitflags::bitflags! {
 impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     #[inline]
     fn from(x: xdg_toplevel::ResizeEdge) -> Self {
-        Self::from_bits(x as u32).unwrap()
+        // The edge comes off the wire from the client. Every value the
+        // protocol defines is one of these, and a value it does not define
+        // is not worth a session over: a resize from no corner does nothing.
+        Self::from_bits(x as u32).unwrap_or(Self::NONE)
     }
 }
 
 impl From<ResizeEdge> for xdg_toplevel::ResizeEdge {
     #[inline]
     fn from(x: ResizeEdge) -> Self {
-        Self::try_from(x.bits()).unwrap()
+        // Only the nine named corners and sides have a protocol value; a
+        // combination that is not one of them (left and right at once) has
+        // nothing to send, so it sends none.
+        Self::try_from(x.bits()).unwrap_or(Self::None)
     }
 }
 
@@ -490,6 +496,26 @@ pub struct PointerResizeSurfaceGrab<BackendData: Backend + 'static> {
     pub initial_window_location: Point<i32, Logical>,
     pub initial_window_size: Size<i32, Logical>,
     pub last_window_size: Size<i32, Logical>,
+}
+
+/// Where an X11 frame goes for the client size a resize has reached: the
+/// edges not being dragged stay where they started. `initial_size` and
+/// `size` are both the client's, so the title bar does not count twice.
+#[cfg(feature = "xwayland")]
+fn x11_resize_location(
+    initial_location: Point<i32, Logical>,
+    initial_size: Size<i32, Logical>,
+    size: Size<i32, Logical>,
+    edges: ResizeEdge,
+) -> Point<i32, Logical> {
+    let mut location = initial_location;
+    if edges.intersects(ResizeEdge::LEFT) {
+        location.x += initial_size.w - size.w;
+    }
+    if edges.intersects(ResizeEdge::TOP) {
+        location.y += initial_size.h - size.h;
+    }
+    location
 }
 
 impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerResizeSurfaceGrab<BackendData> {
@@ -563,10 +589,20 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerResiz
             }
             #[cfg(feature = "xwayland")]
             WindowSurface::X11(x11) => {
-                let Some(location) = data.space.element_location(&self.window) else {
-                    return;
-                };
-                let _ = x11.configure(Rectangle::new(location, self.last_window_size));
+                // An X11 window takes its position with its size, so the far
+                // edge stays put by moving it now: left alone, dragging the
+                // left edge would grow the window out of its right side.
+                let location = x11_resize_location(
+                    self.initial_window_location,
+                    self.initial_window_size,
+                    self.last_window_size,
+                    self.edges,
+                );
+                if data.space.element_location(&self.window) != Some(location) {
+                    data.space.map_element(self.window.clone(), location, false);
+                }
+                let header = Point::from((0, self.window.header_height()));
+                let _ = x11.configure(Rectangle::new(location + header, self.last_window_size));
             }
         }
     }
@@ -641,24 +677,15 @@ impl<BackendData: Backend> PointerGrab<AnvilState<BackendData>> for PointerResiz
                 }
                 #[cfg(feature = "xwayland")]
                 WindowSurface::X11(x11) => {
-                    let Some(mut location) = data.space.element_location(&self.window) else {
-                        return;
-                    };
-                    if self.edges.intersects(ResizeEdge::TOP_LEFT) {
-                        let geometry = self.window.geometry();
-
-                        if self.edges.intersects(ResizeEdge::LEFT) {
-                            location.x = self.initial_window_location.x
-                                + (self.initial_window_size.w - geometry.size.w);
-                        }
-                        if self.edges.intersects(ResizeEdge::TOP) {
-                            location.y = self.initial_window_location.y
-                                + (self.initial_window_size.h - geometry.size.h);
-                        }
-
-                        data.space.map_element(self.window.clone(), location, true);
-                    }
-                    let _ = x11.configure(Rectangle::new(location, self.last_window_size));
+                    let location = x11_resize_location(
+                        self.initial_window_location,
+                        self.initial_window_size,
+                        self.last_window_size,
+                        self.edges,
+                    );
+                    data.space.map_element(self.window.clone(), location, true);
+                    let header = Point::from((0, self.window.header_height()));
+                    let _ = x11.configure(Rectangle::new(location + header, self.last_window_size));
 
                     let Some(surface) = self.window.wl_surface() else {
                         // X11 Window got unmapped, abort
@@ -862,24 +889,15 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchResizeSur
             }
             #[cfg(feature = "xwayland")]
             WindowSurface::X11(x11) => {
-                let Some(mut location) = data.space.element_location(&self.window) else {
-                    return;
-                };
-                if self.edges.intersects(ResizeEdge::TOP_LEFT) {
-                    let geometry = self.window.geometry();
-
-                    if self.edges.intersects(ResizeEdge::LEFT) {
-                        location.x =
-                            self.initial_window_location.x + (self.initial_window_size.w - geometry.size.w);
-                    }
-                    if self.edges.intersects(ResizeEdge::TOP) {
-                        location.y =
-                            self.initial_window_location.y + (self.initial_window_size.h - geometry.size.h);
-                    }
-
-                    data.space.map_element(self.window.clone(), location, true);
-                }
-                let _ = x11.configure(Rectangle::new(location, self.last_window_size));
+                let location = x11_resize_location(
+                    self.initial_window_location,
+                    self.initial_window_size,
+                    self.last_window_size,
+                    self.edges,
+                );
+                data.space.map_element(self.window.clone(), location, true);
+                let header = Point::from((0, self.window.header_height()));
+                let _ = x11.configure(Rectangle::new(location + header, self.last_window_size));
 
                 let Some(surface) = self.window.wl_surface() else {
                     // X11 Window got unmapped, abort
@@ -977,10 +995,20 @@ impl<BackendData: Backend> TouchGrab<AnvilState<BackendData>> for TouchResizeSur
             }
             #[cfg(feature = "xwayland")]
             WindowSurface::X11(x11) => {
-                let Some(location) = data.space.element_location(&self.window) else {
-                    return;
-                };
-                let _ = x11.configure(Rectangle::new(location, self.last_window_size));
+                // An X11 window takes its position with its size, so the far
+                // edge stays put by moving it now: left alone, dragging the
+                // left edge would grow the window out of its right side.
+                let location = x11_resize_location(
+                    self.initial_window_location,
+                    self.initial_window_size,
+                    self.last_window_size,
+                    self.edges,
+                );
+                if data.space.element_location(&self.window) != Some(location) {
+                    data.space.map_element(self.window.clone(), location, false);
+                }
+                let header = Point::from((0, self.window.header_height()));
+                let _ = x11.configure(Rectangle::new(location + header, self.last_window_size));
             }
         }
     }

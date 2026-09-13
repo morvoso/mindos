@@ -25,7 +25,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Layout {
-            version: 4,
+            version: 5,
             panels: Vec::new(),
             desktop: Desktop::default(),
             extra: Map::new(),
@@ -189,6 +189,19 @@ impl Layout {
         self.version = 3;
     }
 
+    /// Version 5 added the view indicator, the one thing that says whether the
+    /// primary screen is showing the home screen or the windows in front of it.
+    /// A layout saved before it existed has no way to know to ask for it, so it
+    /// goes at the near end of the first panel.
+    fn migrate_v5(&mut self) {
+        if self.panels.iter().any(|p| p.widgets.iter().any(|w| w.kind == "desktop-view")) {
+            return;
+        }
+        if let Some(panel) = self.panels.first_mut() {
+            panel.widgets.insert(0, Widget::new("view", "desktop-view"));
+        }
+    }
+
     /// Clamp values to something the host can build windows from.
     pub fn sanitized(mut self) -> Layout {
         if self.version == 0 {
@@ -209,6 +222,10 @@ impl Layout {
                 }
             }
             self.version = 4;
+        }
+        if self.version < 5 {
+            self.migrate_v5();
+            self.version = 5;
         }
         let mut seen = std::collections::HashSet::new();
         let mut n = 0;
@@ -353,10 +370,10 @@ mod tests {
             {"id": "bar", "widgets": [{"type": "tray"}, {"type": "network"}, {"type": "vpn"}, {"type": "audio"}]},
             {"id": "custom", "widgets": [{"type": "network"}]}
         ]})).unwrap();
-        assert_eq!(layout.panels[0].widgets.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(), ["tray", "audio"]);
+        assert_eq!(layout.panels[0].widgets.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(), ["desktop-view", "tray", "audio"]);
         assert_eq!(layout.panels[1].widgets[0].kind, "network");
         assert_eq!(Layout::from_value(layout.to_value()).unwrap(), layout);
-        let custom = Layout::from_value(serde_json::json!({"version": 4, "panels": [
+        let custom = Layout::from_value(serde_json::json!({"version": 5, "panels": [
             {"id": "bar", "widgets": [{"type": "tray"}, {"type": "network"}]}
         ]})).unwrap();
         assert_eq!(custom.panels[0].widgets.len(), 2);
@@ -371,11 +388,11 @@ mod tests {
             ]}]
         });
         let layout = Layout::from_value(v).unwrap();
-        assert_eq!(layout.version, 4);
+        assert_eq!(layout.version, 5);
         let names: Vec<&str> = layout.panels[0].widgets.iter().map(|w| w.kind.as_str()).collect();
-        assert_eq!(names, ["tray", "perf", "mind", "updates", "notifications", "clock"]);
+        assert_eq!(names, ["desktop-view", "tray", "perf", "mind", "updates", "notifications", "clock"]);
         let again = Layout::from_value(layout.to_value()).unwrap();
-        assert_eq!(again.panels[0].widgets.len(), 6, "migrating twice adds nothing");
+        assert_eq!(again.panels[0].widgets.len(), 7, "migrating twice adds nothing");
     }
 
     #[test]

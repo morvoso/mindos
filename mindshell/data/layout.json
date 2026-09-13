@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "panels": [
     {
       "id": "bar",
@@ -14,6 +14,11 @@
       "float": true,
       "autohide": false,
       "widgets": [
+        {
+          "id": "view",
+          "type": "desktop-view",
+          "config": {}
+        },
         {
           "id": "sp-l",
           "type": "spacer",

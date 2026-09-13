@@ -3,9 +3,13 @@
 import { h } from '../dom';
 import type { WidgetCtx } from './registry';
 
-/** The standard clickable panel item: an icon, optional text, hover tint. */
-export function panelItem(ctx: WidgetCtx, cls: string, title?: string): HTMLElement {
-  return h('div', { class: `w w-${ctx.type} ${cls}`.trim(), title, tabindex: -1 });
+/**
+ * The standard panel item. `tap` marks it as a clickable surface: only those
+ * light up under the pointer, so a spacer, a meter or a read-out never
+ * pretends there is something to press.
+ */
+export function panelItem(ctx: WidgetCtx, cls: string, title?: string, tap = true): HTMLElement {
+  return h('div', { class: `w${tap ? ' tap' : ''} w-${ctx.type} ${cls}`.trim(), title, tabindex: -1 });
 }
 
 export function outputPoint(ctx: WidgetCtx, e: MouseEvent): { x: number; y: number } {

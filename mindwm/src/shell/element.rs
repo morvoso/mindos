@@ -33,6 +33,7 @@ use smithay::{
     wayland::{compositor::SurfaceData as WlSurfaceData, dmabuf::DmabufFeedback, seat::WaylandFocus},
 };
 
+use crate::recover::LockAnyway;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
 
@@ -178,7 +179,7 @@ impl WindowElement {
                 let data = states
                     .data_map
                     .get::<XdgToplevelSurfaceData>()
-                    .and_then(|d| d.lock().ok());
+                    .map(|d| d.lock_anyway());
                 f(data.as_ref().and_then(|d| d.title.as_deref()).unwrap_or(""))
             });
         }
@@ -196,7 +197,7 @@ impl WindowElement {
                 states
                     .data_map
                     .get::<XdgToplevelSurfaceData>()
-                    .and_then(|d| d.lock().ok().and_then(|d| d.app_id.clone()))
+                    .and_then(|d| d.lock_anyway().app_id.clone())
             })
             .unwrap_or_default();
         }
@@ -224,7 +225,7 @@ impl WindowElement {
                 states
                     .data_map
                     .get::<XdgToplevelSurfaceData>()
-                    .and_then(|d| d.lock().ok())
+                    .map(|d| d.lock_anyway())
                     .is_some_and(|d| d.current.states.contains(state))
             });
         }
@@ -267,7 +268,35 @@ impl WindowElement {
             return surface.is_popup()
                 || surface.is_override_redirect()
                 || surface.is_transient_for().is_some()
-                || !matches!(surface.window_type(), None | Some(WmWindowType::Normal));
+                || !matches!(surface.window_type(), None | Some(WmWindowType::Normal))
+                || self.is_fixed_size()
+                || self.is_setup_desktop();
+        }
+        false
+    }
+
+    /// The Windows desktop `mindos-win` gives a setup program to run inside.
+    /// It is sized to suit the installer that will draw in it, and belongs in
+    /// front of the screen like the wizard it is, not in the tiling.
+    pub fn is_setup_desktop(&self) -> bool {
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = self.0.x11_surface() {
+            let title = surface.title();
+            return title.starts_with("mindos-setup-") && title.ends_with(" - Wine Desktop");
+        }
+        false
+    }
+
+    /// A window that says it cannot be resized -- its minimum and maximum size
+    /// are the same. Windows setup programs do this for the full-screen form
+    /// they paint their wizard on. Tiling one only stretches the tile around a
+    /// window that stays its own size, so these are left floating.
+    pub fn is_fixed_size(&self) -> bool {
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = self.0.x11_surface() {
+            if let (Some(min), Some(max)) = (surface.min_size(), surface.max_size()) {
+                return min.w == max.w && min.h == max.h && min.w > 0 && min.h > 0;
+            }
         }
         false
     }

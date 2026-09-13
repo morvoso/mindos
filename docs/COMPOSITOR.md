@@ -15,7 +15,14 @@
   follows the focused application. Startup fullscreen works before the first
   buffer arrives, including output selection on multi-monitor layouts.
 * **XWayland** built in, so X11 games and launchers (Steam, Proton/Wine, Lutris)
-  run unchanged.
+  run unchanged. A game that opens in borderless fullscreen (it sets
+  `_NET_WM_STATE_FULLSCREEN` before mapping, or opens undecorated at exactly
+  one display's size) is fullscreen on that display from the first frame. The
+  focused X11 window is published as `_NET_ACTIVE_WINDOW`, which is how Wine
+  knows its game is in the foreground: without it the game gets no keys and
+  its cursor clip is never applied. Wine may move the focus between its own
+  windows with a `_NET_ACTIVE_WINDOW` request; another program may not take it.
+  Both need the XWM changes in `mindwm/vendor/smithay/MINDOS-PATCHES.md`.
 * **Three window layouts**, switched from the shell's top bar (the icon next
   to the clock), with `Super+T`, or in Settings › Desktop, and remembered
   across sessions: *Floating* (like KDE: windows keep their size, open
@@ -42,6 +49,34 @@
   head, `STARTING THE DESKTOP`, the sweeping hairline and the HUD corners
   (`[theme] show_wordmark`). The key hints join it if the wait passes six
   seconds. The whole screen disappears the frame the shell maps its desktop.
+
+  What counts as "the desktop is up" is the `mindshell-desktop` namespace on
+  any layer, not a surface on the background layer (`shell::desktop_up`), plus
+  a 1.5 s latch: the shell moves that one surface between the background and
+  the top every time the user asks for the home screen (Super + D), and a
+  client that remaps a surface to change layer leaves a frame or two with
+  nothing there. Watching the background layer alone put the boot splash back
+  on screen for those frames, in the middle of a crossfade. The latch is short
+  on purpose -- a shell that actually dies brings the startup screen back.
+
+  It is drawn on the event loop, so what it costs comes out of the time the
+  shell it is waiting for needs to start. Everything fixed -- the wordmark,
+  the caption, the hints, the corners -- is rasterised once **per output
+  geometry** and kept (`startup_art`, logged as `startup screen drawn`); the
+  two pieces that move are drawn into the buffer they already have, so no
+  texture is allocated per frame. One frame for two displays costs about 30 µs
+  of CPU, near enough nothing at 240 Hz.
+
+  Both halves of that are load-bearing, and both were once wrong. A single
+  cache slot keyed by output geometry means two displays of different size or
+  scale evict each other every frame: the wordmark is display type a couple of
+  hundred pixels tall, and re-measuring and re-rasterising it took 95% of a
+  core in `rasterize_runs` -- on the one thread that also serves every Wayland
+  client and all input. The shell could not start, so the screen stayed up, so
+  it kept paying. `gtk::init` went from 4 ms to as much as 13 s and the desktop
+  from half a second to twenty-three; the mouse queued behind splash frames.
+  The tests in `src/mindbar.rs` hold both contracts: the artwork survives two
+  outputs alternating, and a frame stays under the budget.
 * **The Mind bar** (`Super+Space`): a software-rendered overlay that is both an
   application launcher and the front end of `mindd`, the local LLM daemon.
 * **Idling**: the screensaver, the automatic lock and switching the displays
@@ -81,9 +116,52 @@ focused. A fullscreen window that is minimised gives its output's direct
 scanout back and takes it again when restored.
 
 **Maximised means the usable area**: the output minus the exclusive zones of
-layer-shell panels. When a panel appears, resizes or goes away, every
-maximised window on that output is re-fitted, and fullscreen windows keep
-covering the whole output (panels are not drawn over a fullscreen window).
+layer-shell panels, minus the strip the shell's own bar covers
+(`shell::usable_area`). The shell draws that bar inside its desktop window,
+which is anchored to every edge and so reserves nothing of itself; it reports
+the height instead (`desktop_bar` IPC, `shell::DesktopBar`), and the strip
+only counts while a desktop is up on that output, so a shell that goes away
+hands the screen back. The rest of the home screen comes and goes with the
+windows, but the bar does not — it is on screen in both views — which is why
+its room is always held back. A bar that is missing, nonsense, or so tall it
+would leave a window under `MIN_ROOM` of height gives the screen back whole:
+a wrong measurement must not cost the user the screen. A game is the one
+exception: `maximized_area` gives it the whole output, panels included,
+because a borderless game is only maximised and is meant to cover everything —
+and the panels on that screen go away for as long as it does (below), so there
+is nothing left to leave room for. When a panel appears, resizes or goes away,
+every maximised window on that output is re-fitted. Tiles, columns, snap zones
+and new-window placement all take the same area.
+
+**A layer surface holds its edge while it resizes.** Panels change thickness in
+place — a taskbar flyout makes the shell's panel window a couple of hundred
+pixels taller for as long as the card is up, edit mode adds a strip — and
+`LayerMap::arrange` moves the surface's rect the instant that request commits,
+a frame or two before the client has a buffer of the new size. Drawing the old
+buffer from the new origin throws a bottom-anchored bar up the screen and back
+again: a flash on every hover. So `render.rs` assembles the space's elements
+itself rather than calling Smithay's `space_render_elements`, and while a
+layer's buffer and its arranged rect disagree it draws the buffer against the
+edge the surface is anchored to (`layer_render_loc`). Nothing moves until the
+buffer is the size it claims to be. Input still follows the arranged rect,
+which is what you want: the card takes the pointer as soon as there is room for
+it and stops as soon as there is not.
+**A game with the screen takes the panels with it.** Panels are not drawn over
+a fullscreen window, and a game is not always fullscreen: it may be maximised
+(borderless), or ask for neither and simply size itself to the display. So
+every turn of the event loop `refresh_game_screens` asks, per output, whether a
+game — a window under Wine/Proton or a `steam_app_*` class — covers the whole
+of it (`covers_screen`), and records the answer on the output
+(`shell::GameScreen`, read back with `shell::game_screen`). While it is true,
+top-layer surfaces on that screen are neither drawn nor clickable nor able to
+take the keyboard, exactly as under a fullscreen window: the bar must not sit
+over the bottom of a game, and an invisible bar that still swallows the pointer
+would be worse than a visible one. The overlay layer is left alone — the lock
+screen, the greeter and the menus live there — and summoning the home screen
+over the game (Super+D, which puts the desktop window on the top layer) brings
+the panels back with it, since that is what the user asked to look at. The
+answer is cached on the output rather than worked out in the renderer because
+the renderer already holds the layer map; asking it again there would deadlock.
 
 ## The pointer
 
@@ -94,6 +172,14 @@ an XCursor theme (`src/cursor.rs`), animated frames included, loaded on first
 use and cached per `(shape, frame)`. That is what keeps one pointer across the
 whole desktop: GTK 4 no longer reads XCursor themes of its own, so without the
 protocol its windows would show GTK's built-in cursors.
+
+Both kinds of pointer hang off their hotspot — the pixel in the image that is
+actually the point being clicked. A client's cursor surface carries its own;
+a named shape takes the theme's (`xhot`/`yhot` in the XCursor file), which for
+the arrow sits a pixel or two in from the top-left corner but for every resize
+and text shape sits dead centre. Drawing either from its top-left corner would
+put the point half a cursor up and to the left of the arrows the user aims
+with, and window edges would only be caught by overshooting them.
 
 The theme and its nominal size are one desktop-wide setting kept in GSettings; `main`
 resolves them once at startup — `XCURSOR_THEME` / `XCURSOR_SIZE` from the
@@ -211,6 +297,7 @@ window.
 | `Super+Space` | Open/close the Mind bar: Mind is the launcher |
 | `Super+W` | The shell's overview (`shortcut overview`); the built-in window preview when no shell is connected |
 | `Super+Enter` | Terminal (`[apps].terminal`, default `kitty`) |
+| `Super+D` | Bring the shell's home screen forward over the windows, or send it back (`shortcut desktop`). With nothing open it is already the whole screen |
 | `Print` / `Super+Shift+S` | Select an area to save and copy; Escape cancels |
 | `Shift+Print` | Save and copy all displays |
 | `Alt+F4` / `Super+Q` | Close the focused window |
@@ -226,6 +313,7 @@ window.
 | `Super+1..9` | Move the pointer to output *n* |
 | `Super+Shift+D` | Toggle server/client-side decorations on the focused window |
 | `Super+L` | Lock the screen |
+| `Ctrl+Shift+Escape` | Task Manager (raises the open one instead of starting a second) |
 | `Super+Shift+E`, `Ctrl+Alt+Backspace` | Quit the compositor (ends the session) |
 | `Ctrl+Alt+F1..F12` | Switch virtual terminal |
 | `Super+Shift+P` / `Super+Shift+M` | Output scale up / down |
@@ -234,7 +322,8 @@ window.
 | `Super` + mouse wheel | Step through the windows in the layout order (tiles and columns; nothing in floating) |
 | Drag a window's outer edge | Resize it (floating) or move the divider it shares with the next tile (tiling) |
 
-Most shortcuts use `Super`; `Print` and `Shift+Print` capture screenshots.
+Most shortcuts use `Super`; `Print` and `Shift+Print` capture screenshots, and
+`Ctrl+Shift+Escape` opens the Task Manager the way it does everywhere else.
 Window switching keeps a stable recent-use order while Alt/Super is held.
 Releasing the modifier confirms the selected window; a quick second Alt+Tab
 returns to the previously used window. Minimized windows remain in the dock.
@@ -486,7 +575,7 @@ kiosk = false            # true for the login screen (mindos-greeter): no Mind b
                          # no launcher, no shortcut/IPC that starts a program
 
 [graphics]
-direct_scanout = "any"   # any | matching | off, see "The repaint loop" below
+direct_scanout = "matching"  # any | matching | off, see "The repaint loop" below
 ```
 
 `MIND_SOCKET` in the environment overrides `[mind].socket`; `MINDWM_CONFIG`
@@ -514,7 +603,7 @@ names one more file loaded last (the greeter uses
 | `src/shell/xdg.rs`, `src/shell/x11.rs` | xdg-shell and XWayland window management |
 | `src/input_handler.rs` | Keybindings (`process_keyboard_shortcut`), Super+wheel window stepping, layer focus rules and Mind bar key routing |
 | `src/cursor.rs` | The pointer the compositor draws for a named shape: XCursor lookup, animation frames, and `configure` (the session-wide `XCURSOR_THEME` / `XCURSOR_SIZE`) |
-| `src/render.rs` | Output element assembly: cursor, Mind bar overlay, windows, startup screen |
+| `src/render.rs` | Output element assembly: cursor, Mind bar overlay, windows, startup screen; layer surfaces pinned to their anchored edge while they resize (`layer_render_loc`) |
 | `src/udev.rs`, `src/winit.rs` | DRM/KMS and nested backends (from anvil) |
 
 ## Development
@@ -550,6 +639,20 @@ other output keeps working. It happened on MindOS on 2026-09-10, on the 4K
 240 Hz primary, with the compositor alive and idle and nothing in the kernel
 log.
 
+The second monitor froze the same day, with the deadline and the watchdog
+already in place, and neither of them said a word. That one was not a lost
+vblank: the CRTC took no atomic commits at all, so there was no flip to time
+out, and the output held a repaint timer that was not going to fire for a very
+long time — which the watchdog read as a healthy loop. The schedule had run
+away, one frame at a time, from a presentation timestamp aimed into the future:
+each frame is planned one refresh after the last target, so a wrong target is
+inherited by every frame after it and never comes back. Nothing capped the
+resulting delay, and switching the displays off and on kept the poisoned target,
+which is why that recovery bought one or two frames and then froze again. The
+four points below about timers and timestamps are the answer to that, and the
+reason the watchdog now asks when a timer will fire rather than whether one
+exists at all.
+
 The journal from that morning also carries the loop's fingerprint, twice,
 minutes before the display stopped:
 
@@ -560,7 +663,11 @@ WARN calloop::loop_logic: Received an event for non-existent source
 That is a repaint timer that had already fired being removed before its event
 was dispatched, which happens whenever a repaint kicked off from elsewhere
 supersedes an armed one. The event is dropped, and in the old code a repaint
-that then failed armed nothing in its place.
+that then failed armed nothing in its place. A vblank that arrives early is
+held back by a timer of its own, and that timer used to be removed by the very
+callback it was dispatching, which drops the same source twice and is the
+second way that warning is earned; it now forgets its token and lets calloop
+drop it once.
 
 So mindwm no longer trusts the vblank alone:
 
@@ -588,30 +695,180 @@ So mindwm no longer trusts the vblank alone:
   but has neither a timer armed nor a frame in flight, or a flip older than two
   seconds, is reset the same way. It is the backstop for the deadline itself
   failing to arm.
+* **What the watchdog really asks is whether a frame was drawn.** Every theory
+  about which timer should have fired or which event went missing is a theory
+  that can be wrong, and both freezes got past a watchdog that reasoned about
+  the loop's bookkeeping instead of its output. Every lit display repaints at
+  least once a second, so an output that has drawn nothing for two seconds has
+  stopped — no matter how healthy its timers look — and is reset. That check
+  needs to know nothing about *why*, which is what makes it the one that
+  catches the freeze nobody has thought of yet.
+* **An armed timer only counts as alive until it is due.** The watchdog used to
+  take the existence of a repaint timer as proof that a frame was coming. It is
+  not: what matters is *when* it fires. An output whose timer is more than a
+  second past due, for two ticks in a row, has stopped, and is reset like any
+  other. Two ticks, so that a loop merely blocked for a moment — a modeset, a
+  slow GPU — is not reset out from under itself.
+* **No repaint is ever scheduled more than a second out.** The delay before the
+  next frame is worked out from the last presentation time, so a bad
+  presentation time makes it arbitrarily long. A frame is milliseconds and the
+  idle tick is a second, so anything longer is a mistake by definition and is
+  clamped to the idle tick. Drawing a second late is recoverable; not drawing
+  again is what this whole loop exists to prevent.
+* **A vblank time that is not near the clock is not believed.** Each frame is
+  aimed one refresh after the last target, and the one after that at one refresh
+  after *that*, so a single timestamp from the future is not a late frame: it is
+  a schedule that runs away and takes the output with it. A reported time more
+  than 50 ms ahead of the clock, or more than a second behind it, is dropped in
+  favour of the clock, and the journal says so once.
+* **A change is drawn now if the repaint already armed is far off.** A commit
+  used to pull the repaint forward only when the output was on its idle tick.
+  Now it does so whenever nothing is in flight and the armed repaint is more
+  than 200 ms out, which is the same judgement the watchdog makes, a little
+  earlier and without resetting anything.
 * **Every state change that strands a flip drops it.** Switching the displays
   off, and resuming after a VT switch or suspend, both cancel the flip in
   flight rather than let its deadline fire on a display that is off on purpose.
   This is what aquamarine calls invalidating the frame, and Hyprland's comment
   on it describes exactly the black-screen-after-resume this avoids.
+* **A device that will not take frames is taken again.** Resuming a session
+  activates each DRM device, and that is allowed to fail — another compositor
+  still holding the master, a device still coming back from suspend. It used
+  to fail silently and leave every display on that GPU dark for the rest of the
+  session, with the watchdog skipping the device precisely because it was
+  inactive. Now a device that is still inactive two seconds into a running
+  session is activated again, every two seconds, and each success throws away
+  the state that belonged to before and repaints every output on it.
+* **A display coming or going never takes the others with it.** Plugging a
+  monitor in, unplugging one and changing a mode all used to reach for a
+  renderer with `unwrap`, so a GPU that was busy at that moment ended the
+  session. They handle it now. Restoring the modifiers after an unplug
+  modesets every other display on the same GPU, which strands whatever frame
+  each of them had in flight: they are all repainted instead of waiting a
+  second for their deadlines. A mode change throws away the frame times from
+  the old refresh rate, which would otherwise aim the next frame at a vblank
+  from a cadence that no longer exists.
+
+### When every display stops at once
+
+Everything above watches one display, and every bit of it runs on the
+compositor's single event loop. So none of it can help with the other freeze:
+the loop itself stopping. Input, repaints, clients, the watchdog that would
+have reported it — all of them are that one thread, and all of them stop
+together. It has never been seen here, but it is the only failure left that
+would take both monitors at once, and it cannot be reasoned about from inside.
+
+Any call that waits inside a source's callback can do it. The XEmbed tray host
+was the clearest: it read every icon back over X11 every 400 ms, and an X11
+request that wants an answer blocks until XWayland sends one. That is a
+round-trip landing in the middle of a frame — at 240 Hz the whole frame is
+4.17 ms — forever, for as long as the session lasts. Worse, XWayland is itself
+a Wayland client of this compositor, so the two can wait on each other: the
+compositor blocked reading an X reply is a compositor that is not reading
+XWayland's Wayland socket, and XWayland blocked writing to it is an XWayland
+that will never send the reply. Neither ever moves again.
+
+So the tray host runs on its own thread now, with its own X11 connection and
+its own event loop, and the compositor's end of it is two channels: commands
+out, icons in. Nothing on the compositor's side of those channels touches
+X11, so an XWayland that stops answering costs the tray icons and only the
+tray icons. This is what KDE does too, with `xembedsniproxy` as a separate
+process entirely.
+
+What is left of the pattern is smithay's own X11 window manager, which does
+make round-trips on the loop. Unlike the tray they are event-driven — an X11
+window mapping, resizing, setting a property — rather than a timer that fires
+whether or not anything happened, so the exposure is a great deal smaller,
+but it is not nothing, and it is upstream.
+
+Which is why a thread outside the loop watches its pulse. The loop stores a
+timestamp every turn; the thread wakes four times a second and reads it. Two
+seconds of silence is reported — the loop is never quiet for that long even
+with nothing to do, because the output watchdog's own timer wakes it twice a
+second — and the report says *where* the loop is stopped, because the kernel
+will tell any thread of a process where its siblings are:
+
+```
+ERROR mindwm::watchdog: the event loop has not turned: every display is
+  frozen until it does silent_ms=8811 stopped_at=read waiting in
+  sock_wait_data on socket:[41283]
+```
+
+Blocked in a read on a socket is a different bug from blocked in an ioctl on
+the card, and without that line the difference is hours. It only reports; it
+does not act. Killing whatever the loop is waiting on would as often turn a
+hitch into a crash, and a stall long enough to see is a bug to fix rather than
+a state to recover from. `get_graphics` carries the worst one of the session
+as `loop_stall_ms`, which is zero on a session that has never stopped.
+
+### How late the repaint starts
+
+Waiting before repainting is what keeps latency down: a client driven by frame
+callbacks only draws once the compositor has, so every millisecond the
+compositor waits is a millisecond fresher the frame that reaches the screen.
+Anvil waits a flat 0.6 of a frame. At 240 Hz that is 2.5 ms of a 4.17 ms frame
+and leaves 1.7 ms to render, commit and have the kernel take it; miss that and
+the frame lands a whole refresh late, which is what stutter is.
+
+So mindwm measures instead. Each output keeps the time its last thirty-two
+repaints took and starts the next one early enough for the slowest of them,
+plus half a millisecond for the kernel, never later than anvil's 0.6 and never
+leaving clients less than a tenth of the frame. A quiet desktop keeps anvil's
+latency; a 4K output under load starts earlier of its own accord and stops
+dropping frames, and comes back down when the load does.
+
+The other half of frame pacing is not doing the work at all. Every client
+commit asks every output for a repaint, and a display with nothing on it that
+changed still has to collect its elements and work out that it has no damage
+before it can say so. Three clients drawing at 240 Hz would have each display
+do that seven hundred times a second, on the one thread that also has to render
+the display that did change. So a repaint pulled forward by a change is pulled
+no further forward than one frame after the last one: the update is on screen
+within a refresh either way, and the time goes to the output that is moving.
+An output with a frame in flight is untouched by this — its vblank already
+paces it — and a fullscreen game still goes straight to the screen on commit.
+
+`get_graphics` over the IPC socket reports what actually happened, per output:
+frames presented, how many repaints it took to produce them, how many landed a
+refresh or more late, how long the repaints are taking now and at their worst,
+and how many times the output has been reset.
+
+```sh
+python3 -c 'import os,socket
+s=socket.socket(socket.AF_UNIX); s.connect(os.environ["MINDWM_SOCKET"])
+s.sendall(b"{\"id\":1,\"type\":\"get_graphics\"}\n"); print(s.recv(65536).decode())'
+```
+
+`late_frames` is the number to watch: a display that is smooth counts almost
+none, and one that counts them steadily is one whose repaint does not fit in
+its frame.
 
 `[graphics] direct_scanout` chooses how much of a frame an output may hand
 straight to the display hardware:
 
 | value | meaning |
 | --- | --- |
-| `any` | a fullscreen client's buffer goes to the plane whatever its format, so an 8-bit game still scans out on a 10-bit display (the default) |
-| `matching` | only a buffer whose format the plane already has, which is what Smithay defaults to |
+| `any` | a fullscreen client's buffer goes to the plane whatever its format, so an 8-bit game still scans out on a 10-bit display |
+| `matching` | only a buffer whose format the plane already has, which is what Smithay defaults to (the default) |
 | `off` | compose every frame |
 
 `MINDWM_DISABLE_DIRECT_SCANOUT=1` in the environment forces `off` without
 touching the config, for a machine that will not behave.
 
-niri defaults to the same relaxed format matching and offers
-`restrict-primary-scanout-to-matching-format` and `disable-direct-scanout` as
-debug switches. Hyprland is the outlier: it disables direct scan-out by
-default and only enables it, on `auto`, for a fullscreen window that declares
-itself a game. KWin re-decides per frame and proves each choice with a
-test-only atomic commit first, falling back to composing on any rejection.
+`matching` is the default because it is what mindwm ran before `any` arrived
+on 2026-09-09, and the first display to stop with a client buffer on its plane
+did so the next day. With a 10-bit swapchain, `any` changes the primary
+plane's format every time a game starts or stops scanning out: a popup over
+the game is enough. The price is that most games hand over 8-bit buffers, so
+on a 10-bit display they are composed, at the cost of one more copy of the
+screen per frame.
+
+niri defaults to the relaxed format matching of `any`, also with a 10-bit
+swapchain, and offers `restrict-primary-scanout-to-matching-format` and
+`disable-direct-scanout` as debug switches. Hyprland disables direct scan-out
+by default and only enables it, on `auto`, for a fullscreen window that
+declares itself a game. KWin re-decides per frame and proves each choice with
+a test-only atomic commit first, falling back to composing on any rejection.
 
 When an output does freeze, the journal is the place to start:
 
@@ -680,6 +937,17 @@ greetd's greeter is `mindos-greeter`: this compositor in kiosk mode showing
 login screen*). It runs as the `greeter` user, so a compositor crash there
 simply restarts the login screen.
 
+In a user's session a crash does not end the login either. `mindos-session`
+starts the compositor again when it is killed by a signal (the loop watchdog
+aborts, SIGABRT) or exits non-zero (70 is the compositor giving up on a panic it
+cannot get past), after stopping `mindos-session.target` so the shell, the
+portals and the autostart applications come back against the new display, as
+at login. The windows do not survive it. A logout (exit 0) or a signal to
+`mindos-session` itself ends the session as before, and so does a failure after
+three restarts inside ten minutes, which returns to the login screen rather
+than restart a compositor that cannot stay up. Each restart is in
+`journalctl -t mindos-session`, with the status, the signal and the count.
+
 ## Debugging on the live ISO
 
 * `journalctl -t mindwm` has the compositor log (`mindos-session` pipes it
@@ -688,8 +956,10 @@ simply restarts the login screen.
   `nc -U` and a `{"type":"get_windows"}` line show what the shell sees.
 * `Ctrl+Alt+F2` is a root shell on the live ISO; in QEMU with
   `-serial file:...` anything redirected to `/dev/ttyS0` lands in that file.
-* A crash drops back to greetd, which shows the MindOS login screen on VT 1
-  (`journalctl -t mindos-greeter` for its compositor, `journalctl -t
+* A crash restarts the compositor in the same login (`journalctl -t
+  mindos-session` says why and how often). A failure after three restarts
+  inside ten minutes drops back to greetd, which shows the MindOS login screen
+  on VT 1 (`journalctl -t mindos-greeter` for its compositor, `journalctl -t
   mindshell` for the page). greetd only runs the autologin `initial_session`
   once per boot; to re-run it after fixing something, `rm /run/greetd.run &&
   systemctl restart greetd`; without the `rm` the restart shows the login

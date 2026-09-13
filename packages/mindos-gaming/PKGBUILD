@@ -2,7 +2,7 @@
 # Meta package: the MindOS gaming stack (Steam/Proton, gamescope, GameMode, MangoHud, Lutris/Wine).
 pkgname=mindos-gaming
 pkgver=0.1.0
-pkgrel=12
+pkgrel=14
 pkgdesc="MindOS gaming stack: Steam, gamescope, GameMode, MangoHud, Lutris, Wine and the 32-bit runtime, plus saves, storage, OBS controls and Windows/DLSS tools"
 arch=(any)
 url="https://github.com/morvoso/mindos"
@@ -15,8 +15,10 @@ depends=(steam gamescope gamemode lib32-gamemode mangohud lib32-mangohud
          sdl2-compat python zenity libpulse systemd gst-plugins-good gst-libav)
 optdepends=('discord: voice and chat')
 backup=(etc/gamemode.ini)
-source=(gamemode.ini 60-mindos-gaming.conf 50-mindos-gamemode.rules mindos-win mindos-win-theme.reg mindos-dlss mindos-win-open mindos-win-open.desktop mindos-games mindos-play)
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+source=(gamemode.ini 60-mindos-gaming.conf 50-mindos-gamemode.rules mindos-win mindos-win-theme.reg mindos-dlss
+        mindos-win-open mindos-win-open.desktop mindos-win-shortcut.desktop
+        mindos-uninstall mindos-uninstall.desktop mindos-games mindos-play)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 package() {
   install -Dm644 gamemode.ini "$pkgdir/etc/gamemode.ini"
@@ -27,6 +29,11 @@ package() {
   install -Dm755 mindos-win "$pkgdir/usr/bin/mindos-win"
   install -Dm755 mindos-win-open "$pkgdir/usr/bin/mindos-win-open"
   install -Dm644 mindos-win-open.desktop "$pkgdir/usr/share/applications/mindos-win-open.desktop"
+  # Double-clicking a Windows .lnk opens it in the prefix that owns it.
+  install -Dm644 mindos-win-shortcut.desktop "$pkgdir/usr/share/applications/mindos-win-shortcut.desktop"
+  # One uninstaller for every kind of app: pacman, Flathub, or a Wine prefix.
+  install -Dm755 mindos-uninstall "$pkgdir/usr/bin/mindos-uninstall"
+  install -Dm644 mindos-uninstall.desktop "$pkgdir/usr/share/applications/mindos-uninstall.desktop"
   install -Dm644 mindos-win-theme.reg "$pkgdir/usr/share/mindos/win/theme.reg"
   # DLSS Swapper for Linux: swap DLSS/FSR/XeSS DLLs in installed games (mindos-dlss --help).
   install -Dm755 mindos-dlss "$pkgdir/usr/bin/mindos-dlss"

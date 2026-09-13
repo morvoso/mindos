@@ -18,7 +18,7 @@ registerWidget({
     alwaysShow: { label: 'Show without a battery', type: 'boolean', help: 'Hidden by default on systems without a battery' },
   },
   create(ctx) {
-    const el = panelItem(ctx, 'w-battery', 'Battery');
+    const el = panelItem(ctx, 'w-battery', 'Battery', false);
     const ic = h('span', { class: 'w-ic' });
     const label = h('span', { class: 'w-val mono' });
     el.append(ic, label);

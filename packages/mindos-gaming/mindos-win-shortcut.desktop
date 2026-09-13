@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Windows Shortcut
+Comment=Open a Windows shortcut in the program's own Wine prefix
+Exec=mindos-win open %f
+Icon=wine
+Terminal=false
+NoDisplay=true
+Categories=Utility;
+MimeType=application/x-ms-shortcut;
+Keywords=Windows;Wine;Shortcut;LNK;

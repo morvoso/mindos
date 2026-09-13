@@ -112,6 +112,14 @@ const P: Record<string, string> = {
   layers: '<path d="M12 3.5l8.5 4.5L12 12.5 3.5 8z"/><path d="M3.5 12l8.5 4.5 8.5-4.5M3.5 16l8.5 4.5 8.5-4.5"/>',
   'rotate': '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4v5h5"/>',
   'chevron-updown': '<path d="M8 9.5l4-4 4 4M8 14.5l4 4 4-4"/>',
+  // Where a window comes from, shown beside a task in the window list:
+  // `linux` a native Wayland client, `x11` one going through Xwayland,
+  // `winapp` (above) a Windows program under Wine or Proton.
+  linux: '<path d="M9.6 3.6a2.4 2.4 0 0 1 4.8 0v2.6c0 1.3 3.1 3.7 3.1 7.3 0 1.5.9 2.4 1.4 3.4.6 1.2-.2 2.4-1.9 2.4H7c-1.7 0-2.5-1.2-1.9-2.4.5-1 1.4-1.9 1.4-3.4 0-3.6 3.1-6 3.1-7.3z"/><circle cx="10.6" cy="7.4" r=".9" fill="currentColor" stroke="none"/><circle cx="13.4" cy="7.4" r=".9" fill="currentColor" stroke="none"/><path d="M10.9 10.2l1.1 1 1.1-1"/>',
+  x11: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M9 9.5l6 5M15 9.5l-6 5"/>',
+  minimize: '<path d="M6 17.5h12"/>',
+  maximize: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
+  restore: '<rect x="4.5" y="8.5" width="11" height="11" rx="1"/><path d="M8.5 8.5v-4h11v11h-4"/>',
 };
 
 export type IconName = keyof typeof P & string;

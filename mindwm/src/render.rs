@@ -10,13 +10,20 @@ use smithay::{
             },
             AsRenderElements, RenderElement, Wrap,
         },
+        utils::with_renderer_surface_state,
         Color32F, ImportAll, ImportMem, Renderer,
     },
-    desktop::space::{
-        constrain_space_element, ConstrainBehavior, ConstrainReference, Space, SpaceRenderElements,
+    desktop::{
+        layer_map_for_output,
+        space::{
+            constrain_space_element, ConstrainBehavior, ConstrainReference, Space,
+            SpaceRenderElements,
+        },
+        LayerSurface,
     },
     output::Output,
-    utils::{Point, Rectangle, Scale, Size},
+    utils::{Logical, Point, Rectangle, Scale, Size},
+    wayland::shell::wlr_layer::{Anchor, Layer as WlrLayer},
 };
 
 #[cfg(feature = "debug")]
@@ -172,6 +179,102 @@ where
     elements
 }
 
+/// Where a layer surface's current buffer should actually be drawn.
+///
+/// The shell's panels change thickness in place: a taskbar flyout makes the
+/// window ~200px taller for as long as the card is up, and edit mode adds a
+/// strip. `LayerMap::arrange` moves the surface's rect the instant the request
+/// commits, but the client's buffer only catches up a frame or two later. Draw
+/// the old buffer from the new origin and a bottom-anchored bar is painted 200
+/// pixels up the screen for those frames, then snaps back -- a flash every time
+/// a card opens or closes.
+///
+/// So while the two disagree, keep the buffer against the edge the surface is
+/// anchored to. A bar anchored to the bottom stays on the bottom whichever of
+/// the two is taller, and nothing moves until the buffer is the size it claims.
+fn layer_render_loc(layer: &LayerSurface, geo: Rectangle<i32, Logical>) -> Point<i32, Logical> {
+    let Some(size) = with_renderer_surface_state(layer.wl_surface(), |s| s.surface_size()).flatten()
+    else {
+        return geo.loc;
+    };
+    if size == geo.size {
+        return geo.loc;
+    }
+    let anchor = layer.cached_state().anchor;
+    let mut loc = geo.loc;
+    // A surface anchored to both edges is stretched, and has no edge to hold to.
+    if anchor.contains(Anchor::BOTTOM) && !anchor.contains(Anchor::TOP) {
+        loc.y += geo.size.h - size.h;
+    }
+    if anchor.contains(Anchor::RIGHT) && !anchor.contains(Anchor::LEFT) {
+        loc.x += geo.size.w - size.w;
+    }
+    loc
+}
+
+/// Everything in the space, plus this output's layer surfaces above and below
+/// it. Smithay's `space_render_elements` does the same thing, but draws every
+/// layer at its arranged origin; this one asks [`layer_render_loc`] instead.
+fn space_elements<R>(
+    renderer: &mut R,
+    space: &Space<WindowElement>,
+    output: &Output,
+    alpha: f32,
+) -> Vec<SpaceRenderElements<R, WindowRenderElement<R>>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let scale = output.current_scale().fractional_scale();
+    let layer_map = layer_map_for_output(output);
+    let mut elements = Vec::new();
+    let draw = |renderer: &mut R, out: &mut Vec<SpaceRenderElements<R, WindowRenderElement<R>>>, surface: &LayerSurface| {
+        let Some(geo) = layer_map.layer_geometry(surface) else {
+            return;
+        };
+        let loc = layer_render_loc(surface, geo);
+        out.extend(
+            AsRenderElements::<R>::render_elements::<WaylandSurfaceRenderElement<R>>(
+                surface,
+                renderer,
+                loc.to_physical_precise_round(scale),
+                Scale::from(scale),
+                alpha,
+            )
+            .into_iter()
+            .map(SpaceRenderElements::Surface),
+        );
+    };
+
+    // A game with the whole screen owns it: the panels on the top layer are
+    // not drawn over the bottom of it, the same way nothing is drawn over a
+    // fullscreen window. The overlay layer is left alone -- the lock screen,
+    // the greeter and the menus live there.
+    let game = crate::shell::game_screen(output);
+    let (lower, upper): (Vec<&LayerSurface>, Vec<&LayerSurface>) = layer_map
+        .layers()
+        .rev()
+        .partition(|s| matches!(s.layer(), WlrLayer::Background | WlrLayer::Bottom));
+    for surface in upper {
+        if game && surface.layer() == WlrLayer::Top {
+            continue;
+        }
+        draw(renderer, &mut elements, surface);
+    }
+    if let Some(output_geo) = space.output_geometry(output) {
+        elements.extend(
+            space
+                .render_elements_for_region(renderer, &output_geo, scale, alpha)
+                .into_iter()
+                .map(|e| SpaceRenderElements::Element(Wrap::from(e))),
+        );
+    }
+    for surface in lower {
+        draw(renderer, &mut elements, surface);
+    }
+    elements
+}
+
 #[profiling::function]
 pub fn output_elements<R>(
     output: &Output,
@@ -229,14 +332,11 @@ where
             output_render_elements.extend(space_preview_elements(renderer, space, output));
         }
 
-        let space_elements = smithay::desktop::space::space_render_elements::<_, WindowElement, _>(
-            renderer,
-            [space],
-            output,
-            1.0,
-        )
-        .expect("output without mode?");
-        output_render_elements.extend(space_elements.into_iter().map(OutputRenderElements::Space));
+        output_render_elements.extend(
+            space_elements(renderer, space, output, 1.0)
+                .into_iter()
+                .map(OutputRenderElements::Space),
+        );
         output_render_elements.extend(backdrop.into_iter().map(OutputRenderElements::Custom));
 
         (output_render_elements, background())

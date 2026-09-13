@@ -9,7 +9,7 @@ import { launchWithFeedback } from './app-match';
 import { thumbUrl } from './apps/shared';
 import * as bridge from './bridge';
 import { h, reconcile } from './dom';
-import { panelsOn } from './geometry';
+import { desktopBar, onDesktopBar, panelsOn } from './geometry';
 import { store } from './state';
 import type { AppInfo, FsEntry, FsListing, MenuAction } from './types';
 
@@ -21,20 +21,30 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
   let gen = 0;
   const selected = new Set<string>();
 
-  // A `.desktop` file on the desktop is a shortcut: show the application's
-  // own name and icon, launch it as the application.
-  const appFor = (e: FsEntry): AppInfo | undefined => (e.name.endsWith('.desktop') && !e.dir ? store.state.apps.find((a) => a.id === e.name) : undefined);
-  const iconFor = (e: FsEntry): string => appFor(e)?.icon || (e.thumb ? e.thumb : e.image ? thumbUrl(e.path, 128) : e.icon);
-  const labelFor = (e: FsEntry): string => appFor(e)?.name ?? (e.dir ? e.name : e.name.replace(/\.desktop$/, ''));
+  // A shortcut on the desktop is drawn as the thing it points at: the host
+  // reads the `.desktop` or `.lnk` and sends back the application's own name
+  // and icon. An entry that is also in the app index launches through the
+  // index, which knows when its window appears.
+  const appFor = (e: FsEntry): AppInfo | undefined => (e.shortcut && !e.dir ? store.state.apps.find((a) => a.name === e.label) : undefined);
+  const iconFor = (e: FsEntry): string => (e.thumb ? e.thumb : e.image ? thumbUrl(e.path, 128) : e.icon);
+  const labelFor = (e: FsEntry): string => e.label || (e.dir ? e.name : e.name.replace(/\.(desktop|lnk)$/i, ''));
 
   /** Single or double click to open, chosen in Settings › Desktop. */
   const activation = () => store.state.layout.desktop.workspace?.activate ?? 'single';
 
+  // `fs.open` starts a shortcut's program; it is only the mime database that
+  // would have handed a `.desktop` file to a text editor.
   const openAction = (e: FsEntry) => {
     const app = appFor(e);
     if (app) return { call: 'apps.launch', params: { id: app.id } };
-    if (e.dir) return { call: 'fs.open', params: { path: e.path } };
     return { call: 'fs.open', params: { path: e.path } };
+  };
+
+  // Wine writes both files for one program: the installer's own `X.lnk` and
+  // the `X.desktop` its menu builder made from it. One program, one icon.
+  const shadowed = (list: FsEntry[]): FsEntry[] => {
+    const desktops = new Set(list.filter((e) => !e.dir && /\.desktop$/i.test(e.name)).map((e) => e.name.slice(0, -8).toLowerCase()));
+    return list.filter((e) => !(/\.lnk$/i.test(e.name) && desktops.has(e.name.slice(0, -4).toLowerCase())));
   };
 
   const syncSelection = () => {
@@ -43,7 +53,7 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
 
   const item = (e: FsEntry): HTMLElement => {
     const img = h('img', { class: 'di-ic', src: iconFor(e), alt: '', draggable: false });
-    const el = h('button', { class: `di${e.image && !appFor(e) ? ' img' : ''}`, title: e.name }, h('span', { class: 'di-frame' }, img, h('span', { class: 'di-spin' })), h('span', { class: 'di-name' }, labelFor(e)));
+    const el = h('button', { class: `di${e.image ? ' img' : ''}`, title: e.name }, h('span', { class: 'di-frame' }, img, h('span', { class: 'di-spin' })), h('span', { class: 'di-name' }, labelFor(e)));
     // Opening something takes a moment; say so on the icon itself. An app gets
     // the real "its window appeared" signal, anything else a short flash.
     const open = () => {
@@ -80,6 +90,9 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
         { label: many ? `Open ${paths.length} items` : e.dir ? 'Open folder' : appFor(e) ? 'Launch' : 'Open', icon: e.dir ? 'folder' : 'window', action: openAction(e), disabled: many },
         { label: 'Show in Files', icon: 'folder', action: { call: 'fs.open', params: { path: dir } } },
         { label: '', separator: true },
+        ...(!many && e.shortcut && /\.desktop$/i.test(e.name)
+          ? [{ label: 'Uninstall', icon: 'trash', action: { call: 'apps.uninstall', params: { path: e.path } } } as MenuAction]
+          : []),
         { label: many ? `Move ${paths.length} items to trash` : 'Move to trash', icon: 'trash', danger: true, action: { call: 'fs.trash', params: { paths } } },
       ];
       const r = rect(ev);
@@ -101,18 +114,21 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
     const name = el.querySelector('.di-name');
     const label = labelFor(e);
     if (name && name.textContent !== label) name.textContent = label;
-    el.classList.toggle('img', !!e.image && !appFor(e));
+    el.classList.toggle('img', !!e.image);
   };
 
   const render = () => {
     const show = store.state.layout.desktop.icons !== false;
     grid.hidden = !show;
     grid.classList.toggle('editing', store.state.editMode);
-    // Keep clear of the panels (their exclusive zones).
+    // Keep clear of the panels (their exclusive zones), and of the desktop's
+    // own bar, which is on screen whichever view the desktop is in. Its height
+    // already counts any panel above it, so the larger of the two is the top.
     const pad = { top: PAD, right: PAD, bottom: PAD, left: PAD };
     for (const p of panelsOn(store.state.layout.panels, output)) {
       pad[p.edge] = Math.max(pad[p.edge], p.size + p.margin + PAD);
     }
+    pad.top = Math.max(pad.top, desktopBar() + PAD);
     grid.style.padding = `${pad.top}px ${pad.right}px ${pad.bottom}px ${pad.left}px`;
     if (!show) return;
     for (const path of Array.from(selected)) if (!entries.some((e) => e.path === path)) selected.delete(path);
@@ -126,7 +142,7 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
       if (!dir) dir = (await bridge.call<{ path: string }>('fs.desktop')).path;
       const listing = await bridge.call<FsListing>('fs.list', { path: dir });
       if (my !== gen) return;
-      entries = listing.entries.filter((e) => !e.hidden);
+      entries = shadowed(listing.entries.filter((e) => !e.hidden));
     } catch (e) {
       console.warn('desktop icons:', e);
       entries = [];
@@ -148,6 +164,7 @@ export function renderDesktopIcons(root: HTMLElement, grid: HTMLElement, output:
     store.on('editMode', render),
     store.on('outputs', render),
     store.on('apps', render),
+    onDesktopBar(render),
     bridge.on('desktop.changed', () => void load()),
   ];
   return () => {

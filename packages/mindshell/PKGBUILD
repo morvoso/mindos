@@ -1,10 +1,10 @@
 # Maintainer: MindOS <build@mindos.local>
 # The MindOS desktop shell: the Rust host (../../mindshell) plus the TypeScript
 # UI bundle (../../mindshell/ui, built with esbuild), the default layout,
-# the user service and the session autostart entry.
+# and the user service the session starts it through.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=58
+pkgrel=60
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://github.com/morvoso/mindos"
@@ -16,7 +16,7 @@ license=('LicenseRef-MindOS' OFL-1.1)
 depends=(glibc gcc-libs gtk4 webkitgtk-6.0 gtk4-layer-shell glib2 libsoup3
          pam breeze-icons hicolor-icon-theme polkit)
 optdepends=('mindos-gaming: installed games, session controls, saves and recording integrations'
-            'mindos-session: starts the shell from the session autostart directory'
+            'mindos-session: starts the shell, and holds the autostart applications back until its desktop is up'
             'mindos-theme: Orbitron in /usr/share/fonts/mindos and the system font rendering defaults (the UI bundle ships its own copies of Inter, JetBrains Mono and Orbitron)'
             'wireplumber: audio widget (wpctl)'
             'networkmanager: network widget (nmcli)'
@@ -70,15 +70,14 @@ package() {
   install -Dm644 "$srcdir/mindshell/data/layout.json" "$pkgdir/usr/share/mindos/shell/layout.json"
   install -Dm644 "$srcdir/mindshell/data/shell.toml"  "$pkgdir/etc/mindos/shell.toml"
 
-  # systemd --user service and the session autostart entry that starts it.
+  # The systemd --user service session-startup brings up and waits for.
   install -Dm644 "$srcdir/mindshell/data/mindos-shell.service" "$pkgdir/usr/lib/systemd/user/mindos-shell.service"
-  install -Dm755 "$srcdir/mindshell/data/50-mindshell" "$pkgdir/etc/xdg/mindos/autostart/50-mindshell"
 
   # What the lock screen checks the password against.
   install -Dm644 "$srcdir/mindshell/data/mindos-lock.pam" "$pkgdir/etc/pam.d/mindos-lock"
 
   # The Settings app (the same binary with --app).
-  for entry in mindos-settings mindos-displays mindos-wallpaper mindos-library mindos-gaming; do
+  for entry in mindos-settings mindos-displays mindos-wallpaper mindos-library mindos-gaming mindos-tasks; do
     install -Dm644 "$srcdir/mindshell/data/$entry.desktop" "$pkgdir/usr/share/applications/$entry.desktop"
   done
 

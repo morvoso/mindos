@@ -2,6 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Instant;
 
 use gtk4 as gtk;
 use gtk::gdk;
@@ -22,6 +23,9 @@ pub const TOAST_MARGIN: i32 = 12;
 
 /// The toast window's size until the UI measures its content.
 pub const TOAST_DEFAULT: (i32, i32) = (380, 1);
+
+/// How long the desktop takes to fade in over the windows, and back out.
+const FADE_MS: f64 = 180.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -73,6 +77,10 @@ pub struct PanelSpec {
     /// For `length == 0` (fit the widgets): the length the UI measured, 0
     /// until it reports one.
     pub fit: i32,
+    /// Extra thickness the page asked for so a widget can show a card beside
+    /// itself (the task bar's window list). The exclusive zone ignores it, so
+    /// nothing on the screen moves while the card is up.
+    pub flyout: i32,
 }
 
 impl PanelSpec {
@@ -94,6 +102,7 @@ impl From<&Panel> for PanelSpec {
             inset_start: 0,
             inset_end: 0,
             fit: 0,
+            flyout: 0,
         }
     }
 }
@@ -111,6 +120,19 @@ pub struct ShellWindow {
     pub keyboard: Cell<bool>,
     /// Toast window size as measured by the UI (`toast.fit`).
     pub toast: Cell<(i32, i32)>,
+    /// Desktop window: the system UI (library, settings, the workspace) is
+    /// forward, over the windows, rather than behind them. It is state, not a
+    /// one-off layer change: every `apply_geometry` has to honour it, or a
+    /// panel edit or a monitor change drops an open page behind the tiles.
+    pub presenting: Cell<bool>,
+    /// Desktop window: how much of the top of its screen the shell's own bar
+    /// covers, as last told to the compositor (`desktop.bar`). Kept so the
+    /// measurement, which arrives on every layout change, is only forwarded
+    /// when it is news.
+    pub bar: Cell<i32>,
+    /// The fade running on this window, so a fade the other way can take over
+    /// from wherever the last one had got to.
+    fade: RefCell<Option<gtk::TickCallbackId>>,
     pub ready: Cell<bool>,
     pub url: RefCell<String>,
     /// Popup argument as passed to `popup.open`, echoed in `popup_state`.
@@ -155,6 +177,9 @@ impl ShellWindow {
             view,
             panel: RefCell::new(None),
             keyboard: Cell::new(false),
+            presenting: Cell::new(false),
+            bar: Cell::new(0),
+            fade: RefCell::new(None),
             toast: Cell::new(TOAST_DEFAULT),
             ready: Cell::new(false),
             url: RefCell::new(String::new()),
@@ -172,7 +197,7 @@ impl ShellWindow {
     fn panel_box(&self, spec: &PanelSpec, edit_mode: bool) -> (i32, i32, bool) {
         let (mw, mh) = self.monitor_size();
         let vertical = spec.edge == "left" || spec.edge == "right";
-        let thickness = spec.size + if edit_mode { EDIT_STRIP } else { 0 };
+        let thickness = spec.size + if edit_mode { EDIT_STRIP } else { 0 } + spec.flyout.max(0);
         // Fit-to-content panels stretch out in edit mode so the settings strip has room.
         let full = spec.length >= 100 || (spec.is_fit() && edit_mode);
         let span = (if vertical { mh } else { mw }) - spec.inset_start - spec.inset_end;
@@ -184,6 +209,39 @@ impl ShellWindow {
             ((span * spec.length.clamp(10, 100)) as f64 / 100.0).round() as i32
         };
         (thickness, length.max(1), full)
+    }
+
+    /// Fade the whole surface to `target` opacity, running `done` when it
+    /// arrives. A fade already going is taken over where it stands, so asking
+    /// for the desktop again while it is on its way out picks up from what is
+    /// on screen instead of jumping.
+    pub fn fade(self: &Rc<Self>, target: f64, done: impl Fn(&Rc<Self>) + 'static) {
+        if let Some(id) = self.fade.borrow_mut().take() {
+            id.remove();
+        }
+        let from = self.window.opacity();
+        if (from - target).abs() < 0.001 {
+            self.window.set_opacity(target);
+            done(self);
+            return;
+        }
+        let start = Instant::now();
+        let me = self.clone();
+        let id = self.window.add_tick_callback(move |w, _| {
+            let t = (start.elapsed().as_secs_f64() * 1000.0 / FADE_MS).min(1.0);
+            // Out of the gate quickly: the desktop and the windows are the same
+            // surface, so the ground is dark while the fade is in the middle.
+            let eased = 1.0 - (1.0 - t) * (1.0 - t);
+            w.set_opacity(from + (target - from) * eased);
+            if t < 1.0 {
+                return gtk::glib::ControlFlow::Continue;
+            }
+            // Cleared before `done` runs: it is allowed to start the next fade.
+            me.fade.replace(None);
+            done(&me);
+            gtk::glib::ControlFlow::Break
+        });
+        self.fade.replace(Some(id));
     }
 
     /// Apply the layer-shell geometry for this window's kind and state.
@@ -198,7 +256,8 @@ impl ShellWindow {
         }
         match self.kind {
             Kind::Desktop => {
-                w.set_layer(Layer::Background);
+                // Behind the windows, until the user asks for the desktop.
+                w.set_layer(if self.presenting.get() { Layer::Top } else { Layer::Background });
                 for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
                     w.set_anchor(edge, true);
                 }
