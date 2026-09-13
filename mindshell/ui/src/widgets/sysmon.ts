@@ -1,8 +1,9 @@
 import * as bridge from '../bridge';
 import { every, h } from '../dom';
 import { registerWidget } from './registry';
-import { pct } from './common';
+import { panelItem, pct } from './common';
 import type { Stats } from '../types';
+import { openTaskManager } from '../tasks-open';
 
 interface Meter {
   el: HTMLElement;
@@ -41,7 +42,11 @@ registerWidget({
     const cpu = meter('CPU');
     const mem = meter('MEM');
     const gpu = meter('GPU');
-    const el = h('div', { class: 'w w-sysmon', title: 'System load' }, cpu.el, mem.el, gpu.el);
+    // Clicking the load meters opens the full picture, the way clicking the
+    // clock opens the calendar.
+    const el = panelItem(ctx, '', 'System load — click for the Task Manager');
+    el.append(cpu.el, mem.el, gpu.el);
+    el.addEventListener('click', () => openTaskManager());
     let cfg = ctx.config;
     let stats: Stats | undefined;
     const render = () => {
@@ -54,7 +59,7 @@ registerWidget({
       if (stats) {
         const parts = [`CPU ${pct(stats.cpu)}`, `MEM ${(stats.memUsed / 2 ** 30).toFixed(1)} / ${(stats.memTotal / 2 ** 30).toFixed(0)} GiB`];
         if (stats.gpu) parts.push(`GPU ${pct(stats.gpu.util)}${stats.gpu.temp !== undefined ? ` ${Math.round(stats.gpu.temp)}°C` : ''}`);
-        el.title = parts.join(' · ');
+        el.title = `${parts.join(' \u00b7 ')}\nClick for the Task Manager`;
       }
     };
     const poll = () =>

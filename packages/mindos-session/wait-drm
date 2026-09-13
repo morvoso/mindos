@@ -1,0 +1,27 @@
+#!/bin/bash
+# Wait for a display driver to have brought up a connected output.
+#
+# The display drivers are no longer listed in the initramfs's modules-load.d:
+# udev coldplug loads them in its worker pool, in parallel, so the boot does not
+# stop for a GPU probe that can run to several seconds (4.4s for nvidia_drm on a
+# two-display machine). Everything else in userspace is content to start before
+# the GPU is up. The compositor is the one thing that is not -- it has nothing to
+# drive -- so this is the single point in the boot that waits, and it waits only
+# as long as it has to.
+#
+# On a machine where no driver ever appears this returns anyway rather than
+# holding the greeter open: a text console on tty2 is a better failure than a
+# boot that never finishes.
+timeout=${1:-10}
+deadline=$((SECONDS + timeout))
+while (( SECONDS < deadline )); do
+  for status in /sys/class/drm/card*-*/status; do
+    [[ -r $status ]] || continue
+    if [[ $(< "$status") == connected ]]; then
+      exit 0
+    fi
+  done
+  sleep 0.1
+done
+echo "wait-drm: no connected output after ${timeout}s; starting the greeter anyway" >&2
+exit 0

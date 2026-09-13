@@ -4,6 +4,7 @@ import './taskbar';
 import './spacer';
 import './clock';
 import './layout-mode';
+import './desktop-view';
 import './tray';
 import './audio';
 import './network';
@@ -17,6 +18,7 @@ import './sysmon';
 import './power';
 import './desktop-clock';
 import './desktop-sysmon';
+import './desktop-tasks';
 import './desktop-notes';
 
 export * from './registry';

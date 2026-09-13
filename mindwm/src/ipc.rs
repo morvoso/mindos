@@ -153,6 +153,13 @@ pub enum Request {
     Subscribe,
     GetWindows,
     GetOutputs,
+    /// What the repaint loop is doing per output: frames, frames that missed
+    /// their vblank, resets, repaint times. For telling a display that is
+    /// stuttering from one that is not.
+    GetGraphics,
+    /// Per-surface buffer facts: format, alpha, opaque region. For a
+    /// window that is on screen but does not show what it draws.
+    GetSurfaces,
     Focus { window: u64 },
     Close { window: u64 },
     Minimize { window: u64 },
@@ -230,6 +237,37 @@ pub enum Request {
         #[serde(default)]
         ms: Option<u64>,
     },
+    /// How much of the top of a screen the shell's own bar covers. The shell
+    /// draws it inside its desktop window, which is anchored to every edge
+    /// and so reserves nothing of itself; this is how windows are kept below
+    /// it. `output` is a connector name, or absent for the only screen with
+    /// a bar; `0` gives the strip back.
+    DesktopBar { output: Option<String>, size: i32 },
+}
+
+impl Request {
+    /// Whether answering this could change what is on a display.
+    ///
+    /// A question about the state of things -- which windows exist, how the
+    /// repaint loop is doing, what the preferences say -- changes nothing,
+    /// and repainting every output to answer one is a frame's work on the
+    /// thread that renders, charged to whoever asked. The shell asks several
+    /// of these on a timer, and a tool watching for stutter would otherwise
+    /// cause some.
+    pub fn changes_the_screen(&self) -> bool {
+        !matches!(
+            self,
+            Request::Subscribe
+                | Request::GetWindows
+                | Request::GetOutputs
+                | Request::GetGraphics
+                | Request::GetSurfaces
+                | Request::GetPrefs
+                | Request::GetInput
+                | Request::GetLayoutMode
+                | Request::GetIdle
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -615,9 +653,12 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             let subscribing = matches!(request, Ok(Request::Subscribe));
             let reply = match request {
                 Ok(request) => {
-                    // Most requests change something on screen (focus, a
-                    // layout, the bar); one frame covers the whole line.
-                    self.request_repaint();
+                    // A request that changes something on screen (focus, a
+                    // layout, the bar) gets a frame; one covers the whole
+                    // line. A question gets none -- see `changes_the_screen`.
+                    if request.changes_the_screen() {
+                        self.request_repaint();
+                    }
                     self.ipc_request(id, request)
                 }
                 Err(err) => Reply::Err(err),
@@ -762,6 +803,8 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 Reply::Ok(json!({"windows": snapshot.windows, "focused": snapshot.focused}))
             }
             Request::GetOutputs => Reply::Ok(json!({"outputs": self.outputs_snapshot()})),
+            Request::GetGraphics => Reply::Ok(self.graphics_report()),
+            Request::GetSurfaces => Reply::Ok(self.surfaces_report()),
             Request::Focus { window } => self.with_window(window, |state, window| {
                 state.unminimize_window(&window);
                 state.activate_window(&window);
@@ -911,6 +954,10 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     Ok(()) => ok(),
                     Err(err) => Reply::Err(err),
                 }
+            }
+            Request::DesktopBar { output, size } => {
+                self.set_desktop_bar(output.as_deref(), size);
+                Reply::Ok(json!({ "size": size.max(0) }))
             }
         }
     }
@@ -1116,5 +1163,43 @@ mod tests {
             .count();
         assert_eq!(snapshots, 63);
         assert!(server.refresh_due(start + Duration::from_secs(2)));
+    }
+
+    /// Asking the compositor a question must not cost a frame. A tool
+    /// polling `get_graphics` to look for stutter would otherwise be the
+    /// thing causing it.
+    #[test]
+    fn a_question_does_not_repaint() {
+        for request in [
+            Request::Subscribe,
+            Request::GetWindows,
+            Request::GetOutputs,
+            Request::GetGraphics,
+            Request::GetSurfaces,
+            Request::GetPrefs,
+            Request::GetInput,
+            Request::GetLayoutMode,
+            Request::GetIdle,
+        ] {
+            assert!(!request.changes_the_screen(), "{request:?} only reports");
+        }
+    }
+
+    /// Anything that moves, focuses, closes or relayouts still gets its
+    /// frame: a request that changed something and drew nothing is a desktop
+    /// that ignored you.
+    #[test]
+    fn a_change_still_repaints() {
+        for request in [
+            Request::Focus { window: 1 },
+            Request::Close { window: 1 },
+            Request::ToggleFullscreen { window: 1 },
+            Request::CycleLayoutMode,
+            Request::Overview { action: PanelAction::Open },
+            Request::Lock,
+            Request::Wake,
+        ] {
+            assert!(request.changes_the_screen(), "{request:?} changes the screen");
+        }
     }
 }

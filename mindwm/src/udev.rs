@@ -19,6 +19,7 @@ use crate::{
     state::{take_presentation_feedback, update_primary_scanout_output, AnvilState, Backend},
 };
 use crate::{
+    recover::LockAnyway,
     shell::WindowRenderElement,
     state::{DndIcon, SurfaceDmabufFeedback},
 };
@@ -273,6 +274,11 @@ impl Backend for UdevData {
         if device.surfaces.values().any(SurfaceData::recovering) {
             return Err("a display is being reset; try again in a moment".into());
         }
+        // Changing a mode can modeset the device, so nothing on it can rely
+        // on the frame it had in flight. `after_output_change` repaints, and
+        // that is where the flips are dropped: this runs on `UdevData`, which
+        // has no way to reach the event loop.
+        device.reconfigured = true;
         let render_node = device.render_node.unwrap_or(*primary_gpu);
         let surface = device.surfaces.get_mut(&id.crtc).ok_or("the output is off")?;
         let drm_mode = surface
@@ -298,6 +304,16 @@ impl Backend for UdevData {
                 &DrmOutputRenderElements::default(),
             )
             .map_err(|err| err.to_string())?;
+        // The refresh rate is very likely different now, so every frame time
+        // this output remembers belongs to a display that no longer exists.
+        // Keeping them would aim the next frame at a vblank from the old
+        // cadence and, at a lower rate, make the vblank throttle believe the
+        // display is running fast. `after_output_change` repaints.
+        surface.last_presentation_time = None;
+        surface.frame_target = None;
+        surface.render_times = crate::timing::RenderTimes::default();
+        surface.last_render = Instant::now();
+        surface.dirty = true;
         info!(output = output.name(), width = mode.size.w, height = mode.size.h, refresh = mode.refresh, "mode set");
         Ok(())
     }
@@ -321,7 +337,14 @@ impl Backend for UdevData {
         surface
             .drm_output
             .with_compositor(|compositor| compositor.use_vrr(enabled))
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string())?;
+        // With variable refresh the vblank cadence is no longer the mode's,
+        // so the frame times from before it was switched mean nothing.
+        surface.last_presentation_time = None;
+        surface.frame_target = None;
+        surface.last_render = Instant::now();
+        surface.dirty = true;
+        Ok(())
     }
 
     fn output_vrr(&self, output: &Output) -> (bool, bool) {
@@ -389,20 +412,16 @@ impl Backend for UdevData {
     /// DRM surface stops its page flips, so the render loop for that output
     /// stops with it; lighting up has to kick a frame to start it again.
     fn request_repaint(state: &mut AnvilState<Self>) {
-        for (node, device) in state.backend_data.backends.iter_mut() {
-            for (crtc, surface) in device.surfaces.iter_mut() {
-                surface.dirty = true;
-                let idle = surface.repaint_timer.as_ref().is_some_and(|armed| armed.idle);
-                // Nothing armed and nothing else to continue the loop is a
-                // stopped loop: this is the last place that can notice before
-                // the watchdog does.
-                let stopped = surface.repaint_timer.is_none() && !surface.busy();
-                if idle || stopped {
-                    // Draw at the next turn of the loop, once this batch of
-                    // events has been handled, rather than at the tick.
-                    arm_repaint(&state.handle, surface, *node, *crtc, Timer::immediate(), None, false);
-                }
-            }
+        repaint_outputs(state, None);
+    }
+
+    fn request_repaint_on(state: &mut AnvilState<Self>, output: &Output) {
+        // An output this backend has never heard of is no reason to leave a
+        // display without a frame: repaint every one of them and lose a
+        // little time rather than risk a screen that stops.
+        match output.user_data().get::<UdevOutputId>().copied() {
+            Some(id) => repaint_outputs(state, Some(id)),
+            None => repaint_outputs(state, None),
         }
     }
 
@@ -468,8 +487,12 @@ impl Backend for UdevData {
             if let Some(device) = state.backend_data.backends.get_mut(&node) {
                 for surface in device.surfaces.values_mut() {
                     surface.drm_output.with_compositor(|compositor| compositor.reset_buffer_ages());
+                    // Lighting up starts the schedule over. Keeping the old
+                    // presentation time would aim the first frame at a vblank
+                    // that belongs to before the displays went off.
                     surface.last_presentation_time = None;
                     surface.frame_target = None;
+                    surface.last_render = Instant::now();
                     surface.dead_ticks = 0;
                     surface.dirty = true;
                 }
@@ -530,6 +553,52 @@ impl Backend for UdevData {
             }
         }
         Ok(())
+    }
+
+    fn graphics_stats(state: &AnvilState<Self>) -> serde_json::Value {
+        let mut outputs = Vec::new();
+        for (node, device) in &state.backend_data.backends {
+            let active = device.drm_output_manager.device().is_active();
+            for (crtc, surface) in &device.surfaces {
+                let id = UdevOutputId { device_id: *node, crtc: *crtc };
+                let output = state
+                    .space
+                    .outputs()
+                    .find(|o| o.user_data().get::<UdevOutputId>() == Some(&id));
+                let name = output.map(|o| o.name()).unwrap_or_else(|| format!("{crtc:?}"));
+                let refresh = output.and_then(|o| o.current_mode()).map(|m| m.refresh).unwrap_or(0);
+                outputs.push(serde_json::json!({
+                    "output": name,
+                    "device_active": active,
+                    "refresh_mhz": refresh,
+                    "frames": surface.frames,
+                    "repaints": surface.repaints,
+                    "late_frames": surface.late_frames,
+                    "resets": surface.resets,
+                    "recovering": surface.recovering(),
+                    "recoveries": surface.health.recoveries,
+                    "refused": surface.health.refused,
+                    "render_last_us": surface.render_times.last.as_micros() as u64,
+                    "render_recent_us": surface.render_times.estimate().as_micros() as u64,
+                    "render_worst_us": surface.render_times.worst.as_micros() as u64,
+                    "since_render_ms": surface.last_render.elapsed().as_millis() as u64,
+                    "flip_in_flight": surface.flip.is_some(),
+                    "timer_armed": surface.repaint_timer.is_some(),
+                    "direct_scanout": match surface.scanout {
+                        DirectScanout::Any => "any",
+                        DirectScanout::Matching => "matching",
+                        DirectScanout::Off => "off",
+                    },
+                }));
+            }
+        }
+        serde_json::json!({
+            "session_active": state.backend_data.session.is_active(),
+            "software_rendering": state.backend_data.software_rendering,
+            // The event loop's own numbers are added by `graphics_report`,
+            // which is the one place that has them for both backends.
+            "outputs": outputs,
+        })
     }
 
     fn set_output_enabled(state: &mut AnvilState<Self>, name: &str, enabled: bool) -> Result<(), String> {
@@ -604,7 +673,7 @@ impl Backend for UdevData {
 pub fn run_udev() {
     let mut event_loop = EventLoop::try_new().unwrap();
     let display = Display::new().unwrap();
-    let mut display_handle = display.handle();
+    let display_handle = display.handle();
 
     /*
      * Initialize session
@@ -792,9 +861,15 @@ pub fn run_udev() {
                     // handoff: every CRTC goes off, and each is lit again by
                     // its next frame.
                     if let Err(err) = backend.drm_output_manager.activate(true) {
-                        error!(?err, "failed to reactivate DRM backend");
+                        // Not the end of this device: the watchdog tries
+                        // again every couple of seconds rather than leave
+                        // every display on it dark for the rest of the
+                        // session, which is what this used to do.
+                        error!(?err, "failed to reactivate DRM backend, trying again shortly");
+                        backend.inactive_since = Some(Instant::now());
                         continue;
                     }
+                    backend.inactive_since = None;
                     for surface in backend.surfaces.values_mut() {
                         surface.drm_output.with_compositor(|compositor| {
                             // A mode blob from before the handover can be
@@ -806,6 +881,9 @@ pub fn run_udev() {
                             }
                             compositor.reset_buffer_ages();
                         });
+                        // The loop starts again here, so the watchdog counts
+                        // from the resume and not from before the handover.
+                        surface.last_render = Instant::now();
                     }
                     if let Some(lease_global) = backend.leasing_global.as_mut() {
                         lease_global.resume::<AnvilState<UdevData>>();
@@ -1027,23 +1105,44 @@ pub fn run_udev() {
     // timers, channels), so the loop sleeps until one of them has something;
     // the refresh below then runs once per batch of events, the only time it
     // can have work. A second thread watches the loop turn, and says what the
-    // thread is doing when a turn takes a second or more.
-    stall::start();
+    // thread is doing when a turn takes a second or more (`watchdog`).
+    // Last, so that the renderer's and the driver's own threads -- made
+    // while the backend came up -- keep the ordinary priority, and only the
+    // loop and what it forks from here inherit this one.
+    crate::sched::prioritise_loop();
+    state.loop_watch.watch();
+    // A panic in any callback used to unwind out of here and end the
+    // session: see `recover`.
+    let mut recovery = crate::recover::Recovery::default();
     while state.running.load(Ordering::SeqCst) {
-        let result = event_loop.dispatch(None, &mut state);
-        stall::turn();
-        if result.is_err() {
-            state.running.store(false, Ordering::SeqCst);
-        } else {
-            let _phase = stall::enter(Phase::Refresh);
-            state.space.refresh();
-            state.refresh_focus();
-            state.layout_refresh();
-            state.refresh_pointer_focus();
-            state.refresh_decorations();
-            state.ipc_refresh();
-            state.popups.cleanup();
-            display_handle.flush_clients().unwrap();
+        let turn = recovery.turn(|| {
+            let result = event_loop.dispatch(None, &mut state);
+            state.loop_watch.beat();
+            if result.is_err() {
+                state.running.store(false, Ordering::SeqCst);
+            } else {
+                let _phase = stall::enter(Phase::Refresh);
+                // The same step the headless backend takes after every turn,
+                // which is what the integration tests run.
+                state.after_dispatch();
+            }
+        });
+        if turn.is_none() {
+            // The turn is lost, and with it whatever it was drawing. Ask
+            // every display for a fresh frame so nothing is left waiting on
+            // a repaint that panicked half-way through.
+            state.loop_watch.beat();
+            UdevData::request_repaint(&mut state);
+        }
+        if recovery.giving_up() {
+            error!("the compositor cannot get past a panic and is stopping");
+            // Not the 0 of a logout: EX_SOFTWARE tells mindos-session this is
+            // a failure, and it starts the compositor again. `_exit` without
+            // tearing down, because a state that keeps panicking cannot be
+            // trusted to take itself apart, nor the graphics driver's exit
+            // handlers to run under it; the kernel lets go of the seat and the
+            // displays, as it does after a crash.
+            unsafe { libc::_exit(70) };
         }
     }
 }
@@ -1108,13 +1207,16 @@ impl DrmLeaseHandler for AnvilState<UdevData> {
     }
 
     fn new_active_lease(&mut self, node: DrmNode, lease: DrmLease) {
-        let backend = self.backend_data.backends.get_mut(&node).unwrap();
-        backend.active_leases.push(lease);
+        // The device can be unplugged between the request and the lease.
+        if let Some(backend) = self.backend_data.backends.get_mut(&node) {
+            backend.active_leases.push(lease);
+        }
     }
 
     fn lease_destroyed(&mut self, node: DrmNode, lease: u32) {
-        let backend = self.backend_data.backends.get_mut(&node).unwrap();
-        backend.active_leases.retain(|l| l.id() != lease);
+        if let Some(backend) = self.backend_data.backends.get_mut(&node) {
+            backend.active_leases.retain(|l| l.id() != lease);
+        }
     }
 }
 
@@ -1156,7 +1258,9 @@ struct SurfaceData {
     fps_element: Option<FpsElement<MultiTexture>>,
     dmabuf_feedback: Option<SurfaceDmabufFeedback>,
     last_presentation_time: Option<Time<Monotonic>>,
-    vblank_throttle_timer: Option<RegistrationToken>,
+    /// A vblank that arrived early, held back until the frame it reports
+    /// is really on screen.
+    vblank_throttle_timer: Option<ThrottleTimer>,
     /// What the last repaint aimed at, so one kicked off while the output
     /// is idle aims at the next vblank rather than at "now".
     frame_target: Option<Time<Monotonic>>,
@@ -1173,6 +1277,26 @@ struct SurfaceData {
     /// hold a flip on a fence that never signals, so a flip that times out
     /// with this set costs the output its direct scan-out.
     flip_scanout: Option<RenderElementId>,
+    /// When a repaint last ran to completion on this output, whatever it
+    /// then decided to do. This is the one thing that must keep happening:
+    /// every lit output repaints at least once a second, so a longer gap is
+    /// a stopped loop however healthy its timers look.
+    last_render: Instant,
+    /// How long recent repaints took, which is what decides how late the
+    /// next one may start and still make its vblank.
+    render_times: crate::timing::RenderTimes,
+    /// Frames that reached the screen, and how many of those arrived at
+    /// least half a refresh late while the output was drawing continuously.
+    /// Late frames are what stutter is made of, so they are counted rather
+    /// than guessed at.
+    frames: u64,
+    late_frames: u64,
+    /// How many times a repaint has run on this output, whether or not it
+    /// produced a frame. The gap between this and `frames` is work spent
+    /// finding out that nothing had changed.
+    repaints: u64,
+    /// How many times this output has had to be reset.
+    resets: u64,
     /// Watchdog ticks in a row that found neither a timer armed nor a frame
     /// in flight. One is a coincidence; two is a dead loop.
     dead_ticks: u8,
@@ -1329,6 +1453,14 @@ impl Device for CachedProbe<'_> {
     }
 }
 
+/// A vblank held back because it came in early: the timer that will deliver
+/// it, and when. Like a repaint timer, it counts as this output's proof of
+/// life only until it is due.
+struct ThrottleTimer {
+    token: RegistrationToken,
+    due: Instant,
+}
+
 /// How often the watchdog looks at every output. It is the backstop; the
 /// per-flip deadline is what normally catches a stuck output.
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
@@ -1338,11 +1470,29 @@ const RELEASE_SLOW: Duration = Duration::from_secs(12);
 /// How long the change events of one device are gathered before its
 /// connectors are probed: a monitor waking up sends several.
 const HOTPLUG_SETTLE: Duration = Duration::from_millis(400);
+/// How long past its due time an armed timer stops counting as proof that
+/// this output is alive. Nothing is ever scheduled further out than
+/// `IDLE_REPAINT`, so a timer this late is not late: it is not coming.
+const REPAINT_OVERDUE: Duration = Duration::from_secs(1);
+/// How long an output may go without completing a single repaint before it
+/// is taken to be stuck. The idle tick is a second, so a lit output that has
+/// not drawn in this long is not idle: it has stopped.
+const STALL_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a DRM device may keep refusing frames while the session is
+/// running before the resume is tried again.
+const REACTIVATE_AFTER: Duration = Duration::from_secs(2);
+/// A change is drawn at once when the repaint already armed is further out
+/// than this. A frame is milliseconds; anything past this is not the repaint
+/// loop running, it is an output that has been parked.
+const PULL_FORWARD_AFTER: Duration = Duration::from_millis(200);
 
 /// A timer that will repaint one CRTC: the one 0.6 frames after a flip,
 /// the retry a frame after an empty repaint, or the slow idle tick.
 struct RepaintTimer {
     token: RegistrationToken,
+    /// When it fires. An output whose timer is long past due has stopped,
+    /// however healthy the timer itself looks.
+    due: Instant,
     /// The presentation time the repaint aims at; `None` for the idle tick,
     /// which works it out when it fires.
     target: Option<Time<Monotonic>>,
@@ -1365,14 +1515,23 @@ fn arm_repaint(
     surface: &mut SurfaceData,
     node: DrmNode,
     crtc: crtc::Handle,
-    timer: Timer,
+    delay: Duration,
     target: Option<Time<Monotonic>>,
     idle: bool,
 ) {
     if let Some(armed) = surface.repaint_timer.take() {
         handle.remove(armed.token);
     }
-    let token = handle.insert_source(timer, move |_, _, data| {
+    // Never park an output. The delay is worked out from the last
+    // presentation time, and a driver that reports one from the future makes
+    // it arbitrarily long: the output then sits there with a timer armed,
+    // looking alive to everything that asks, and never draws again. A frame
+    // is milliseconds and the idle tick is a second, so a longer delay is a
+    // mistake by definition. Drawing a second late is recoverable; not
+    // drawing at all is what this whole loop exists to prevent.
+    let delay = delay.min(IDLE_REPAINT);
+    let due = Instant::now() + delay;
+    let token = handle.insert_source(Timer::from_duration(delay), move |_, _, data| {
         if let Some(surface) = data
             .backend_data
             .backends
@@ -1386,7 +1545,7 @@ fn arm_repaint(
         TimeoutAction::Drop
     });
     match token {
-        Ok(token) => surface.repaint_timer = Some(RepaintTimer { token, target, idle }),
+        Ok(token) => surface.repaint_timer = Some(RepaintTimer { token, due, target, idle }),
         Err(err) => {
             // One output has no way to ask for its next frame. The watchdog
             // finds it within a second and starts it again; taking the whole
@@ -1394,6 +1553,47 @@ fn arm_repaint(
             error!(?crtc, ?err, "cannot arm the repaint timer for this output");
             surface.repaint_timer = None;
         }
+    }
+}
+
+/// How far from the clock a reported vblank time may be and still be
+/// believed: a little ahead, because the clock is read after the event, and
+/// a whole second behind, because a queued-up event can be that old.
+const VBLANK_TIME_AHEAD: Duration = Duration::from_millis(50);
+const VBLANK_TIME_BEHIND: Duration = Duration::from_secs(1);
+
+/// The presentation time the driver reported, unless it is nowhere near now.
+///
+/// This one timestamp times everything that follows: each frame is aimed one
+/// refresh after the last target, and the next after that one, so a single
+/// reading from the future is not a late frame, it is a schedule that runs
+/// away and an output that never draws again. The clock is a worse
+/// presentation time than the hardware's and a far better one to plan from.
+fn sane_vblank_time(tp: Duration, now: Duration) -> Option<Duration> {
+    if tp <= now.saturating_add(VBLANK_TIME_AHEAD) && tp.saturating_add(VBLANK_TIME_BEHIND) >= now {
+        return Some(tp);
+    }
+    static WARN_ONCE: Once = Once::new();
+    WARN_ONCE.call_once(|| {
+        warn!("the driver reports vblank times that are not near the clock; timing the outputs from the clock instead")
+    });
+    None
+}
+
+/// Why a lit output with nothing in flight has stopped, or `None` if it is
+/// still going.
+///
+/// `since_render` is how long ago a repaint last ran to completion, and
+/// `overdue` how long ago the most distant of its armed timers was due, or
+/// `None` when it has none armed at all.
+fn stopped_reason(since_render: Duration, overdue: Option<Duration>) -> Option<String> {
+    if since_render > STALL_TIMEOUT {
+        return Some(format!("nothing has been drawn for {since_render:?}"));
+    }
+    match overdue {
+        None => Some("no timer armed and no frame in flight".to_string()),
+        Some(late) if late > REPAINT_OVERDUE => Some(format!("its repaint timer is {late:?} overdue")),
+        Some(_) => None,
     }
 }
 
@@ -1439,8 +1639,8 @@ fn cancel_timers(handle: &LoopHandle<'static, AnvilState<UdevData>>, surface: &m
     if let Some(armed) = surface.repaint_timer.take() {
         handle.remove(armed.token);
     }
-    if let Some(token) = surface.vblank_throttle_timer.take() {
-        handle.remove(token);
+    if let Some(throttle) = surface.vblank_throttle_timer.take() {
+        handle.remove(throttle.token);
     }
     if let Some(token) = surface.recovery_timer.take() {
         handle.remove(token);
@@ -1448,6 +1648,32 @@ fn cancel_timers(handle: &LoopHandle<'static, AnvilState<UdevData>>, surface: &m
     if let Some(token) = surface.flip.as_mut().and_then(|flip| flip.deadline.take()) {
         handle.remove(token);
     }
+}
+
+/// A modeset elsewhere on the device dropped the frame this output had in
+/// flight, and its event is not coming. Forget it and draw again from
+/// scratch, rather than let its deadline reset a display nothing is wrong
+/// with. An output being reset is left to the reset, which does the same.
+fn strand_frame(handle: &LoopHandle<'static, AnvilState<UdevData>>, surface: &mut SurfaceData) {
+    if surface.recovering() {
+        return;
+    }
+    let held = surface.flip.is_some() || surface.vblank_throttle_timer.is_some();
+    if let Some(throttle) = surface.vblank_throttle_timer.take() {
+        handle.remove(throttle.token);
+    }
+    if let Some(token) = surface.flip.take().and_then(|flip| flip.deadline) {
+        handle.remove(token);
+    }
+    if held {
+        forget_frame(surface);
+    }
+    surface.flip_scanout = None;
+    surface.last_presentation_time = None;
+    surface.frame_target = None;
+    surface.last_render = Instant::now();
+    surface.dead_ticks = 0;
+    surface.dirty = true;
 }
 
 /// Give up on the frame the compositor holds for a page flip whose event is
@@ -1563,10 +1789,22 @@ struct BackendData {
     /// A change came in while probing or resetting a display: scan again
     /// once that is over.
     rescan_pending: bool,
+    /// A modeset changed this device out from under its surfaces, and the
+    /// frames they had in flight went with it. Set from the places that have
+    /// no way to reach the event loop and cleared by the repaint that
+    /// follows, which drops the flips and starts every display again.
+    reconfigured: bool,
+    /// Since when this device has been handing back `DeviceInactive`. A
+    /// paused session is normal and brief; a device that stays inactive
+    /// while the session is running is a resume that did not take, and
+    /// every display on it is frozen until somebody tries again.
+    inactive_since: Option<Instant>,
 }
 
 #[derive(Debug, thiserror::Error)]
 enum DeviceAddError {
+    #[error("Failed to create a renderer for the device: {0}")]
+    NoRenderer(String),
     #[error("Failed to open device using libseat: {0}")]
     DeviceOpen(libseat::Error),
     #[error("Failed to initialize drm device: {0}")]
@@ -1577,6 +1815,8 @@ enum DeviceAddError {
     DrmNode(CreateDrmNodeError),
     #[error("Failed to add device to GpuManager: {0}")]
     AddNode(egl::Error),
+    #[error("Failed to watch the device for vblanks: {0}")]
+    Watch(String),
     #[error("The device has no render node")]
     NoRenderNode,
     #[error("Primary GPU is missing")]
@@ -1625,20 +1865,20 @@ fn get_surface_dmabuf_feedback(
             .clone()
             .add_preference_tranche(render_node.dev_id(), None, render_formats.clone())
             .build()
-            .unwrap()
+            .ok()?
     } else {
-        builder.clone().build().unwrap()
+        builder.clone().build().ok()?
     };
 
     let scanout_feedback = builder
         .add_preference_tranche(
-            surface.device_fd().dev_id().unwrap(),
+            surface.device_fd().dev_id().ok()?,
             Some(zwp_linux_dmabuf_feedback_v1::TrancheFlags::Scanout),
             planes_formats,
         )
         .add_preference_tranche(scanout_node.dev_id(), None, render_formats)
         .build()
-        .unwrap();
+        .ok()?;
 
     Some(SurfaceDmabufFeedback {
         render_feedback,
@@ -1670,14 +1910,14 @@ impl AnvilState<UdevData> {
                 move |event, metadata, data: &mut AnvilState<_>| match event {
                     DrmEvent::VBlank(crtc) => {
                         profiling::scope!("vblank", &format!("{crtc:?}"));
-                        data.frame_finish(node, crtc, metadata);
+                        data.frame_finish(node, crtc, metadata, false);
                     }
                     DrmEvent::Error(error) => {
                         error!("{:?}", error);
                     }
                 },
             )
-            .unwrap();
+            .map_err(|err| DeviceAddError::Watch(err.error.to_string()))?;
 
         let primary_gpu = self.backend_data.primary_gpu;
         let own_render_node = node.node_with_type(NodeType::Render).and_then(|n| n.ok());
@@ -1758,7 +1998,7 @@ impl AnvilState<UdevData> {
             .backend_data
             .gpus
             .single_renderer(&render_node.unwrap_or(self.backend_data.primary_gpu))
-            .unwrap();
+            .map_err(|err| DeviceAddError::NoRenderer(err.to_string()))?;
         let render_formats = renderer
             .as_mut()
             .egl_context()
@@ -1781,7 +2021,9 @@ impl AnvilState<UdevData> {
             node,
             BackendData {
                 registration_token,
+                reconfigured: false,
                 drm_output_manager,
+                inactive_since: None,
                 drm_scanner: DrmScanner::new(),
                 non_desktop_connectors: Vec::new(),
                 disabled: Vec::new(),
@@ -1811,7 +2053,15 @@ impl AnvilState<UdevData> {
         };
 
         let render_node = device.render_node.unwrap_or(self.backend_data.primary_gpu);
-        let mut renderer = self.backend_data.gpus.single_renderer(&render_node).unwrap();
+        let mut renderer = match self.backend_data.gpus.single_renderer(&render_node) {
+            Ok(renderer) => renderer,
+            Err(err) => {
+                // Plugging a display in must never take the session down with
+                // the displays that are already working.
+                error!(?crtc, %err, "no renderer for the GPU this connector is on");
+                return;
+            }
+        };
 
         let output_name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
         info!(?crtc, "Trying to setup connector {}", output_name,);
@@ -1915,7 +2165,9 @@ impl AnvilState<UdevData> {
             let x = self
                 .space
                 .outputs()
-                .fold(0, |acc, o| acc + self.space.output_geometry(o).unwrap().size.w);
+                .fold(0, |acc, o| {
+                    acc + self.space.output_geometry(o).map(|g| g.size.w).unwrap_or(0)
+                });
             let position: Point<i32, Logical> = prefs
                 .position
                 .map(|[x, y]| (x, y).into())
@@ -2038,6 +2290,12 @@ impl AnvilState<UdevData> {
                 vblank_throttle_timer: None,
                 frame_target: None,
                 repaint_timer: None,
+                last_render: Instant::now(),
+                render_times: crate::timing::RenderTimes::default(),
+                frames: 0,
+                late_frames: 0,
+                repaints: 0,
+                resets: 0,
                 dirty: true,
                 flip: None,
                 flip_scanout: None,
@@ -2050,9 +2308,20 @@ impl AnvilState<UdevData> {
 
             device.surfaces.insert(crtc, surface);
 
+            // Adding an output can re-allocate the whole device: the manager
+            // looks for a buffer format every surface on it can share, which
+            // modesets the displays that were already running and strands
+            // whatever each of them had in flight. Their deadlines would
+            // catch that a second later, as a freeze long enough to see.
+            for (other, surface) in device.surfaces.iter_mut() {
+                if *other != crtc {
+                    strand_frame(&self.handle, surface);
+                }
+            }
+
             // kick-off rendering
             self.handle.insert_idle(move |state| {
-                state.render_surface(node, crtc, state.clock.now());
+                state.render(node, None, state.clock.now());
             });
         }
     }
@@ -2102,7 +2371,12 @@ impl AnvilState<UdevData> {
         }
 
         let render_node = device.render_node.unwrap_or(self.backend_data.primary_gpu);
-        let mut renderer = self.backend_data.gpus.single_renderer(&render_node).unwrap();
+        let Ok(mut renderer) = self.backend_data.gpus.single_renderer(&render_node) else {
+            // Unplugging a display must never take the session down with the
+            // displays that are still plugged in.
+            error!(?crtc, "no renderer for this GPU while a connector went away");
+            return;
+        };
         let _ = device.drm_output_manager.try_to_restore_modifiers::<_, OutputRenderElements<
             UdevRenderer<'_>,
             WindowRenderElement<UdevRenderer<'_>>,
@@ -2112,6 +2386,17 @@ impl AnvilState<UdevData> {
             // Instead we just use black to "simulate" a modeset :)
             &DrmOutputRenderElements::default(),
         );
+        // Restoring the modifiers modesets every surface on the device, which
+        // strands whatever frame each of the *other* displays had in flight.
+        // Their deadlines would catch it a second later; drawing them again
+        // now is a hitch nobody sees instead.
+        for surface in device.surfaces.values_mut() {
+            strand_frame(&self.handle, surface);
+        }
+        if !device.surfaces.is_empty() {
+            self.handle
+                .insert_idle(move |data| data.render(node, None, data.clock.now()));
+        }
     }
 
     /// Look at what is plugged into the device and light or drop outputs to
@@ -2292,13 +2577,30 @@ impl AnvilState<UdevData> {
         self.relayout_all_outputs();
     }
 
-    fn frame_finish(&mut self, dev_id: DrmNode, crtc: crtc::Handle, metadata: &mut Option<DrmEventMetadata>) {
+    /// A page flip completed. `throttled` is a vblank that came in early and
+    /// was held back until now, handed over by its timer.
+    fn frame_finish(
+        &mut self,
+        dev_id: DrmNode,
+        crtc: crtc::Handle,
+        metadata: &mut Option<DrmEventMetadata>,
+        throttled: bool,
+    ) {
         profiling::scope!("frame_finish", &format!("{crtc:?}"));
         let _phase = stall::enter(Phase::Vblank);
 
         let tp = metadata.as_ref().and_then(|metadata| match metadata.time {
             smithay::backend::drm::DrmEventTime::Monotonic(tp) => tp.is_zero().not().then_some(tp),
             smithay::backend::drm::DrmEventTime::Realtime(_) => None,
+        });
+        // Only if it is anywhere near now: see `sane_vblank_time`.
+        let tp = tp.and_then(|tp| {
+            let now: Duration = self.clock.now().into();
+            let sane = sane_vblank_time(tp, now);
+            if sane.is_none() {
+                debug!(?crtc, ?tp, ?now, "ignoring a vblank time that is nowhere near the clock");
+            }
+            sane
         });
         let seq = metadata.as_ref().map(|metadata| metadata.sequence).unwrap_or(0);
 
@@ -2333,7 +2635,7 @@ impl AnvilState<UdevData> {
             debug!(?crtc, "page flip finished with no frame in flight");
             return;
         }
-        if surface.vblank_throttle_timer.is_none() {
+        if !throttled {
             if let (Some(faults), Some(output)) = (self.backend_data.faults.as_mut(), output.as_ref()) {
                 if faults.take_vblank(&output.name()) {
                     warn!(output = output.name(), "debug fault: this page flip's event is dropped");
@@ -2342,8 +2644,8 @@ impl AnvilState<UdevData> {
             }
         }
 
-        if let Some(timer_token) = surface.vblank_throttle_timer.take() {
-            handle.remove(timer_token);
+        if let Some(throttle) = surface.vblank_throttle_timer.take() {
+            handle.remove(throttle.token);
         }
 
         let Some(output) = output else {
@@ -2394,13 +2696,28 @@ impl AnvilState<UdevData> {
                 match self
                     .handle
                     .insert_source(Timer::from_duration(vblank_remaining_time), move |_, _, data| {
-                        data.frame_finish(dev_id, crtc, &mut Some(throttled_metadata));
+                        // This timer is the source being dispatched, and it
+                        // drops itself below. Forget the token first, or
+                        // `frame_finish` removes a source that is already on
+                        // its way out and the loop loses track of the slot.
+                        if let Some(surface) = data
+                            .backend_data
+                            .backends
+                            .get_mut(&dev_id)
+                            .and_then(|device| device.surfaces.get_mut(&crtc))
+                        {
+                            surface.vblank_throttle_timer = None;
+                        }
+                        data.frame_finish(dev_id, crtc, &mut Some(throttled_metadata), true);
                         TimeoutAction::Drop
                     }) {
-                    Ok(timer_token) => {
+                    Ok(token) => {
                         // The vblank came; the timer hands it over at its
                         // time, so the flip needs no deadline any more.
-                        surface.vblank_throttle_timer = Some(timer_token);
+                        surface.vblank_throttle_timer = Some(ThrottleTimer {
+                            token,
+                            due: Instant::now() + vblank_remaining_time,
+                        });
                         if let Some(token) = surface.flip.as_mut().and_then(|flip| flip.deadline.take()) {
                             self.handle.remove(token);
                         }
@@ -2413,6 +2730,23 @@ impl AnvilState<UdevData> {
                         error!(?crtc, ?err, "cannot throttle this vblank");
                     }
                 }
+            }
+        }
+        // How the frame actually landed, before this one becomes the past.
+        // A gap of half a refresh or more, while the output was drawing
+        // frame after frame, is a frame that did not make its vblank: this
+        // is stutter, counted rather than guessed at. A gap longer than a
+        // few frames means the output was idle in between, which is not the
+        // same thing at all.
+        if surface.last_presentation_time.is_some() {
+            surface.frames = surface.frames.saturating_add(1);
+        }
+        // Late means this frame missed the vblank its repaint was drawn for,
+        // and not that the output is running below the panel's top rate --
+        // which it does whenever nothing needs more. See `missed_vblank`.
+        if let Some(target) = surface.frame_target {
+            if crate::timing::missed_vblank(target.into(), clock.into(), frame_duration) {
+                surface.late_frames = surface.late_frames.saturating_add(1);
             }
         }
         surface.last_presentation_time = Some(clock);
@@ -2496,9 +2830,13 @@ impl AnvilState<UdevData> {
             //
             // A more complete solution could work on a sliding window analyzing past repaints
             // and do some prediction for the next repaint.
-            let repaint_delay = Duration::from_secs_f64(frame_duration.as_secs_f64() * 0.6f64);
+            // How late the repaint can start and still make the vblank
+            // depends on how long a repaint takes on this output, which is
+            // measured rather than assumed: see `timing::repaint_delay`.
+            let repaint_delay =
+                crate::timing::repaint_delay(frame_duration, surface.render_times.estimate());
 
-            let timer = if surface
+            let delay = if surface
                 .render_node
                 .map(|render_node| render_node != self.backend_data.primary_gpu)
                 .unwrap_or(true)
@@ -2507,17 +2845,17 @@ impl AnvilState<UdevData> {
                 // (And without actual comparision to previous frames we cannot really know.)
                 // So lets ignore that in those cases to avoid thrashing performance.
                 trace!("scheduling repaint timer immediately on {:?}", crtc);
-                Timer::immediate()
+                Duration::ZERO
             } else {
                 trace!(
                     "scheduling repaint timer with delay {:?} on {:?}",
                     repaint_delay,
                     crtc
                 );
-                Timer::from_duration(repaint_delay)
+                repaint_delay
             };
 
-            arm_repaint(&self.handle, surface, dev_id, crtc, timer, Some(next_frame_target), false);
+            arm_repaint(&self.handle, surface, dev_id, crtc, delay, Some(next_frame_target), false);
         }
     }
 
@@ -2708,15 +3046,30 @@ impl AnvilState<UdevData> {
 
         let primary_gpu = self.backend_data.primary_gpu;
         let render_node = surface.render_node.unwrap_or(primary_gpu);
-        let mut renderer = if primary_gpu == render_node {
+        let renderer = if primary_gpu == render_node {
             self.backend_data.gpus.single_renderer(&render_node)
         } else {
             let format = surface.drm_output.format();
             self.backend_data
                 .gpus
                 .renderer(&primary_gpu, &render_node, format)
-        }
-        .unwrap();
+        };
+        let renderer = match renderer {
+            Ok(renderer) => Some(renderer),
+            Err(err) => {
+                // No renderer for this GPU right now: a device being added or
+                // taken away, a driver that went missing, a GPU reset. This
+                // used to be an `unwrap`, which took the whole session — every
+                // other display included — down with it. Look again shortly.
+                error!(?crtc, %err, "no renderer for this output, trying again shortly");
+                None
+            }
+        };
+        let Some(mut renderer) = renderer else {
+            surface.last_render = Instant::now();
+            arm_repaint(&self.handle, surface, node, crtc, IDLE_REPAINT, None, false);
+            return;
+        };
 
         let pointer_image = self
             .backend_data
@@ -2744,6 +3097,7 @@ impl AnvilState<UdevData> {
                 &output,
                 self.pointer.current_location(),
                 &pointer_image,
+                (frame.xhot as i32, frame.yhot as i32).into(),
                 &mut self.backend_data.pointer_element,
                 &self.dnd_icon,
                 &mut self.cursor_status,
@@ -2794,6 +3148,23 @@ impl AnvilState<UdevData> {
         // frame where returning would cost the whole output.
         let output_refresh = output.current_mode().map(|mode| mode.refresh).unwrap_or(60_000);
 
+        // A repaint ran to completion. This is what the watchdog looks for:
+        // not a timer, not a flip, but the loop actually going round.
+        if let Some(surface) = self
+            .backend_data
+            .backends
+            .get_mut(&node)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
+        {
+            surface.last_render = Instant::now();
+            surface.repaints = surface.repaints.saturating_add(1);
+            if matches!(next, Repaint::Flipped) {
+                // Only frames that were really drawn and queued: an empty
+                // repaint says nothing about how long a full one takes.
+                surface.render_times.push(start.elapsed());
+            }
+        }
+
         match next {
             Repaint::Flipped => {
                 let elapsed = start.elapsed();
@@ -2805,7 +3176,7 @@ impl AnvilState<UdevData> {
             }
             Repaint::Retry(delay) => {
                 let target = self.clock.now() + delay;
-                self.arm_surface_repaint(node, crtc, Timer::from_duration(delay), Some(target), false);
+                self.arm_surface_repaint(node, crtc, delay, Some(target), false);
             }
             Repaint::Recovering => {
                 trace!(?crtc, "the repaint loop waits for the reset");
@@ -2826,15 +3197,14 @@ impl AnvilState<UdevData> {
                     reschedule_timeout,
                     crtc,
                 );
-                let timer = Timer::from_duration(reschedule_timeout);
-                self.arm_surface_repaint(node, crtc, timer, Some(next_frame_target), false);
+                self.arm_surface_repaint(node, crtc, reschedule_timeout, Some(next_frame_target), false);
             }
             Repaint::Idle => {
                 // Nothing to draw and nothing moving: stop repainting every
                 // frame. The next change (`request_repaint`) starts the loop
                 // again at once; the slow tick catches the rest.
                 trace!("output idle, ticking every {:?} on {:?}", IDLE_REPAINT, crtc);
-                self.arm_surface_repaint(node, crtc, Timer::from_duration(IDLE_REPAINT), None, true);
+                self.arm_surface_repaint(node, crtc, IDLE_REPAINT, None, true);
             }
         }
 
@@ -2849,6 +3219,8 @@ impl AnvilState<UdevData> {
         if self.idle.stage == crate::idle::Stage::Blank {
             return;
         }
+        let session_active = self.backend_data.session.is_active();
+        let mut reactivate = Vec::new();
         let known: Vec<(UdevOutputId, Option<i32>)> = self
             .space
             .outputs()
@@ -2861,8 +3233,19 @@ impl AnvilState<UdevData> {
         let mut stopped = Vec::new();
         for (node, device) in self.backend_data.backends.iter_mut() {
             if !device.drm_output_manager.device().is_active() {
+                // While the session is paused — a VT switch, suspend — this
+                // is exactly right, and resuming repaints everything. A
+                // device still refusing frames while the session is running
+                // is a resume that did not take: `activate` is allowed to
+                // fail, and every display on the device then stayed dark for
+                // the rest of the session. Try again instead.
+                let since = *device.inactive_since.get_or_insert_with(Instant::now);
+                if session_active && since.elapsed() > REACTIVATE_AFTER {
+                    reactivate.push(*node);
+                }
                 continue;
             }
+            device.inactive_since = None;
             for (crtc, surface) in device.surfaces.iter_mut() {
                 // A surface whose output the space has forgotten draws
                 // nothing by design; leaving it alone is not a freeze.
@@ -2896,16 +3279,45 @@ impl AnvilState<UdevData> {
                     if waited > crate::timing::flip_deadline(*refresh) + WATCHDOG_TICK * 2 {
                         stuck.push((*node, *crtc, waited));
                     }
-                } else if surface.repaint_timer.is_none() && surface.vblank_throttle_timer.is_none() {
-                    surface.dead_ticks = surface.dead_ticks.saturating_add(1);
-                    if surface.dead_ticks >= 2 {
-                        surface.dead_ticks = 0;
-                        stopped.push((*node, *crtc));
+                    continue;
+                }
+                // Nothing is in flight, so the loop has to be coming round on
+                // its own. Two questions, and either answer is enough.
+                //
+                // The timers, first: an armed timer is not proof of life, one
+                // that is long past due belongs to a loop that has stopped
+                // just as surely as no timer at all.
+                let overdue = surface
+                    .repaint_timer
+                    .as_ref()
+                    .map(|armed| armed.due)
+                    .into_iter()
+                    .chain(surface.vblank_throttle_timer.as_ref().map(|throttle| throttle.due))
+                    .map(|due| due.elapsed())
+                    .max();
+                // And then the question that cannot be answered wrongly:
+                // has a repaint actually run? Every lit output repaints at
+                // least once a second, whether anything changed or not. This
+                // needs no theory about which timer should have fired or
+                // which event went missing — a frozen display is one that
+                // has not drawn, and that is precisely what this measures.
+                let reason = stopped_reason(surface.last_render.elapsed(), overdue);
+                match reason {
+                    // Two ticks in a row, so a loop that was merely blocked
+                    // for a moment (a modeset, a slow GPU) is not reset.
+                    Some(reason) => {
+                        surface.dead_ticks = surface.dead_ticks.saturating_add(1);
+                        if surface.dead_ticks >= 2 {
+                            surface.dead_ticks = 0;
+                            stopped.push((*node, *crtc, reason));
+                        }
                     }
-                } else {
-                    surface.dead_ticks = 0;
+                    None => surface.dead_ticks = 0,
                 }
             }
+        }
+        for node in reactivate {
+            self.reactivate_device(node);
         }
         for (node, crtc, waited) in stuck {
             self.recover_output(
@@ -2915,12 +3327,54 @@ impl AnvilState<UdevData> {
                 &format!("no page flip for {waited:?}, and its deadline never fired"),
             );
         }
-        for (node, crtc) in stopped {
+        for (node, crtc, reason) in stopped {
             // Nothing is wrong with the display, only with the bookkeeping:
             // drawing again is all it takes.
-            warn!(?crtc, "the repaint loop had stopped with nothing armed; starting it again");
-            self.arm_surface_repaint(node, crtc, Timer::immediate(), None, false);
+            warn!(?crtc, "the repaint loop had stopped ({reason}); starting it again");
+            self.arm_surface_repaint(node, crtc, Duration::ZERO, None, false);
         }
+    }
+
+    /// A DRM device that is still refusing frames long after the session came
+    /// back. Take it again from the top, as resuming does: activate, throw
+    /// away everything that belonged to the state it lost, and repaint every
+    /// output on it.
+    fn reactivate_device(&mut self, node: DrmNode) {
+        let handle = self.handle.clone();
+        let Some(device) = self.backend_data.backends.get_mut(&node) else {
+            return;
+        };
+        warn!(%node, "the device is inactive while the session is running; taking it again");
+        if let Err(err) = device.drm_output_manager.activate(true) {
+            error!(%node, ?err, "cannot take the device back; trying again shortly");
+            // Start the clock again so this is retried, rather than giving up
+            // on every display the device drives.
+            device.inactive_since = Some(Instant::now());
+            return;
+        }
+        device.inactive_since = None;
+        for surface in device.surfaces.values_mut() {
+            cancel_timers(&handle, surface);
+            surface.flip = None;
+            surface.flip_scanout = None;
+            surface.releasing = None;
+            forget_frame(surface);
+            surface.health.refusals_over();
+            surface.drm_output.with_compositor(|compositor| {
+                if let Err(err) = compositor.use_mode(compositor.pending_mode()) {
+                    warn!(?err, "cannot set the mode again after taking the device back");
+                }
+                compositor.reset_buffer_ages();
+            });
+            surface.last_presentation_time = None;
+            surface.frame_target = None;
+            surface.last_render = Instant::now();
+            surface.dead_ticks = 0;
+            surface.dirty = true;
+        }
+        self.mindbar.invalidate_graphics();
+        self.handle
+            .insert_idle(move |data| data.render(node, None, data.clock.now()));
     }
 
     /// A frame the kernel did not take. A hiccup is retried at the next
@@ -3016,6 +3470,7 @@ impl AnvilState<UdevData> {
         cancel_timers(&handle, surface);
         surface.flip = None;
         let scanout = surface.flip_scanout.take();
+        surface.resets = surface.resets.saturating_add(1);
         if cause == Cause::StuckFlip && scanout.is_some() && surface.scanout != DirectScanout::Off {
             // The frame that never reached the screen had a client's own
             // buffer on the primary plane, waiting on a fence only that
@@ -3228,6 +3683,7 @@ impl AnvilState<UdevData> {
                 forget_frame(surface);
                 surface.last_presentation_time = None;
                 surface.frame_target = None;
+                surface.last_render = Instant::now();
                 surface.dead_ticks = 0;
                 surface.dirty = true;
             }
@@ -3334,7 +3790,7 @@ impl AnvilState<UdevData> {
         &mut self,
         node: DrmNode,
         crtc: crtc::Handle,
-        timer: Timer,
+        delay: Duration,
         target: Option<Time<Monotonic>>,
         idle: bool,
     ) {
@@ -3344,7 +3800,7 @@ impl AnvilState<UdevData> {
             .get_mut(&node)
             .and_then(|device| device.surfaces.get_mut(&crtc))
         {
-            arm_repaint(&self.handle, surface, node, crtc, timer, target, idle);
+            arm_repaint(&self.handle, surface, node, crtc, delay, target, idle);
         }
     }
 }
@@ -3355,6 +3811,76 @@ enum AfterFlip {
     Repaint,
     /// The session is paused; its resume handler repaints.
     Wait,
+}
+
+/// Ask outputs for a frame: `only` names one, `None` means all of them.
+///
+/// Scoping this matters more than it looks. Every client commit used to ask
+/// every display to repaint, and a display with nothing on it that changed
+/// still has to collect its render elements and work out that it has no
+/// damage before it can say so. With a video playing on one screen and a
+/// game on another, each was dragged through the other's frames as well as
+/// its own, on the one thread that has to render them both.
+fn repaint_outputs(state: &mut AnvilState<UdevData>, only: Option<UdevOutputId>) {
+    for (node, device) in state.backend_data.backends.iter_mut() {
+        // A modeset throws away every frame in flight on the device, not
+        // just the one that asked, so it is always handled in full.
+        let reconfigured = std::mem::take(&mut device.reconfigured);
+        for (crtc, surface) in device.surfaces.iter_mut() {
+            if !reconfigured
+                && only.is_some_and(|id| id.device_id != *node || id.crtc != *crtc)
+            {
+                continue;
+            }
+            if reconfigured {
+                // The device was modeset: every frame in flight on it is
+                // gone, and waiting on one that is never coming is what
+                // freezes a display.
+                strand_frame(&state.handle, surface);
+            }
+            surface.dirty = true;
+            let now = Instant::now();
+            let pull_forward = match &surface.repaint_timer {
+                // A frame in flight, a vblank held back, or a reset each
+                // continue the loop themselves, and a frame queued behind
+                // them would be refused or dropped.
+                _ if surface.busy() => false,
+                // Nothing armed and nothing else to continue the loop is a
+                // stopped loop: this is the last place that can notice
+                // before the watchdog does.
+                None => true,
+                // A frame the kernel refused is retried on its own backoff,
+                // which a change must not cut short.
+                Some(_) if surface.health.refused > 0 => false,
+                // The idle tick, or a repaint aimed so far out that the
+                // output is parked rather than running. A timer object is
+                // not proof that a frame is coming: what matters is when.
+                Some(armed) => armed.idle || armed.due.saturating_duration_since(now) > PULL_FORWARD_AFTER,
+            };
+            if pull_forward {
+                // At the next turn of the loop, once this batch of events
+                // has been handled -- but never more than once a frame.
+                // Waiting out the rest of the frame costs the update at most
+                // one refresh and gives that time back to the output that is
+                // actually moving.
+                let frame = state
+                    .space
+                    .outputs()
+                    .find(|o| {
+                        o.user_data().get::<UdevOutputId>()
+                            == Some(&UdevOutputId {
+                                device_id: *node,
+                                crtc: *crtc,
+                            })
+                    })
+                    .and_then(|o| o.current_mode())
+                    .map(|mode| crate::timing::frame_duration(mode.refresh))
+                    .unwrap_or_default();
+                let delay = frame.saturating_sub(surface.last_render.elapsed());
+                arm_repaint(&state.handle, surface, *node, *crtc, delay, None, false);
+            }
+        }
+    }
 }
 
 /// What to do once a repaint is over. Every variant arms something, except
@@ -3402,6 +3928,7 @@ fn render_surface<'a>(
     output: &Output,
     pointer_location: Point<f64, Logical>,
     pointer_image: &MemoryRenderBuffer,
+    pointer_hotspot: Point<i32, Logical>,
     pointer_element: &mut PointerElement,
     dnd_icon: &Option<DndIcon>,
     cursor_status: &mut CursorImageStatus,
@@ -3412,21 +3939,30 @@ fn render_surface<'a>(
     capture: &mut crate::capture::CaptureState,
     time: Duration,
 ) -> Result<(bool, RenderElementStates), SwapBuffersError> {
-    let output_geometry = space.output_geometry(output).unwrap();
+    // An output the space has not placed yet has nowhere to draw. This is a
+    // moment during a hotplug, not a reason to take the session down: asking
+    // again on the next frame is what the caller does with this error.
+    let Some(output_geometry) = space.output_geometry(output) else {
+        return Err(SwapBuffersError::TemporaryFailure(Box::new(std::io::Error::other(
+            "the output is not mapped",
+        ))));
+    };
     let scale = Scale::from(output.current_scale().fractional_scale());
 
     let mut custom_elements: Vec<CustomRenderElements<_>> = Vec::new();
 
     if output_geometry.to_f64().contains(pointer_location) {
         let cursor_hotspot = if let CursorImageStatus::Surface(ref surface) = cursor_status {
+            // Read on every frame the pointer is over this output. A client
+            // surface without a hotspot draws from its own corner rather
+            // than taking the whole session down at 240 frames a second.
             compositor::with_states(surface, |states| {
                 states
                     .data_map
                     .get::<Mutex<CursorImageAttributes>>()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .hotspot
+                    .map(|attrs| attrs.lock_anyway())
+                    .map(|attrs| attrs.hotspot)
+                    .unwrap_or_default()
             })
         } else {
             (0, 0).into()
@@ -3434,7 +3970,7 @@ fn render_surface<'a>(
         let cursor_pos = pointer_location - output_geometry.loc.to_f64();
 
         // set cursor
-        pointer_element.set_buffer(pointer_image.clone());
+        pointer_element.set_buffer(pointer_image.clone(), pointer_hotspot);
 
         // draw the cursor as relevant
         {
@@ -3495,13 +4031,10 @@ fn render_surface<'a>(
     if let Some(bar) = mindbar.render_element(renderer, &output.name(), output_geometry.size, scale.x) {
         custom_elements.push(CustomRenderElements::Overlay(bar));
     }
-    // The startup screen goes away as soon as the shell maps its desktop (a
-    // background layer surface), not when a window opens.
-    let desktop_up = {
-        let layers = smithay::desktop::layer_map_for_output(output);
-        let up = layers.layers_on(smithay::wayland::shell::wlr_layer::Layer::Background).next().is_some();
-        up
-    };
+    // The startup screen goes away as soon as the shell's home screen is up,
+    // not when a window opens -- and stays away while that surface moves
+    // between layers, which is what Super+D does to it.
+    let desktop_up = crate::shell::desktop_up(output);
     let backdrop: Vec<_> = mindbar
         .backdrop_elements(renderer, output_geometry.size, scale.x, desktop_up, show_wordmark)
         .into_iter()
@@ -3550,7 +4083,12 @@ fn render_surface<'a>(
             smithay::backend::drm::compositor::RenderFrameError::RenderFrame(
                 OutputDamageTrackerError::Rendering(err),
             ) => SwapBuffersError::from(err),
-            _ => unreachable!(),
+            // An output with no mode: a display part-way through being
+            // reconfigured, unplugged, or woken. It gets a mode and a
+            // repaint from the hotplug path; the frame is simply skipped.
+            smithay::backend::drm::compositor::RenderFrameError::RenderFrame(
+                OutputDamageTrackerError::OutputNoMode(err),
+            ) => SwapBuffersError::TemporaryFailure(err.into()),
         })?;
 
     update_primary_scanout_output(space, output, dnd_icon, cursor_status, &states);
@@ -3565,4 +4103,54 @@ fn render_surface<'a>(
     }
 
     Ok((rendered, states))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_vblank_time_from_the_future_is_not_believed() {
+        let now = Duration::from_secs(1000);
+        // What the hardware normally reports: a moment ago.
+        assert_eq!(sane_vblank_time(now - Duration::from_millis(4), now), Some(now - Duration::from_millis(4)));
+        // Read a hair after the event; still the truth.
+        assert_eq!(sane_vblank_time(now + Duration::from_millis(1), now), Some(now + Duration::from_millis(1)));
+        // Far ahead: believing this aims every frame after it further and
+        // further out, and the output stops for as long as the driver was
+        // wrong by.
+        assert_eq!(sane_vblank_time(now + Duration::from_secs(60), now), None);
+        // A timestamp from another epoch entirely.
+        assert_eq!(sane_vblank_time(Duration::from_secs(3), now), None);
+        assert_eq!(sane_vblank_time(Duration::ZERO, now), None);
+    }
+
+    #[test]
+    fn an_output_that_has_not_drawn_is_dead_however_healthy_its_timers_look() {
+        // The freeze that got past the old watchdog: a timer armed, not yet
+        // due, and no frame on screen for seconds.
+        let reason = stopped_reason(Duration::from_secs(5), Some(Duration::ZERO));
+        assert!(reason.is_some(), "a display that has drawn nothing for five seconds is frozen");
+        // The other one: no timer and no flip at all.
+        assert!(stopped_reason(Duration::ZERO, None).is_some());
+        // A timer long past due belongs to a loop that stopped.
+        assert!(stopped_reason(Duration::ZERO, Some(REPAINT_OVERDUE + Duration::from_millis(1))).is_some());
+        // And an output that is simply running is left alone: it drew a
+        // moment ago and its next repaint is not due yet.
+        assert!(stopped_reason(Duration::from_millis(20), Some(Duration::ZERO)).is_none());
+        // The idle tick is a second, so an output ticking along at that rate
+        // is never mistaken for a frozen one.
+        assert!(stopped_reason(IDLE_REPAINT, Some(Duration::from_millis(10))).is_none());
+    }
+
+    #[test]
+    fn no_repaint_is_ever_scheduled_past_the_point_the_watchdog_calls_dead() {
+        // `arm_repaint` clamps every delay to `IDLE_REPAINT`, and the
+        // watchdog resets an output whose timer is `REPAINT_OVERDUE` late.
+        // If the clamp were the looser of the two, a legitimately scheduled
+        // repaint could be reset out from under itself.
+        assert!(REPAINT_OVERDUE >= IDLE_REPAINT);
+        // And a change never waits longer than a frame or two to be drawn.
+        assert!(PULL_FORWARD_AFTER < IDLE_REPAINT);
+    }
 }

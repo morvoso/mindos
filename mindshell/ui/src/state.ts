@@ -6,7 +6,7 @@ import { deepClone } from './dom';
 import { normalizeLayout } from './layout';
 import type { AudioState, HealthReport, Layout, LayoutModeInfo, LockState, MindNotice, MindStatus, Notification, NotifyState, OutputInfo, PolkitRequest, Prefs, ShellState, TrayItem, UpdateStatus, WindowInfo, AppInfo, VpnState, NetworkState } from './types';
 
-export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'config' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth' | 'polkit' | 'game' | 'vpn' | 'network' | 'lock';
+export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'desktopHome' | 'config' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth' | 'polkit' | 'game' | 'vpn' | 'network' | 'lock';
 
 type Cb = (state: ShellState) => void;
 
@@ -45,6 +45,7 @@ export class Store {
       tray: raw.tray ?? [],
       layout: normalizeLayout(raw.layout),
       editMode: !!raw.editMode,
+      desktopHome: raw.desktopHome ?? true,
       config: raw.config ?? {},
       mind: raw.mind,
       notify: raw.notify ?? { items: [], dnd: false },
@@ -91,6 +92,11 @@ export class Store {
     bridge.on<{ enabled: boolean }>('edit_mode', (p) => {
       this.state.editMode = !!p.enabled;
       this.emit('editMode');
+    });
+    // Which of the two views the primary screen is in; the desktop reports it.
+    bridge.on<{ home: boolean }>('desktop_view', (p) => {
+      this.state.desktopHome = p.home !== false;
+      this.emit('desktopHome');
     });
     bridge.on<MindStatus>('mind', (p) => {
       this.state.mind = p;

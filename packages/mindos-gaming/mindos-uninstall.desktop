@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Uninstall an app
+Comment=Remove an app, whether it came from the repositories, Flathub or Windows
+Exec=mindos-uninstall
+Icon=user-trash
+Terminal=false
+Categories=Settings;System;
+Keywords=Uninstall;Remove;Delete;Windows;Wine;Software;

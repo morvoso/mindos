@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use crate::recover::LockAnyway;
 use tracing::{debug, info, warn};
 
 use smithay::utils::IsAlive;
@@ -199,9 +200,9 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub xwm: Option<X11Wm>,
     #[cfg(feature = "xwayland")]
     pub xdisplay: Option<u32>,
-    /// The XEmbed tray host, up once XWayland is.
+    /// The compositor's end of the XEmbed tray host, up once XWayland is.
     #[cfg(feature = "xwayland")]
-    pub xtray: Option<crate::xtray::XTray>,
+    pub xtray: Option<crate::xtray::TrayHost>,
     /// The reader for the X properties the window manager does not get told
     /// about: what a window asks for before it is mapped.
     #[cfg(feature = "xwayland")]
@@ -211,6 +212,9 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub renderdoc: Option<renderdoc::RenderDoc<renderdoc::V141>>,
 
     pub show_window_preview: bool,
+
+    /// The event loop's own pulse, read by a thread that is not on it.
+    pub loop_watch: crate::watchdog::LoopWatch,
 
     // MindOS
     pub config: Config,
@@ -259,15 +263,16 @@ impl<BackendData: Backend> DataDeviceHandler for AnvilState<BackendData> {
 impl<BackendData: Backend> ClientDndGrabHandler for AnvilState<BackendData> {
     fn started(&mut self, _source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
         let offset = if let CursorImageStatus::Surface(ref surface) = self.cursor_status {
+            // A cursor surface that was never given a hotspot: the client is
+            // allowed to drag with one, and the drag icon then simply hangs
+            // off the pointer's own point.
             with_states(surface, |states| {
-                let hotspot = states
+                states
                     .data_map
                     .get::<CursorImageSurfaceData>()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .hotspot;
-                Point::from((-hotspot.x, -hotspot.y))
+                    .map(|data| data.lock_anyway())
+                    .map(|data| Point::from((-data.hotspot.x, -data.hotspot.y)))
+                    .unwrap_or_default()
             })
         } else {
             (0, 0).into()
@@ -282,7 +287,10 @@ impl<BackendData: Backend> ClientDndGrabHandler for AnvilState<BackendData> {
 }
 impl<BackendData: Backend> ServerDndGrabHandler for AnvilState<BackendData> {
     fn send(&mut self, _mime_type: String, _fd: OwnedFd, _seat: Seat<Self>) {
-        unreachable!("Anvil doesn't do server-side grabs");
+        // The compositor never starts a drag of its own, so nothing should
+        // ever ask it for the data. If something does, the drop gets nothing
+        // rather than the session getting a crash.
+        tracing::warn!("a drag asked the compositor for data it never offered");
     }
 }
 delegate_data_device!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
@@ -361,13 +369,28 @@ impl<BackendData: Backend> SeatHandler for AnvilState<BackendData> {
             // that game regains focus; don't resize or unfullscreen it.
             if let Some(output) = self.window_home(&window) {
                 output.user_data().insert_if_missing(FullscreenSurface::default);
-                let fullscreen = output.user_data().get::<FullscreenSurface>().unwrap();
-                if window_is_fullscreen(&window) { fullscreen.set(window); }
-                else { fullscreen.clear(); }
+                if let Some(fullscreen) = output.user_data().get::<FullscreenSurface>() {
+                    if window_is_fullscreen(&window) { fullscreen.set(window); }
+                    else { fullscreen.clear(); }
+                }
             }
             self.layout.dirty = true;
         } else {
             self.window_cycle.finish();
+        }
+        // X11 clients learn whether they are in the foreground from
+        // _NET_ACTIVE_WINDOW alone. Wine gives a window that is not neither
+        // keys nor a cursor clip, so a game that never sees itself named here
+        // ignores the keyboard and lets the pointer leave for the next screen.
+        #[cfg(feature = "xwayland")]
+        if let Some(xwm) = self.xwm.as_mut() {
+            let x11 = match target {
+                Some(KeyboardFocusTarget::Window(window)) => window.x11_surface(),
+                _ => None,
+            };
+            if let Err(err) = xwm.set_active_window(x11) {
+                warn!(?err, "Failed to publish the X11 active window");
+            }
         }
         let dh = &self.display_handle;
 
@@ -673,12 +696,25 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         backend_data: BackendData,
         listen_on_socket: bool,
     ) -> AnvilState<BackendData> {
+        Self::init_with_config(display, handle, backend_data, listen_on_socket, Config::load())
+    }
+
+    /// [`init`](Self::init), with a configuration from the caller instead of
+    /// the files in /etc and the home directory. The tests start their
+    /// compositors this way, so the machine they run on does not change what
+    /// they test.
+    pub fn init_with_config(
+        display: Display<AnvilState<BackendData>>,
+        handle: LoopHandle<'static, AnvilState<BackendData>>,
+        backend_data: BackendData,
+        listen_on_socket: bool,
+        config: Config,
+    ) -> AnvilState<BackendData> {
         let dh = display.handle();
 
         let clock = Clock::new();
 
         // MindOS: configuration, theme and the Mind daemon connection.
-        let config = Config::load();
         crate::drawing::set_background(config.background());
         let (mind_tx, mind_rx) = channel::channel::<MindEvent>();
         handle
@@ -765,7 +801,14 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                     let _phase = crate::stall::enter(crate::stall::Phase::Clients);
                     // Safety: we don't drop the display
                     unsafe {
-                        display.get_mut().dispatch_clients(data).unwrap();
+                        // A client that breaks the protocol is disconnected
+                        // by the display itself and never reaches here. What
+                        // does reach here is a failure of the socket, and
+                        // exiting over it would take every other client, the
+                        // desktop and the user's session with it.
+                        if let Err(err) = display.get_mut().dispatch_clients(data) {
+                            tracing::error!("cannot dispatch Wayland clients: {err}");
+                        }
                     }
                     Ok(PostAction::Continue)
                 },
@@ -907,6 +950,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             #[cfg(feature = "debug")]
             renderdoc: renderdoc::RenderDoc::new().ok(),
             show_window_preview: false,
+            loop_watch: crate::watchdog::LoopWatch::default(),
             config,
             mindbar,
             mind,
@@ -927,42 +971,31 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         state
     }
 
-    #[cfg(feature = "xwayland")]
-    /// Own the XEmbed system tray on the XWayland display and feed its
-    /// events and a read-back timer into the loop. Failure just means no
-    /// legacy tray icons; the session goes on.
+    /// Own the XEmbed system tray on the XWayland display. The host itself
+    /// lives on its own thread -- it talks to XWayland, and nothing that
+    /// waits on XWayland belongs on the loop that has to hit a vblank -- so
+    /// all that is wired up here is the channel it reports icons on.
+    /// Failure just means no legacy tray icons; the session goes on.
     #[cfg(feature = "xwayland")]
     fn start_xtray(&mut self, display: u32) {
         use smithay::reexports::calloop::channel::Event as ChannelEvent;
-        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
-        let (tray, source) = match crate::xtray::XTray::start(display) {
-            Ok(x) => x,
+        let (tray, updates) = match crate::xtray::spawn(display) {
+            Ok(started) => started,
             Err(err) => {
                 warn!(err, "XEmbed tray host unavailable; legacy tray icons will not show");
                 return;
             }
         };
-        if let Err(err) = self.handle.insert_source(source, |event, _, data| {
+        if let Err(err) = self.handle.insert_source(updates, |event, _, data| {
             let _phase = crate::stall::enter(crate::stall::Phase::Tray);
-            if let ChannelEvent::Msg(event) = event {
+            if let ChannelEvent::Msg(update) = event {
                 if let Some(tray) = data.xtray.as_mut() {
-                    tray.handle_event(event);
+                    tray.on_update(update);
                 }
             }
         }) {
-            warn!(%err, "cannot listen for tray events");
-            return;
-        }
-        let poll = Timer::from_duration(crate::xtray::POLL);
-        if let Err(err) = self.handle.insert_source(poll, |_, _, data| {
-            let _phase = crate::stall::enter(crate::stall::Phase::Tray);
-            if let Some(tray) = data.xtray.as_mut() {
-                tray.poll();
-            }
-            TimeoutAction::ToDuration(crate::xtray::POLL)
-        }) {
-            warn!(%err, "cannot schedule tray read-back");
+            warn!(%err, "cannot listen for tray icons");
             return;
         }
         self.xtray = Some(tray);
@@ -1007,17 +1040,32 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                             .unwrap_or(1.);
                         data.client_compositor_state(&client)
                             .set_client_scale(xwayland_scale);
-                        let mut wm = X11Wm::start_wm(data.handle.clone(), x11_socket, client.clone())
-                            .expect("Failed to attach X11 Window Manager");
+                        // Xwayland came up but would not be managed. The
+                        // session carries on without X11, exactly as it does
+                        // when Xwayland is not installed at all: the desktop and
+                        // every Wayland client are worth more than X11 support.
+                        let mut wm = match X11Wm::start_wm(data.handle.clone(), x11_socket, client.clone())
+                        {
+                            Ok(wm) => wm,
+                            Err(err) => {
+                                warn!(%err, "cannot manage XWayland; X11 applications will not run");
+                                data.xwayland_ready = true;
+                                data.run_startup();
+                                return;
+                            }
+                        };
 
                         let mut cursor = Cursor::load();
                         let (_, image) = cursor.get_image(CursorIcon::Default, 1, Duration::ZERO);
-                        wm.set_cursor(
+                        if let Err(err) = wm.set_cursor(
                             &image.pixels_rgba,
                             Size::from((image.width as u16, image.height as u16)),
                             Point::from((image.xhot as u16, image.yhot as u16)),
-                        )
-                        .expect("Failed to set xwayland default cursor");
+                        ) {
+                            // A cursor X11 will not take is a cursor; the
+                            // applications still run.
+                            warn!(%err, "XWayland would not take the default cursor");
+                        }
                         data.xwm = Some(wm);
                         data.xdisplay = Some(display_number);
                         data.xprops = crate::xprops::XProps::start(display_number);
@@ -1039,10 +1087,81 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 }
 
 impl<BackendData: Backend + 'static> AnvilState<BackendData> {
+    /// What every turn of the loop does once its events are dispatched: bring
+    /// the space, focus, layout and pointer up to date with whatever the
+    /// clients asked for, tell the shell, and send every client what is
+    /// queued for it. The same on every backend, and in the tests.
+    pub fn after_dispatch(&mut self) {
+        self.space.refresh();
+        self.refresh_focus();
+        self.layout_refresh();
+        self.refresh_pointer_focus();
+        self.refresh_decorations();
+        self.ipc_refresh();
+        self.popups.cleanup();
+        // A client that cannot be written to is killed by the backend; an
+        // error here is about the display as a whole. Say so and keep going
+        // rather than end the session and every window in it.
+        if let Err(err) = self.display_handle.flush_clients() {
+            warn!(%err, "cannot flush the wayland clients");
+        }
+    }
+
     /// Something on screen changed (a commit, the pointer, a window moving,
     /// the bar): the outputs need a frame.
     pub fn request_repaint(&mut self) {
         BackendData::request_repaint(self);
+    }
+
+    /// One surface changed: give a frame to the displays that actually show
+    /// it, and leave the rest alone.
+    ///
+    /// This is the commit path, so it runs for every buffer every client
+    /// ever attaches. Waking every display for each of them is what made a
+    /// video on one screen cost the other screen a full pass over its render
+    /// elements, sixty times a second, to conclude it had nothing to draw.
+    ///
+    /// Anything this cannot place -- a surface nothing has mapped yet, a
+    /// popup, a cursor, a drag icon -- falls back to repainting everything.
+    /// A wasted frame costs a fraction of a millisecond; a display that
+    /// stops updating because its frame went somewhere else is the failure
+    /// this whole loop exists to avoid.
+    pub fn request_repaint_for(&mut self, surface: &WlSurface) {
+        match self.outputs_showing(surface) {
+            Some(outputs) => {
+                for output in outputs {
+                    BackendData::request_repaint_on(self, &output);
+                }
+            }
+            None => self.request_repaint(),
+        }
+    }
+
+    /// The displays `surface` is on, or `None` when that cannot be settled.
+    /// An empty answer would mean "no display needs a frame", which is not
+    /// something this is ever confident enough to say.
+    fn outputs_showing(&self, surface: &WlSurface) -> Option<Vec<Output>> {
+        // Subsurfaces are part of their toplevel and are drawn with it.
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        if let Some(window) = self.window_for_surface(&root) {
+            let outputs = self.space.outputs_for_element(&window);
+            // A window the space has not placed yet overlaps nothing, which
+            // is not the same as belonging to no display.
+            return (!outputs.is_empty()).then_some(outputs);
+        }
+        // A layer surface belongs to exactly the output whose map holds it.
+        for output in self.space.outputs() {
+            let found = smithay::desktop::layer_map_for_output(output)
+                .layer_for_surface(&root, smithay::desktop::WindowSurfaceType::ALL)
+                .is_some();
+            if found {
+                return Some(vec![output.clone()]);
+            }
+        }
+        None
     }
 
     /// A client scheduled a commit for a later frame (`wp_commit_timing_v1`):
@@ -1054,7 +1173,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             pending |= states
                 .data_map
                 .get::<CommitTimerBarrierStateUserData>()
-                .is_some_and(|timer| timer.lock().unwrap().next_deadline().is_some());
+                .is_some_and(|timer| timer.lock_anyway().next_deadline().is_some());
         };
         for window in self.space.elements() {
             window.with_surfaces(|_, states| check(states));
@@ -1084,11 +1203,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 if let Some(mut commit_timer_state) = states
                     .data_map
                     .get::<CommitTimerBarrierStateUserData>()
-                    .map(|commit_timer| commit_timer.lock().unwrap())
+                    .map(|commit_timer| commit_timer.lock_anyway())
                 {
                     commit_timer_state.signal_until(frame_target);
-                    let client = surface.client().unwrap();
-                    clients.insert(client.id(), client);
+                    // A surface whose client has already gone. There is
+                    // nobody left to unblock, and a disconnect can land
+                    // between any two turns of this walk.
+                    if let Some(client) = surface.client() {
+                        clients.insert(client.id(), client);
+                    }
                 }
             });
         });
@@ -1099,11 +1222,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 if let Some(mut commit_timer_state) = states
                     .data_map
                     .get::<CommitTimerBarrierStateUserData>()
-                    .map(|commit_timer| commit_timer.lock().unwrap())
+                    .map(|commit_timer| commit_timer.lock_anyway())
                 {
                     commit_timer_state.signal_until(frame_target);
-                    let client = surface.client().unwrap();
-                    clients.insert(client.id(), client);
+                    // A surface whose client has already gone. There is
+                    // nobody left to unblock, and a disconnect can land
+                    // between any two turns of this walk.
+                    if let Some(client) = surface.client() {
+                        clients.insert(client.id(), client);
+                    }
                 }
             });
         }
@@ -1116,11 +1243,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 if let Some(mut commit_timer_state) = states
                     .data_map
                     .get::<CommitTimerBarrierStateUserData>()
-                    .map(|commit_timer| commit_timer.lock().unwrap())
+                    .map(|commit_timer| commit_timer.lock_anyway())
                 {
                     commit_timer_state.signal_until(frame_target);
-                    let client = surface.client().unwrap();
-                    clients.insert(client.id(), client);
+                    // A surface whose client has already gone. There is
+                    // nobody left to unblock, and a disconnect can land
+                    // between any two turns of this walk.
+                    if let Some(client) = surface.client() {
+                        clients.insert(client.id(), client);
+                    }
                 }
             });
         }
@@ -1130,11 +1261,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 if let Some(mut commit_timer_state) = states
                     .data_map
                     .get::<CommitTimerBarrierStateUserData>()
-                    .map(|commit_timer| commit_timer.lock().unwrap())
+                    .map(|commit_timer| commit_timer.lock_anyway())
                 {
                     commit_timer_state.signal_until(frame_target);
-                    let client = surface.client().unwrap();
-                    clients.insert(client.id(), client);
+                    // A surface whose client has already gone. There is
+                    // nobody left to unblock, and a disconnect can land
+                    // between any two turns of this walk.
+                    if let Some(client) = surface.client() {
+                        clients.insert(client.id(), client);
+                    }
                 }
             });
         }
@@ -1191,8 +1326,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
                     if let Some(fifo_barrier) = fifo_barrier {
                         fifo_barrier.signal();
-                        let client = surface.client().unwrap();
-                        clients.insert(client.id(), client);
+                        if let Some(client) = surface.client() {
+                            clients.insert(client.id(), client);
+                        }
                     }
                 }
             });
@@ -1236,8 +1372,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
                     if let Some(fifo_barrier) = fifo_barrier {
                         fifo_barrier.signal();
-                        let client = surface.client().unwrap();
-                        clients.insert(client.id(), client);
+                        if let Some(client) = surface.client() {
+                            clients.insert(client.id(), client);
+                        }
                     }
                 }
             });
@@ -1282,8 +1419,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
                     if let Some(fifo_barrier) = fifo_barrier {
                         fifo_barrier.signal();
-                        let client = surface.client().unwrap();
-                        clients.insert(client.id(), client);
+                        if let Some(client) = surface.client() {
+                            clients.insert(client.id(), client);
+                        }
                     }
                 }
             });
@@ -1313,8 +1451,9 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
                     if let Some(fifo_barrier) = fifo_barrier {
                         fifo_barrier.signal();
-                        let client = surface.client().unwrap();
-                        clients.insert(client.id(), client);
+                        if let Some(client) = surface.client() {
+                            clients.insert(client.id(), client);
+                        }
                     }
                 }
             });
@@ -1441,12 +1580,13 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     /// Run a command line through `sh -c` inside the session.
     pub fn spawn_shell(&self, cmd: &str) {
         info!(cmd, "spawning");
-        let result = std::process::Command::new("sh")
+        let mut command = std::process::Command::new("sh");
+        command
             .arg("-c")
             .arg(cmd)
             .envs(self.child_env())
-            .stdin(std::process::Stdio::null())
-            .spawn();
+            .stdin(std::process::Stdio::null());
+        let result = crate::sched::at_desktop_priority(&mut command).spawn();
         match result {
             Ok(mut child) => {
                 // Reap launched apps without waiting on the input/render loop.
@@ -1463,7 +1603,41 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         self.spawn_shell(&terminal);
     }
 
+    /// Ctrl+Shift+Escape. One Task Manager is enough: an open window is
+    /// raised (and un-minimised) instead of a second one being started.
+    pub fn open_task_manager(&mut self) {
+        const APP_ID: &str = "mindos-tasks";
+        let open = self
+            .space
+            .elements()
+            .chain(self.minimized.iter().map(|m| &m.window))
+            .find(|w| w.app_id() == APP_ID)
+            .cloned();
+        match open {
+            Some(window) => {
+                self.unminimize_window(&window);
+                self.activate_window(&window);
+            }
+            None => self.spawn_shell("mindshell --app tasks"),
+        }
+    }
+
     /// Spawn `[startup].exec` once the Wayland socket (and XWayland) are usable.
+    /// Do not run `[startup].exec` in this session.
+    ///
+    /// A nested compositor shares the user's runtime directory, D-Bus and
+    /// systemd user manager with the real session it runs inside, and
+    /// `session-startup` hands those the *nested* WAYLAND_DISPLAY: every
+    /// service activated afterwards, and every autostart entry, attaches to
+    /// the development instance instead. The nested backend is for working
+    /// on the compositor, so it starts nothing by default.
+    pub fn skip_startup(&mut self) {
+        if !self.startup_done {
+            info!("nested: not running [startup].exec; pass --with-startup to run it anyway");
+        }
+        self.startup_done = true;
+    }
+
     pub fn run_startup(&mut self) {
         if self.startup_done {
             return;
@@ -1752,13 +1926,14 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     /// source of its own to offer.
     pub fn copy_to_clipboard(&self, text: &str) {
         use std::io::Write;
-        let child = std::process::Command::new("wl-copy")
+        let mut command = std::process::Command::new("wl-copy");
+        command
             .arg("--type").arg("text/plain;charset=utf-8")
             .envs(self.child_env())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+            .stderr(std::process::Stdio::null());
+        let child = crate::sched::at_desktop_priority(&mut command).spawn();
         match child {
             Ok(mut child) => {
                 if let Some(mut stdin) = child.stdin.take() {
@@ -1865,14 +2040,127 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         if window_is_fullscreen(&minimized.window) {
             if let Some(output) = self.space.outputs_for_element(&minimized.window).first() {
                 output.user_data().insert_if_missing(FullscreenSurface::default);
-                output
-                    .user_data()
-                    .get::<FullscreenSurface>()
-                    .unwrap()
-                    .set(minimized.window.clone());
+                if let Some(fullscreen) = output.user_data().get::<FullscreenSurface>() {
+                    fullscreen.set(minimized.window.clone());
+                }
             }
         }
         self.activate_window(&minimized.window);
+    }
+
+    /// What `get_graphics` answers: the backend's per-output repaint numbers,
+    /// and the event loop's own.
+    ///
+    /// The loop belongs to the compositor rather than to either backend --
+    /// there is one of it, and everything both backends do happens on it --
+    /// so its numbers are added here instead of being written out twice.
+    /// They are the ones to read first when frames are late and no display
+    /// is frozen: a `loop_worst_turn_us` in the tens of thousands says the
+    /// compositor's own thread stalled every display at once, and no amount
+    /// of per-output detail will say that.
+    pub fn graphics_report(&self) -> Value {
+        let mut report = BackendData::graphics_stats(self);
+        let (hitches, turns) = self.loop_watch.hitches();
+        let loop_stats = json!({
+            // Zero unless the whole compositor stopped for two seconds or
+            // more at some point in the session; see `watchdog.rs`.
+            "loop_stall_ms": self.loop_watch.worst_stall().as_millis() as u64,
+            "loop_worst_turn_us": self.loop_watch.worst_turn().as_micros() as u64,
+            "loop_worst_gap_ms": self.loop_watch.worst_gap().as_millis() as u64,
+            "loop_hitches": hitches,
+            "loop_turns": turns,
+            "loop_busy_percent": (self.loop_watch.busy_percent() * 10.0).round() / 10.0,
+        });
+        match (report.as_object_mut(), loop_stats) {
+            (Some(report), Value::Object(stats)) => {
+                report.extend(stats);
+            }
+            // A backend with nothing to say still has a loop worth watching.
+            (None, stats) => report = stats,
+            _ => unreachable!("the loop statistics are written as an object just above"),
+        }
+        report
+    }
+
+    /// What every surface of every window is actually handing the renderer:
+    /// buffer kind and pixel format, whether that format carries alpha, the
+    /// opaque region the compositor derived from it, and how long ago the
+    /// client last committed. This is the report to read when a window is
+    /// on screen but what it draws is not -- a surface with no buffer, a
+    /// format whose alpha the compositor discarded, or an opaque region
+    /// covering windows that should be visible through it.
+    pub fn surfaces_report(&self) -> Value {
+        use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
+        use smithay::backend::renderer::{buffer_has_alpha, buffer_type};
+        use smithay::desktop::utils::with_surfaces_surface_tree;
+        use smithay::backend::allocator::Buffer as _;
+
+        let now = std::time::Instant::now();
+        let _ = now;
+        let mut windows = Vec::new();
+        for element in self.space.elements() {
+            let mut surfaces = Vec::new();
+            if let Some(root) = element.wl_surface() {
+                // The walk holds each surface's lock while it calls us, so the
+                // renderer state comes from `states`: with_renderer_surface_state
+                // takes that lock again and hung the whole loop (2026-09-12).
+                with_surfaces_surface_tree(&root, |surface, states| {
+                    let renderer_state = states.data_map.get::<RendererSurfaceStateUserData>();
+                    let info = renderer_state.map(|state| {
+                        let state = state.lock().unwrap();
+                        let buffer = state.buffer();
+                        let (kind, format, has_alpha) = match buffer {
+                            Some(buffer) => {
+                                let wl = &**buffer;
+                                let kind = format!("{:?}", buffer_type(wl));
+                                let format = smithay::wayland::dmabuf::get_dmabuf(wl)
+                                    .ok()
+                                    .map(|d| format!("{:?}", d.format()))
+                                    .or_else(|| {
+                                        smithay::wayland::shm::with_buffer_contents(wl, |_, _, d| {
+                                            format!("{:?}", d.format)
+                                        })
+                                        .ok()
+                                    });
+                                (kind, format, buffer_has_alpha(wl))
+                            }
+                            None => ("None".to_string(), None, None),
+                        };
+                        json!({
+                            "id": surface.id().protocol_id(),
+                            "buffer": kind,
+                            "format": format,
+                            "has_alpha": has_alpha,
+                            "buffer_size": state.buffer_size().map(|s| [s.w, s.h]),
+                            "surface_size": state.surface_size().map(|s| [s.w, s.h]),
+                            "opaque": state.opaque_regions().map(|r| {
+                                r.iter().map(|r| [r.loc.x, r.loc.y, r.size.w, r.size.h]).collect::<Vec<_>>()
+                            }),
+                            "view": state.view().map(|v| json!({
+                                "offset": [v.offset.x, v.offset.y],
+                                "src": [v.src.loc.x, v.src.loc.y, v.src.size.w, v.src.size.h],
+                                "dst": [v.dst.w, v.dst.h],
+                            })),
+                            "commit": format!("{:?}", state.current_commit()),
+                        })
+                    });
+                    surfaces.push(info.unwrap_or_else(|| {
+                        json!({"id": surface.id().protocol_id(), "buffer": "no-renderer-state"})
+                    }));
+                });
+            }
+            let geo = self.space.element_geometry(element);
+            windows.push(json!({
+                "id": element.id(),
+                "title": element.title(),
+                "x11": element.is_x11(),
+                "override_redirect": element.0.x11_surface().map(|s| s.is_override_redirect()),
+                "ssd": element.has_header(),
+                "geometry": geo.map(|g| [g.loc.x, g.loc.y, g.size.w, g.size.h]),
+                "surfaces": surfaces,
+            }));
+        }
+        json!({ "windows": windows })
     }
 
     /// Everything the shell needs to draw a taskbar, in creation order.
@@ -2229,23 +2517,18 @@ fn window_info(
 ) -> Option<WindowInfo> {
     let (title, app_id, fullscreen, maximized, x11, pid) = if let Some(toplevel) = window.0.toplevel() {
         let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
-            let data = states.data_map.get::<XdgToplevelSurfaceData>()?.lock().ok()?;
+            let data = states.data_map.get::<XdgToplevelSurfaceData>()?.lock_anyway();
             Some((data.title.clone().unwrap_or_default(), data.app_id.clone().unwrap_or_default()))
         })
         .unwrap_or_default();
         let states = toplevel.current_state().states;
-        let pid = toplevel
-            .wl_surface()
-            .client()
-            .and_then(|client| client.get_credentials(dh).ok())
-            .map(|credentials| credentials.pid as u32);
         (
             title,
             app_id,
             states.contains(xdg_toplevel::State::Fullscreen),
             states.contains(xdg_toplevel::State::Maximized),
             false,
-            pid,
+            crate::shell::window_pid(window, dh),
         )
     } else {
         #[cfg(feature = "xwayland")]
@@ -2260,7 +2543,7 @@ fn window_info(
                 surface.is_fullscreen(),
                 surface.is_maximized(),
                 true,
-                surface.pid(),
+                crate::shell::window_pid(window, dh),
             )
         }
         #[cfg(not(feature = "xwayland"))]
@@ -2324,6 +2607,17 @@ pub trait Backend {
         Vec::new()
     }
 
+    /// What the repaint loop has been doing per output: frames presented,
+    /// frames that missed their vblank, resets, and how long a repaint takes.
+    /// This is how a display that is not smooth is told apart from one that
+    /// only feels that way (`get_graphics` over the IPC socket).
+    fn graphics_stats(_state: &AnvilState<Self>) -> Value
+    where
+        Self: Sized + 'static,
+    {
+        Value::Null
+    }
+
     /// Switch a connected output on or off.
     fn set_output_enabled(_state: &mut AnvilState<Self>, _name: &str, _enabled: bool) -> Result<(), String>
     where
@@ -2348,6 +2642,16 @@ pub trait Backend {
     where
         Self: Sized + 'static,
     {
+    }
+
+    /// Something changed on one display only: give that one a frame and
+    /// leave the others alone. A backend that cannot tell its outputs apart
+    /// repaints all of them, which is what this used to do everywhere.
+    fn request_repaint_on(state: &mut AnvilState<Self>, _output: &Output)
+    where
+        Self: Sized + 'static,
+    {
+        Self::request_repaint(state);
     }
 
     /// A fullscreen client committed a buffer: draw the frame now rather

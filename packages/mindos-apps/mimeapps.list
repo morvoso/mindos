@@ -5,6 +5,7 @@ application/x-ms-dos-executable=mindos-win-open.desktop;
 application/x-msdownload=mindos-win-open.desktop;
 application/x-msi=mindos-win-open.desktop;
 application/vnd.microsoft.portable-executable=mindos-win-open.desktop;
+application/x-ms-shortcut=mindos-win-shortcut.desktop;
 x-scheme-handler/http=firefox.desktop
 x-scheme-handler/https=firefox.desktop
 text/html=firefox.desktop

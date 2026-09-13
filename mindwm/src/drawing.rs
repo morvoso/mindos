@@ -11,7 +11,7 @@ use smithay::{
     },
     input::pointer::CursorImageStatus,
     render_elements,
-    utils::{Physical, Point, Scale},
+    utils::{Logical, Physical, Point, Scale},
 };
 #[cfg(feature = "debug")]
 use smithay::{
@@ -20,7 +20,7 @@ use smithay::{
         utils::CommitCounter,
         Frame,
     },
-    utils::{Buffer, Logical, Rectangle, Size, Transform},
+    utils::{Buffer, Rectangle, Size, Transform},
 };
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -52,6 +52,9 @@ pub static CLEAR_COLOR_FULLSCREEN: Color32F = Color32F::new(0.0, 0.0, 0.0, 0.0);
 
 pub struct PointerElement {
     buffer: Option<MemoryRenderBuffer>,
+    /// Where in `buffer` the pointer actually points, in the image's own
+    /// pixels. The buffer is loaded unscaled, so those are logical units.
+    hotspot: Point<i32, Logical>,
     status: CursorImageStatus,
 }
 
@@ -59,6 +62,7 @@ impl Default for PointerElement {
     fn default() -> Self {
         Self {
             buffer: Default::default(),
+            hotspot: Default::default(),
             status: CursorImageStatus::default_named(),
         }
     }
@@ -69,8 +73,11 @@ impl PointerElement {
         self.status = status;
     }
 
-    pub fn set_buffer(&mut self, buffer: MemoryRenderBuffer) {
+    /// The frame to draw for a named shape, with the hotspot the theme gives
+    /// it (`Image::xhot`/`yhot`).
+    pub fn set_buffer(&mut self, buffer: MemoryRenderBuffer, hotspot: Point<i32, Logical>) {
         self.buffer = Some(buffer);
+        self.hotspot = hotspot;
     }
 }
 
@@ -111,19 +118,34 @@ where
             // (`Cursor::get_image`, driven by wp_cursor_shape_v1).
             CursorImageStatus::Named(_) => {
                 if let Some(buffer) = self.buffer.as_ref() {
-                    vec![PointerRenderElement::<R>::from(
-                        MemoryRenderBufferRenderElement::from_buffer(
-                            renderer,
-                            location.to_f64(),
-                            buffer,
-                            None,
-                            None,
-                            None,
-                            Kind::Cursor,
-                        )
-                        .expect("Lost system pointer buffer"),
-                    )
-                    .into()]
+                    // `location` is where the pointer is; the image hangs off
+                    // its hotspot, which the resize and text shapes put in the
+                    // middle of the image rather than at a corner. Drawing
+                    // from the top-left instead would leave the point half a
+                    // cursor up and left of the arrows aimed with.
+                    let location = location.to_f64() - self.hotspot.to_f64().to_physical(scale);
+                    // Uploading the cursor image is a GPU operation like any
+                    // other, and it fails for the same reasons: a device that
+                    // has been reset, a card that has just been unplugged, an
+                    // allocation that did not come back. This runs on every
+                    // frame, so a panic here is a lost session over a lost
+                    // cursor. A frame drawn without a pointer is a far better
+                    // outcome, and the next one usually has it back.
+                    match MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        location,
+                        buffer,
+                        None,
+                        None,
+                        None,
+                        Kind::Cursor,
+                    ) {
+                        Ok(element) => vec![PointerRenderElement::<R>::from(element).into()],
+                        Err(err) => {
+                            tracing::trace!("the pointer image would not upload: {err:?}");
+                            vec![]
+                        }
+                    }
                 } else {
                     vec![]
                 }

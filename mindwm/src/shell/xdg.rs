@@ -1,3 +1,4 @@
+use crate::recover::LockAnyway;
 use std::cell::RefCell;
 
 use smithay::{
@@ -103,7 +104,12 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let seat: Seat<AnvilState<BackendData>> = Seat::from_resource(&seat).unwrap();
+        // A seat resource the compositor does not recognise: a client that
+        // outlived the seat, or one sending a resource that was never ours.
+        // Either way there is nothing to move the window with.
+        let Some(seat) = Seat::<AnvilState<BackendData>>::from_resource(&seat) else {
+            return;
+        };
         self.move_request_xdg(&surface, &seat, serial)
     }
 
@@ -114,7 +120,9 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         serial: Serial,
         edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat: Seat<AnvilState<BackendData>> = Seat::from_resource(&seat).unwrap();
+        let Some(seat) = Seat::<AnvilState<BackendData>>::from_resource(&seat) else {
+            return;
+        };
 
         // Tiles get their size from the layout.
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
@@ -125,7 +133,9 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
 
         if let Some(touch) = seat.get_touch() {
             if touch.has_grab(serial) {
-                let start_data = touch.grab_start_data().unwrap();
+                let Some(start_data) = touch.grab_start_data() else {
+                    return;
+                };
                 tracing::info!(?start_data);
 
                 // If the client disconnects after requesting a move
@@ -148,20 +158,19 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
                     return;
                 }
                 let geometry = window.geometry();
-                let loc = self.space.element_location(&window).unwrap();
+                let Some(loc) = self.space.element_location(&window) else {
+                    return;
+                };
                 let (initial_window_location, initial_window_size) = (loc, geometry.size);
 
                 with_states(surface.wl_surface(), move |states| {
-                    states
-                        .data_map
-                        .get::<RefCell<SurfaceData>>()
-                        .unwrap()
-                        .borrow_mut()
-                        .resize_state = ResizeState::Resizing(ResizeData {
-                        edges: edges.into(),
-                        initial_window_location,
-                        initial_window_size,
-                    });
+                    if let Some(data) = states.data_map.get::<RefCell<SurfaceData>>() {
+                        data.borrow_mut().resize_state = ResizeState::Resizing(ResizeData {
+                            edges: edges.into(),
+                            initial_window_location,
+                            initial_window_size,
+                        });
+                    }
                 });
 
                 let grab = TouchResizeSurfaceGrab {
@@ -178,16 +187,27 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
             }
         }
 
-        let pointer = seat.get_pointer().unwrap();
+        // No pointer on the seat: every mouse was unplugged, or this is a
+        // touch-only machine. Nothing to resize from.
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
 
         // Check that this surface has a click grab.
         if !pointer.has_grab(serial) {
             return;
         }
 
-        let start_data = pointer.grab_start_data().unwrap();
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
 
-        let window = self.window_for_surface(surface.wl_surface()).unwrap();
+        // A toplevel that is not a mapped window: one that asked to be
+        // resized before its first commit, or after the compositor let it
+        // go. Both are things a client can do at any moment.
+        let Some(window) = self.window_for_surface(surface.wl_surface()) else {
+            return;
+        };
 
         // If the focus was for a different surface, ignore the request.
         if start_data.focus.is_none()
@@ -202,20 +222,19 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
         }
 
         let geometry = window.geometry();
-        let loc = self.space.element_location(&window).unwrap();
+        let Some(loc) = self.space.element_location(&window) else {
+            return;
+        };
         let (initial_window_location, initial_window_size) = (loc, geometry.size);
 
         with_states(surface.wl_surface(), move |states| {
-            states
-                .data_map
-                .get::<RefCell<SurfaceData>>()
-                .unwrap()
-                .borrow_mut()
-                .resize_state = ResizeState::Resizing(ResizeData {
-                edges: edges.into(),
-                initial_window_location,
-                initial_window_size,
-            });
+            if let Some(data) = states.data_map.get::<RefCell<SurfaceData>>() {
+                data.borrow_mut().resize_state = ResizeState::Resizing(ResizeData {
+                    edges: edges.into(),
+                    initial_window_location,
+                    initial_window_size,
+                });
+            }
         });
 
         let grab = PointerResizeSurfaceGrab {
@@ -255,25 +274,25 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
                     states
                         .data_map
                         .get::<XdgToplevelSurfaceData>()
-                        .unwrap()
-                        .lock()
-                        .unwrap()
-                        .current
-                        .states
-                        .contains(xdg_toplevel::State::Resizing)
+                        .map(|data| data.lock_anyway())
+                        .is_some_and(|data| {
+                            data.current.states.contains(xdg_toplevel::State::Resizing)
+                        })
                 });
 
                 if configure.serial >= serial && is_resizing {
                     with_states(&surface, |states| {
-                        let mut data = states
-                            .data_map
-                            .get::<RefCell<SurfaceData>>()
-                            .unwrap()
-                            .borrow_mut();
+                        let Some(data) = states.data_map.get::<RefCell<SurfaceData>>() else {
+                            return;
+                        };
+                        let mut data = data.borrow_mut();
                         if let ResizeState::WaitingForFinalAck(resize_data, _) = data.resize_state {
                             data.resize_state = ResizeState::WaitingForCommit(resize_data);
                         } else {
-                            unreachable!()
+                            // A client is free to acknowledge a configure it
+                            // was never sent, and two resizes can overlap.
+                            // The next commit settles the size either way.
+                            trace!("a resize was acknowledged that had already ended");
                         }
                     });
                 }
@@ -335,11 +354,9 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
                 // looked at. (A game asking for it has the keyboard, and passes.)
                 if self.may_interrupt_fullscreen(&window) {
                     output.user_data().insert_if_missing(FullscreenSurface::default);
-                    output
-                        .user_data()
-                        .get::<FullscreenSurface>()
-                        .unwrap()
-                        .set(window.clone());
+                    if let Some(fullscreen) = output.user_data().get::<FullscreenSurface>() {
+                        fullscreen.set(window.clone());
+                    }
                     trace!("Fullscreening: {:?}", window);
                 }
             }
@@ -369,8 +386,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
             state.size = None;
             state.fullscreen_output.take()
         });
-        if let Some(output) = ret {
-            let output = Output::from_resource(&output).unwrap();
+        if let Some(output) = ret.and_then(|output| Output::from_resource(&output)) {
             if let Some(fullscreen) = output.user_data().get::<FullscreenSurface>() {
                 trace!("Unfullscreening: {:?}", fullscreen.get());
                 fullscreen.clear();
@@ -384,7 +400,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         self.request_repaint();
         // Maximised means "fill the usable area": the output minus the
-        // exclusive zones of layer-shell panels.
+        // exclusive zones of layer-shell panels and the desktop's own bar.
         if surface
             .current_state()
             .capabilities
@@ -393,7 +409,7 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
             let Some(window) = self.window_for_surface(surface.wl_surface()) else {
                 return;
             };
-            let Some(area) = crate::shell::window_output_area(&self.space, &window) else {
+            let Some(area) = self.maximized_area(&window) else {
                 return;
             };
             if !window.pending_maximized() {
@@ -456,7 +472,9 @@ impl<BackendData: Backend> XdgShellHandler for AnvilState<BackendData> {
 
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         self.request_repaint();
-        let seat: Seat<AnvilState<BackendData>> = Seat::from_resource(&seat).unwrap();
+        let Some(seat) = Seat::<AnvilState<BackendData>>::from_resource(&seat) else {
+            return;
+        };
         let kind = PopupKind::Xdg(surface);
         if let Some(root) = find_popup_root_surface(&kind).ok().and_then(|root| {
             self.space
@@ -507,7 +525,9 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     pub fn move_request_xdg(&mut self, surface: &ToplevelSurface, seat: &Seat<Self>, serial: Serial) {
         if let Some(touch) = seat.get_touch() {
             if touch.has_grab(serial) {
-                let start_data = touch.grab_start_data().unwrap();
+                let Some(start_data) = touch.grab_start_data() else {
+                    return;
+                };
 
                 // If the client disconnects after requesting a move
                 // we can just ignore the request
@@ -527,7 +547,9 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     return;
                 }
 
-                let mut initial_window_location = self.space.element_location(&window).unwrap();
+                let Some(mut initial_window_location) = self.space.element_location(&window) else {
+                    return;
+                };
 
                 // If surface is maximized then unmaximize it
                 let current_state = surface.current_state();
@@ -549,14 +571,18 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             }
         }
 
-        let pointer = seat.get_pointer().unwrap();
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
 
         // Check that this surface has a click grab.
         if !pointer.has_grab(serial) {
             return;
         }
 
-        let start_data = pointer.grab_start_data().unwrap();
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
 
         // If the client disconnects after requesting a move
         // we can just ignore the request
@@ -576,7 +602,9 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             return;
         }
 
-        let mut initial_window_location = self.space.element_location(&window).unwrap();
+        let Some(mut initial_window_location) = self.space.element_location(&window) else {
+            return;
+        };
 
         // If surface is maximized then unmaximize it
         let current_state = surface.current_state();

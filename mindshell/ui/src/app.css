@@ -271,10 +271,22 @@ select option { background: var(--bg-1); color: var(--fg); }
    stay edge to edge. The dock (a fit-to-content panel) is a pill. */
 
 .panel-window {
-  position: absolute; inset: 0; display: flex;
-  --inset: clamp(0px, calc((var(--panel-size) - 30px) / 2), 8px);
-  --inset-side: calc(var(--inset) * 1.5);
-  --r-island: clamp(0px, calc(var(--inset) * 100), var(--r-lg));
+  /* `flex-end` is the panel's own edge on every edge (the flex direction is
+     reversed for top and left), so the bar stays put while the window is
+     between thicknesses. */
+  position: absolute; inset: 0; display: flex; justify-content: flex-end;
+  /* Flush is the base state; `.floating` (panel.ts, from the layout's `float`)
+     lifts the island off the edge. The inset grows a little with the panel so
+     a thick bar keeps its proportions, but it is never 0 while floating —
+     that was the old bug: the inset came from the thickness alone, so asking
+     a thin panel to float changed nothing. */
+  --inset: 0px;
+  --inset-side: 0px;
+  --r-island: 0px;
+  /* How tall a widget chip is: the bar's inside, less a hair of breathing
+     room. Everything on the bar is sized from it, so a taller panel really
+     does give bigger icons instead of centring 34px chips in it. */
+  --slot-h: max(24px, calc(var(--panel-size) - 2 * var(--inset) - 6px));
   /* the tint over the blurred wallpaper: the panel's opacity setting, 0 = the
      wallpaper alone, 1 = nearly solid glass */
   --glass-a: calc(.55 + .4 * var(--panel-opacity));
@@ -301,8 +313,12 @@ select option { background: var(--bg-1); color: var(--fg); }
 .vertical .panel-island::before { background: linear-gradient(to right, rgb(255 255 255 / .04), transparent 45%, rgb(0 0 0 / .12)); }
 .vertical .panel-island { inset: var(--inset-side) var(--inset); }
 .panel-island:has(> .glass-bd) { background: transparent; }
+.panel-window.floating {
+  --inset: clamp(4px, calc((var(--panel-size) - 24px) / 3), 10px);
+  --inset-side: calc(var(--inset) * 1.6);
+  --r-island: var(--r-lg);
+}
 /* flush with the screen edge (layout `float: false`): no inset, one hairline on the inner side */
-.edge { --inset: 0px; --inset-side: 0px; --r-island: 0px; }
 .edge .panel-island { border-width: 0; border-color: rgb(255 255 255 / .07); box-shadow: none; }
 .edge[data-edge=bottom] .panel-island { border-top-width: 1px; box-shadow: 0 -1px 0 rgb(0 0 0 / .3), 0 -14px 34px rgb(0 0 0 / .22); }
 .edge[data-edge=top] .panel-island { border-bottom-width: 1px; box-shadow: 0 1px 0 rgb(0 0 0 / .3), 0 14px 34px rgb(0 0 0 / .22); }
@@ -328,7 +344,10 @@ select option { background: var(--bg-1); color: var(--fg); }
   transition: color var(--fast), background var(--fast);
 }
 .vertical .w { flex-direction: column; justify-content: center; width: 100%; height: auto; padding: 9px 0; }
-.w:hover { color: var(--fg); background: var(--surface-hover); }
+/* Only a clickable surface lights up: `.tap` (widgets/common.ts panelItem)
+   and the items inside the task bar and the tray. A spacer, a meter or a
+   read-out is not something to press, so it stays put under the pointer. */
+.w.tap:hover { color: var(--fg); background: var(--surface-hover); }
 .w.open { color: var(--accent); background: rgb(var(--accent-a) / .14); box-shadow: inset 0 0 0 1px rgb(var(--accent-a) / .25); }
 .w-ic { display: inline-flex; }
 .w-label { font: var(--t-label); }
@@ -342,6 +361,21 @@ select option { background: var(--bg-1); color: var(--fg); }
 /* task bar */
 .w-taskbar { display: flex; align-items: stretch; gap: 3px; height: 100%; padding: 0 2px; }
 .vertical .w-taskbar { flex-direction: column; height: auto; width: 100%; padding: 2px 0; }
+/* Two halves with a rule between them: the pinned shortcuts, which never
+   move, and the windows that are actually open, grouped by application. */
+.task-pins, .task-run { display: flex; align-items: stretch; gap: 3px; }
+.vertical .task-pins, .vertical .task-run { flex-direction: column; }
+.task-sep {
+  flex: none; align-self: stretch; width: 1px; margin: 0 9px;
+  background: linear-gradient(to bottom, transparent, rgb(255 255 255 / .24) 30%, rgb(255 255 255 / .24) 70%, transparent);
+}
+.vertical .task-sep {
+  align-self: stretch; width: auto; height: 1px; margin: 9px 0;
+  background: linear-gradient(to right, transparent, rgb(255 255 255 / .24) 30%, rgb(255 255 255 / .24) 70%, transparent);
+}
+.task-sep[hidden] { display: none; }
+.task-none { display: flex; align-items: center; padding: 0 8px; color: var(--fg-faint); font: var(--t-caption); }
+.task-none[hidden] { display: none; }
 .task {
   position: relative; display: flex; align-items: center; gap: 8px;
   height: 100%; padding: 0 8px; min-width: calc(var(--panel-size) - 2 * var(--inset)); border-radius: var(--r-sm);
@@ -350,7 +384,20 @@ select option { background: var(--bg-1); color: var(--fg); }
 .vertical .task { justify-content: center; width: 100%; height: calc(var(--panel-size) - 2 * var(--inset)); padding: 0; }
 .task:hover { background: var(--surface-hover); }
 .task.active { background: rgb(255 255 255 / .07); box-shadow: inset 0 1px 0 rgb(255 255 255 / .05); }
-.task-ic { width: clamp(16px, calc(var(--panel-size) - 2 * var(--inset) - 22px), 30px); height: auto; aspect-ratio: 1; object-fit: contain; transition: transform var(--spring), filter var(--fast); }
+/* A shortcut whose application is open, listed again on the other side of the
+   separator: enough of a mark to connect the two, not enough to shout. */
+.task-pins .task.running::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .10);
+}
+.task.launching .task-ic { animation: task-wait 1s ease-in-out infinite; }
+@keyframes task-wait { 50% { opacity: .4; transform: scale(.92); } }
+/* The icon grows with the bar. `--task-ic` is the auto size (what is left of
+   the panel once the item's own padding is taken off); the widget overrides
+   it when the user asks for a fixed size. 48px is where the icon pack stops
+   giving us more pixels (shell.icon_size). */
+.w-taskbar { --task-ic: clamp(16px, calc(var(--panel-size) - 2 * var(--inset) - 18px), 48px); }
+.task-ic { width: var(--task-ic); height: auto; aspect-ratio: 1; object-fit: contain; transition: transform var(--spring), filter var(--fast); }
 .task.minimized .task-ic { opacity: .45; }
 .task-ic-wrap { position: relative; display: flex; flex: none; }
 /* Windows-program badge: a small tag on the icon's corner. */
@@ -360,9 +407,17 @@ select option { background: var(--bg-1); color: var(--fg); }
   box-shadow: inset 0 0 0 1px var(--glass-border-strong), 0 0 6px rgb(var(--accent-a) / .35);
   pointer-events: none;
 }
-.task.wine .task-badge { display: flex; }
+.task-badge.on { display: flex; }
+.task:not(.wine) .task-badge { color: var(--fg-dim); box-shadow: inset 0 0 0 1px var(--glass-border-strong); }
 .task-badge svg { width: 10px; height: 10px; display: block; }
 .task.minimized .task-badge { opacity: .6; }
+.task-count {
+  position: absolute; top: 2px; right: 2px; min-width: 14px; height: 14px; padding: 0 3px;
+  display: none; align-items: center; justify-content: center; border-radius: 7px;
+  background: rgb(var(--accent-a) / .9); color: var(--void); font: 700 9px/1 var(--ui);
+}
+.task-count:not(:empty) { display: flex; }
+[data-edge=top] .task-count { top: auto; bottom: 2px; }
 .task-label { display: none; overflow: hidden; text-overflow: ellipsis; font: var(--t-label); color: var(--fg); }
 .labels .task.running .task-label { display: block; }
 .vertical .task-label { display: none !important; }
@@ -371,11 +426,93 @@ select option { background: var(--bg-1); color: var(--fg); }
 .vertical .task-dots { left: auto; right: 2px; top: 0; bottom: 0; flex-direction: column; align-items: center; }
 [data-edge=left] .task-dots { right: 2px; }
 [data-edge=right] .task-dots { right: auto; left: 2px; }
+/* One mark per window: filled for an open one, hollow for a minimised one,
+   long and lit for the one with the focus. A pinned shortcut whose windows
+   are listed elsewhere gets the faintest mark of all. */
 .task-dots i { width: 5px; height: 3px; border-radius: 2px; background: rgb(255 255 255 / .38); transition: width var(--fast), background var(--fast); }
 .vertical .task-dots i { width: 3px; height: 5px; }
-.task.active .task-dots i { width: 16px; background: var(--accent); box-shadow: 0 0 6px rgb(var(--accent-a) / .5); }
-.vertical .task.active .task-dots i { width: 4px; height: 14px; }
-.task.minimized .task-dots i { background: rgb(255 255 255 / .3); box-shadow: none; }
+.task-dots i.on { width: 16px; background: var(--accent); box-shadow: 0 0 6px rgb(var(--accent-a) / .5); }
+.vertical .task-dots i.on { width: 4px; height: 14px; }
+.task-dots i.min { background: transparent; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .42); height: 4px; }
+.vertical .task-dots i.min { width: 4px; height: 5px; }
+.task-dots i.elsewhere { width: 3px; background: rgb(255 255 255 / .22); }
+
+/* ---------- the flyout ----------
+   A card beside a widget, drawn inside the panel window: the window grows by
+   the card's thickness (panel.ts asks the host with `panel.flyout`) while the
+   exclusive zone stays put, so nothing on the screen moves and the pointer
+   never crosses a surface boundary going from the widget to the card. */
+/* The card is taken out of the window's flow and pinned to the inner face of
+   the bar. The host grants the room a frame or two after the page asks for it,
+   and if the flyout were a flex item that lag would show: the bar would be
+   pushed out of a window that had not grown yet, then snap back when the card
+   came down. Anchored this way the bar cannot move at all, and the card sits
+   at the same place on screen from the first frame — clipped by the window
+   until the room arrives, which `.ready` waits for. */
+.panel-flyout { position: absolute; inset: 0; pointer-events: none; }
+[data-edge=bottom] .panel-flyout { bottom: var(--panel-size); }
+[data-edge=top] .panel-flyout { top: var(--panel-size); }
+[data-edge=left] .panel-flyout { left: var(--panel-size); }
+[data-edge=right] .panel-flyout { right: var(--panel-size); }
+.panel-flyout[hidden] { display: none; }
+.flyout-card {
+  position: absolute; pointer-events: auto;
+  opacity: 0; transition: opacity .1s ease, transform .1s ease;
+}
+.panel-flyout.ready .flyout-card { opacity: 1; transform: none; }
+[data-edge=bottom] .flyout-card { bottom: 8px; transform: translateY(4px); }
+[data-edge=top] .flyout-card { top: 8px; transform: translateY(-4px); }
+[data-edge=left] .flyout-card { left: 8px; transform: translateX(-4px); }
+[data-edge=right] .flyout-card { right: 8px; transform: translateX(4px); }
+
+.fly {
+  display: flex; flex-direction: column; gap: 6px;
+  width: min(360px, calc(100vw - 24px)); padding: 9px;
+  border-radius: var(--r-lg); color: var(--fg);
+  background: rgb(var(--glass) / .92); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border-strong); box-shadow: var(--shadow-2);
+  animation: fly-in 130ms ease-out;
+}
+@keyframes fly-in { from { opacity: 0; transform: translateY(6px); } }
+[data-edge=top] .fly { animation-name: fly-in-top; }
+@keyframes fly-in-top { from { opacity: 0; transform: translateY(-6px); } }
+.fly-head { display: flex; align-items: center; gap: 9px; padding: 1px 3px 7px; border-bottom: 1px solid var(--glass-border); }
+.fly-ic { width: 26px; height: 26px; object-fit: contain; flex: none; }
+.fly-head-txt { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.fly-title { font: 600 13px/1.2 var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fly-meta { display: flex; align-items: center; gap: 9px; font: var(--t-caption); color: var(--fg-dim); }
+.fly-origin { display: inline-flex; align-items: center; gap: 4px; }
+.fly-origin svg { width: 12px; height: 12px; }
+.fly-origin.wine { color: var(--accent); }
+/* The list scrolls rather than making the panel window taller without end. */
+.fly-rows { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; }
+.fly-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 7px; border-radius: var(--r-sm);
+  transition: background var(--fast); outline: none;
+}
+.fly-row:hover, .fly-row:focus-visible { background: var(--surface-hover); }
+.fly-row.active { background: rgb(var(--accent-a) / .14); box-shadow: inset 0 0 0 1px rgb(var(--accent-a) / .25); }
+.fly-row.minimized { opacity: .62; }
+.fly-row.minimized .fly-row-title { font-style: italic; }
+.fly-row-ic { display: flex; flex: none; color: var(--fg-dim); }
+.fly-row-txt { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.fly-row-title { font: var(--t-label); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fly-row-sub { font: var(--t-caption); color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fly-close {
+  flex: none; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  border: 0; border-radius: var(--r-xs); background: transparent; color: var(--fg-faint); opacity: 0;
+  transition: opacity var(--fast), background var(--fast), color var(--fast);
+}
+.fly-row:hover .fly-close, .fly-row:focus-within .fly-close { opacity: 1; }
+.fly-close:hover { background: rgb(var(--danger-a) / .16); color: var(--danger); }
+.fly-actions { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 6px; border-top: 1px solid var(--glass-border); }
+.fly-act {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border-radius: var(--r-sm);
+  border: 1px solid var(--glass-border); background: var(--surface); color: var(--fg-dim); font: var(--t-label);
+  transition: background var(--fast), color var(--fast), border-color var(--fast);
+}
+.fly-act:hover { background: var(--surface-hover); color: var(--fg); }
+.fly-act.danger:hover { color: var(--danger); border-color: rgb(var(--danger-a) / .45); background: rgb(var(--danger-a) / .12); }
 
 /* the dock: a fit-to-content pill; icons pop on hover */
 .fit .panel-widgets { justify-content: center; }
@@ -383,12 +520,29 @@ select option { background: var(--bg-1); color: var(--fg); }
 .fit .w-spacer.expand { flex: none; width: 12px; height: 12px; }
 .fit .task { padding: 0 4px; min-width: 0; border-radius: var(--r); }
 .fit .task:hover, .fit .task.active { background: transparent; }
-.fit .task-ic { width: clamp(16px, calc(var(--panel-size) - 2 * var(--inset) - 12px), 40px); filter: drop-shadow(0 3px 6px rgb(0 0 0 / .55)); }
+.fit .w-taskbar { --task-ic: clamp(16px, calc(var(--panel-size) - 2 * var(--inset) - 12px), 64px); }
+.fit .task-ic { filter: drop-shadow(0 3px 6px rgb(0 0 0 / .55)); }
 .fit .task:hover .task-ic { transform: translateY(-7px) scale(1.18); filter: drop-shadow(0 8px 12px rgb(0 0 0 / .6)); }
 .fit .task:active .task-ic { transform: translateY(-4px) scale(1.08); }
 .fit .task-badge { right: -3px; bottom: -1px; }
 .bare .panel-island { background: rgb(var(--glass) / .5); }
 .bare.editing .panel-island { background: rgb(var(--glass) / .7); }
+
+/* desktop view: a screen with the home screen filling it, or a window on it.
+   Lit while the home screen is forward, quiet while the windows have it --
+   apparent at a glance from across the desk, and never the loudest thing in
+   the panel. */
+.w-desktop-view { gap: 8px; }
+.w-view-mark { position: relative; width: 17px; height: 13px; border: 1px solid var(--hairline); border-radius: 3px; background: rgb(var(--glass) / .35); transition: border-color 180ms ease; }
+.w-view-mark::after { content: ''; position: absolute; border-radius: 1px; transition: inset 180ms ease, background 180ms ease, box-shadow 180ms ease; }
+.w-desktop-view[data-view=home] .w-view-mark { border-color: rgb(var(--accent-a) / .55); }
+.w-desktop-view[data-view=home] .w-view-mark::after { inset: 2px; background: var(--accent); box-shadow: 0 0 7px rgb(var(--accent-a) / .55); }
+.w-desktop-view[data-view=windows] .w-view-mark::after { inset: 4px 3px 2px 5px; background: var(--fg-faint); box-shadow: none; }
+.w-desktop-view:hover .w-view-mark { border-color: rgb(var(--accent-a) / .8); }
+/* Nothing open: the home screen is the ground, and the switch has no other
+   view to offer. It still says where you are, quieter. */
+.w-desktop-view.is-only-view { opacity: .55; }
+.w-desktop-view .w-label { color: var(--fg-dim); }
 
 /* window layout mode */
 .w-layout-mode { gap: 7px; }
@@ -396,12 +550,13 @@ select option { background: var(--bg-1); color: var(--fg); }
 .w-layout-mode:hover .w-ic, .w-layout-mode.open .w-ic { color: var(--accent); }
 
 /* tray */
-.w-tray { display: flex; align-items: stretch; gap: 1px; padding: 0 3px; }
+/* Like the task bar, the tray icon follows the panel unless the widget sets a size. */
+.w-tray { display: flex; align-items: stretch; gap: 1px; padding: 0 3px; --tray-ic: clamp(12px, calc((var(--panel-size) - 2 * var(--inset)) * .42), 28px); }
 .vertical .w-tray { flex-direction: column; padding: 3px 0; }
-.tray-item { display: flex; align-items: center; justify-content: center; width: calc(var(--tray-ic, 16px) + 10px); border-radius: 6px; color: var(--fg-dim); transition: background var(--fast); }
-.vertical .tray-item { width: auto; height: 26px; }
+.tray-item { display: flex; align-items: center; justify-content: center; width: calc(var(--tray-ic) + 10px); border-radius: 6px; color: var(--fg-dim); transition: background var(--fast); }
+.vertical .tray-item { width: auto; height: calc(var(--tray-ic) + 10px); }
 .tray-item:hover { background: var(--surface-hover); }
-.tray-ic { width: var(--tray-ic, 16px); height: var(--tray-ic, 16px); object-fit: contain; }
+.tray-ic { width: var(--tray-ic); height: var(--tray-ic); object-fit: contain; }
 .w-taskbar.no-indicator .task-dots { display: none; }
 .tray-item.attention .tray-ic { animation: blink 1.2s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .35; } }
@@ -897,7 +1052,6 @@ html[data-kind=greeter], html[data-kind=greeter] body { background: var(--void);
 .g-field {
   display: flex; align-items: center; height: 48px; border-radius: 12px;
   background: rgb(0 0 0 / .38); border: 1px solid var(--glass-border); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45);
-  transition: border-color var(--fast), box-shadow var(--fast);
 }
 .g-field:focus-within { border-color: rgb(var(--accent-a) / .65); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45), 0 0 24px rgb(var(--accent-a) / .12); }
 .g-pw { flex: 1; min-width: 0; height: 100%; padding: 0 8px 0 22px; background: transparent; border: 0; outline: 0; font: 500 15px/1 var(--ui); color: var(--fg); }
@@ -1243,7 +1397,7 @@ html[data-kind=toast], html[data-kind=toast] body { background: transparent; }
 .auth-field {
   display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 13px; border-radius: var(--r-md);
   color: var(--fg-faint); background: rgb(0 0 0 / .38); border: 1px solid var(--glass-border);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / .45); transition: border-color var(--fast), box-shadow var(--fast);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / .45); transition: color var(--fast);
 }
 .auth-field:focus-within { color: var(--accent); border-color: rgb(var(--accent-a) / .65); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45); }
 .auth-pw { flex: 1; min-width: 0; height: 100%; background: transparent; border: 0; outline: 0; color: var(--fg); font: 500 14px/1 var(--ui); }
@@ -1257,7 +1411,6 @@ html[data-kind=toast], html[data-kind=toast] body { background: transparent; }
 .nav-search { display: flex; align-items: center; gap: 7px; margin: 0 4px 12px; padding: 9px 10px; color: var(--fg-dim); border: 1px solid var(--glass-border); border-radius: var(--r-sm); background: rgb(0 0 0 / .16); }
 .nav-search:focus-within { border-color: rgb(var(--accent-a) / .65); }
 .nav-search input.nav-search-input { height: 20px; box-shadow: none; min-width: 0; width: 100%; padding: 0; color: var(--fg); font: 13px/1.4 var(--ui); background: transparent; border: 0; outline: none; }
-.nav-search-input:focus-visible { outline: none; }
 .nav-group { display: flex; flex-direction: column; gap: 2px; }
 .nav-group + .nav-group { margin-top: 12px; }
 .nav-group-label { padding: 0 12px 6px; color: var(--fg-dim); font: 500 11px/1.4 var(--ui); letter-spacing: .06em; text-transform: uppercase; }
@@ -1376,8 +1529,14 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 :root[data-theme] .btn.primary {background:var(--action);color:var(--action-fg);border-color:transparent;box-shadow:var(--glow-accent)}
 :root[data-theme] .btn.primary:hover {filter:brightness(1.06);box-shadow:var(--glow-accent),0 0 0 1px rgb(var(--accent-a) / .5)}
 :root[data-theme] .wallpaper.builtin::before,:root[data-theme] .wallpaper.builtin::after {display:none}
-.gaming-active > .desktop-icons,.gaming-active > .desktop-widgets {visibility:hidden}
+/* The home screen covers them; out of the layout, not merely invisible, so
+   a desktop widget behind it stops sampling the machine (see dom.ts). */
+.gaming-active > .desktop-icons,.gaming-active > .desktop-widgets {display:none}
 .gaming-workspace {position:absolute;inset:var(--gaming-top,0px) var(--gaming-right,0px) var(--gaming-bottom,80px) var(--gaming-left,0px);display:grid;grid-template-columns:180px minmax(0,1fr) 306px;grid-template-rows:44px minmax(0,1fr);gap:24px;padding:0 28px 26px 0;pointer-events:none}
+/* The home screen stepped aside for the windows: the bar stays, everything
+   below it goes out of the layout rather than merely turning invisible, so
+   what it was sampling stops (see dom.ts). */
+.gaming-workspace.is-away > *:not(.gaming-menubar) {display:none !important}
 .gaming-workspace > * {pointer-events:auto;min-width:0}
 .gaming-menubar {grid-column:1 / -1;display:flex;align-items:center;gap:24px;height:44px;margin-right:-28px;padding:0 22px;background:var(--bg-0);border-bottom:1px solid var(--hairline)}
 .gaming-brand {display:flex;align-items:center;gap:12px;font-size:14px;letter-spacing:.04em}
@@ -1578,10 +1737,17 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
    at the right. Everything on it is the same 34 px tall rounded slot, so the
    icons line up on one baseline and the hover highlight is always the same
    shape. */
-:root[data-theme] .panel-window {--inset:0px;--inset-side:0px;--r-island:0px}
+/* Flush is this skin's default too — but only for a panel that is not
+   floating, or the `.floating` class the layout's `float` switch sets would
+   be overridden here and the switch would appear to do nothing. */
+:root[data-theme] .panel-window:not(.floating) {--inset:0px;--inset-side:0px;--r-island:0px}
 :root[data-theme] .panel-island,:root[data-theme] .bare .panel-island {
  background:rgb(var(--glass) / .62);border:0;border-top:1px solid var(--glass-border);border-radius:0;
  box-shadow:0 -1px 0 rgb(0 0 0 / .25),0 -18px 40px rgb(0 0 0 / .22);
+}
+:root[data-theme] .floating .panel-island,:root[data-theme] .floating.bare .panel-island {
+ border:1px solid var(--glass-border);border-radius:var(--r-island);
+ box-shadow:var(--shadow-1),inset 0 1px 0 var(--glass-hi);
 }
 :root[data-theme] .panel-island::before {display:block;background:linear-gradient(to bottom,var(--glass-hi),transparent 40%)}
 :root[data-theme] .panel-island>.glass-bd {display:block}
@@ -1606,12 +1772,12 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 /* The slots on the bar: one height, one radius, one hover. */
 :root[data-theme] .panel-widgets {gap:1px;padding:0 8px;align-items:center}
 :root[data-theme] .w-slot {align-items:center}
-:root[data-theme] .w {height:34px;padding:0 9px;border-radius:var(--r-sm);box-shadow:none}
-:root[data-theme] .w:hover {background:var(--surface-hover);color:var(--fg)}
+:root[data-theme] .w {height:var(--slot-h);padding:0 9px;border-radius:var(--r-sm);box-shadow:none}
+:root[data-theme] .w.tap:hover {background:var(--surface-hover);color:var(--fg)}
 :root[data-theme] .w.open {background:rgb(var(--accent-a) / .16);color:var(--accent);box-shadow:none}
-:root[data-theme] .w-taskbar {gap:2px;height:34px;align-items:center;padding:0}
-:root[data-theme] .task {height:34px;min-width:40px;padding:0 7px;border-radius:var(--r-sm);box-shadow:none;justify-content:center}
-:root[data-theme] .task-ic,:root[data-theme] .fit .task-ic {width:22px;height:22px;filter:none;transition:transform var(--fast)}
+:root[data-theme] .w-taskbar {gap:2px;height:var(--slot-h);align-items:center;padding:0;--task-ic:clamp(16px, calc(var(--panel-size) - 2 * var(--inset) - 16px), 48px)}
+:root[data-theme] .task {height:var(--slot-h);min-width:var(--slot-h);padding:0 7px;border-radius:var(--r-sm);box-shadow:none;justify-content:center}
+:root[data-theme] .task-ic,:root[data-theme] .fit .task-ic {filter:none;transition:transform var(--fast)}
 :root[data-theme] .task:hover {background:var(--surface-hover)}
 :root[data-theme] .task:active .task-ic,:root[data-theme] .fit .task:active .task-ic {transform:scale(.9)}
 :root[data-theme] .fit .task:hover .task-ic {transform:translateY(-2px)}
@@ -1620,10 +1786,12 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 :root[data-theme] .task-dots {bottom:3px}
 :root[data-theme] .task-dots i {height:2px;border-radius:2px;box-shadow:none}
 :root[data-theme] .task.active .task-dots {display:flex}
-:root[data-theme] .task.active .task-dots i {width:14px;background:var(--accent)}
+:root[data-theme] .task-dots i.on {width:14px;background:var(--accent)}
+:root[data-theme] .task-dots i.min {background:transparent;box-shadow:inset 0 0 0 1px rgb(255 255 255 / .4)}
+:root[data-theme] .fly {background:rgb(var(--glass) / .9);border-radius:var(--r-lg)}
 :root[data-theme] .w-tray {gap:2px;padding:0 4px;margin-left:6px;position:relative}
 :root[data-theme] .w-tray::before {content:'';position:absolute;left:0;top:8px;bottom:8px;width:1px;background:var(--glass-border)}
-:root[data-theme] .tray-item {height:34px;border-radius:var(--r-sm)}
+:root[data-theme] .tray-item {height:var(--slot-h);border-radius:var(--r-sm)}
 :root[data-theme] .w-label,:root[data-theme] .w-val {font:var(--t-label)}
 :root[data-theme] .clock-time {font:500 13px/1.05 var(--ui);font-variant-numeric:tabular-nums}
 :root[data-theme] .clock-date {font:400 11px/1 var(--ui);color:var(--fg-dim)}
@@ -1668,7 +1836,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .mode-opt:hover .ic {opacity:1}
 .mode-opt[aria-checked=true] {color:var(--accent)}
 .mode-opt[aria-checked=true] .ic {opacity:1}
-.mode-opt:focus-visible {outline:0;box-shadow:var(--ring)}
+.mode-opt:focus-visible {outline:0;color:var(--fg)}
 /* On the light theme the track is a shallow well rather than a dark one,
    and the thumb keeps a white body so the lit label stays readable. */
 :root[data-theme=light] .mode-switch {background:rgb(0 0 0 / .05);box-shadow:inset 0 1px 2px rgb(0 0 0 / .08)}
@@ -1726,3 +1894,193 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .work-file:hover {background:var(--surface-hover);color:var(--accent)}
 .appearance-controls {display:flex;gap:6px;align-items:center}
 .work-intro {padding-top:10px}
+
+/* ===== the system monitor: shared readings, the rail readout, Task Manager =====
+   Three layers share this vocabulary. `mon-*` is the instrument set — graph,
+   meter, core grid — used wherever a reading is drawn. `readout-*` is the
+   rail card: the machine in a 240px column. `tk-*` is the Task Manager
+   itself. Every live number is mono and tabular, so a value that changes
+   every second does not move the text beside it. */
+
+/* ---------- instruments ---------- */
+.mon-chart-box { position: relative; overflow: hidden; border-radius: var(--r-sm); background: linear-gradient(180deg, rgb(255 255 255 / .03), rgb(255 255 255 / .012)); box-shadow: inset 0 0 0 1px rgb(255 255 255 / .05); }
+.mon-chart { display: block; width: 100%; height: 84px; }
+.mon-grid { stroke: rgb(255 255 255 / .06); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.mon-area { opacity: .13; }
+.mon-line { stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.mon-meter { display: flex; flex-direction: column; gap: 5px; }
+.mon-meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mon-meter-label { font: var(--t-eyebrow); font-size: 9.5px; letter-spacing: var(--track); text-transform: uppercase; color: var(--fg-faint); }
+.mon-meter-value { font: 500 11.5px/1 var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; }
+.mon-meter-sub { font: 400 10px/1.4 var(--mono); color: var(--fg-faint); }
+.mon-meter-sub:empty { display: none; }
+.mon-bar { height: 4px; border-radius: 2px; background: var(--surface-strong); overflow: hidden; }
+.mon-bar > i { display: block; width: 0; height: 100%; border-radius: 2px; background: var(--fg-dim); transition: width 400ms ease-out; }
+.mon-cores { display: grid; grid-template-columns: repeat(var(--cores, 8), minmax(0, 1fr)); gap: 2px; height: 34px; }
+.mon-core { display: flex; align-items: flex-end; border-radius: 2px; background: var(--surface); overflow: hidden; }
+.mon-core > i { display: block; width: 100%; height: 2%; transition: height 400ms ease-out; }
+.mon-stat { display: flex; flex-direction: column; gap: 3px; }
+.mon-stat-value { font: 600 18px/1 var(--mono); letter-spacing: -.02em; color: var(--fg); font-variant-numeric: tabular-nums; }
+.mon-stat-label { font: var(--t-eyebrow); font-size: 9.5px; letter-spacing: var(--track); text-transform: uppercase; color: var(--fg-faint); }
+
+/* ---------- the rail readout ---------- */
+.readout { display: flex; flex-direction: column; gap: 11px; }
+.readout .mon-chart-box { margin-bottom: 1px; }
+.readout-chart { height: 44px; }
+.readout-flows { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.readout-flow { display: inline-flex; align-items: center; gap: 5px; font: 400 10px/1.4 var(--mono); color: var(--fg-faint); }
+.readout-flow svg { color: var(--accent); opacity: .75; }
+.readout-flow b { font-weight: 500; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.readout-top { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.readout-top li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px solid var(--hairline); font: var(--t-caption); color: var(--fg-dim); }
+.readout-top li:first-child { border-top: 0; }
+.readout-proc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.readout-proc-cpu { flex: none; font: 500 10.5px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.readout-empty { margin: 0; }
+.readout-open { align-self: flex-start; margin-top: 1px; }
+.readout-open svg { transition: transform var(--fast); }
+.readout-open:hover svg { transform: translateX(2px); }
+
+/* ---------- the Task Manager ---------- */
+.app-tasks .page { max-width: 1320px; gap: 16px; }
+.app-tasks .sheet { width: min(640px, 92%); }
+.tk-panel { display: flex; flex-direction: column; gap: 12px; padding: 18px 20px 20px; border-radius: var(--r-lg); background: var(--bg-1); border: 1px solid var(--glass-border); box-shadow: inset 0 1px 0 rgb(255 255 255 / .05); min-width: 0; }
+.tk-panel[hidden] { display: none; }
+.tk-panel-head { display: flex; align-items: baseline; gap: 10px; }
+.tk-panel-head h2 { margin: 0; font: 600 14px/1.4 var(--ui); letter-spacing: -.01em; color: var(--fg); }
+.tk-panel-sub { font: var(--t-caption); color: var(--fg-faint); }
+.tk-split { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.tk-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.tk-subhead { font: var(--t-eyebrow); font-size: 10px; letter-spacing: var(--track); text-transform: uppercase; color: var(--fg-faint); margin-top: 2px; }
+
+/* the headline tile: a big number over its own graph */
+.tk-heroes { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 16px; }
+.tk-hero { position: relative; display: flex; flex-direction: column; padding: 16px 18px 18px; border-radius: var(--r-lg); background: var(--bg-1); border: 1px solid var(--glass-border); box-shadow: inset 0 1px 0 rgb(255 255 255 / .05); overflow: hidden; min-width: 0; }
+.tk-hero::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--tone, var(--accent)), transparent); opacity: .55; }
+.tk-hero[hidden] { display: none; }
+.tk-hero > header { display: flex; align-items: center; gap: 10px; }
+.tk-hero > header h2 { flex: 1; margin: 0; font: var(--t-eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-hero-mark { display: inline-flex; width: 26px; height: 26px; align-items: center; justify-content: center; border-radius: 8px; background: rgb(255 255 255 / .05); box-shadow: inset 0 0 0 1px rgb(255 255 255 / .07); }
+.tk-hero-value { font: 600 25px/1 var(--mono); letter-spacing: -.03em; color: var(--fg); font-variant-numeric: tabular-nums; }
+.tk-hero-sub { margin: 7px 0 0; font: var(--t-caption); color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-hero-sub[hidden] { display: none; }
+.tk-hero .mon-chart-box { margin-top: 11px; }
+.tk-gpu { display: flex; flex-direction: column; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid var(--hairline); }
+.tk-gpu:last-child { padding-bottom: 0; border-bottom: 0; }
+.tk-gpu .tk-hero { background: transparent; border: 0; box-shadow: none; padding: 0; }
+.tk-gpu .tk-hero::before { display: none; }
+
+/* facts: a label and the number that answers it */
+.tk-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; margin: 10px 0 0; }
+.tk-facts-wide { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
+.tk-fact { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid var(--hairline); min-width: 0; }
+.tk-fact dt { font: var(--t-caption); color: var(--fg-faint); white-space: nowrap; }
+.tk-fact dd { margin: 0; font: 500 11.5px/1.5 var(--mono); color: var(--fg-dim); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* one bar, divided among what is holding it */
+.tk-comp-bar { display: flex; height: 10px; border-radius: 5px; background: var(--surface); overflow: hidden; }
+.tk-comp-bar > i { display: block; height: 100%; transition: width 400ms ease-out; }
+.tk-comp-key { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 9px 0 0; padding: 0; list-style: none; }
+.tk-comp-key li { display: inline-flex; align-items: center; gap: 7px; font: var(--t-caption); }
+.tk-comp-key li > i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.tk-comp-key li > span { color: var(--fg-dim); }
+.tk-comp-key li > b { font: 500 11.5px/1 var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; }
+
+/* a labelled bar: a filesystem, a swap device, a card's memory */
+.tk-barrows { display: flex; flex-direction: column; gap: 12px; }
+.tk-barrow-head { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.tk-barrow-name { font: var(--t-label); color: var(--fg); white-space: nowrap; }
+.tk-barrow-sub { flex: 1; font: var(--t-caption); color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-barrow-value { font: 500 11.5px/1 var(--mono); color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tk-bar { margin-top: 6px; height: 6px; border-radius: 3px; background: var(--surface-strong); overflow: hidden; }
+.tk-bar > i { display: block; width: 0; height: 100%; border-radius: 3px; background: var(--accent); transition: width 400ms ease-out; }
+
+/* the live table */
+.tk-table { display: flex; flex-direction: column; min-width: 0; }
+.tk-thead { display: grid; gap: 12px; padding: 0 10px 8px; border-bottom: 1px solid var(--hairline); }
+.tk-th { display: inline-flex; align-items: center; gap: 5px; padding: 0; background: transparent; border: 0; font: var(--t-eyebrow); font-size: 10px; letter-spacing: var(--track); text-transform: uppercase; color: var(--fg-faint); text-align: left; min-width: 0; }
+.tk-th.end { justify-content: flex-end; }
+button.tk-th:hover { color: var(--accent); }
+button.tk-th:focus-visible { outline: 0; color: var(--accent); }
+.tk-th.sorted { color: var(--fg); }
+.tk-sort { font: normal 8px/1 var(--ui); color: var(--accent); }
+.tk-tbody { display: flex; flex-direction: column; padding-top: 2px; }
+.tk-tr { display: grid; gap: 12px; align-items: center; padding: 7px 10px; border-radius: var(--r-sm); font: var(--t-label); font-size: 12.5px; color: var(--fg-dim); cursor: default; }
+.tk-tr:nth-child(odd) { background: rgb(255 255 255 / .022); }
+.tk-tr:hover { background: var(--surface-hover); color: var(--fg); }
+.tk-tr.on { background: rgb(var(--accent-a) / .12); box-shadow: inset 0 0 0 1px rgb(var(--accent-a) / .28); color: var(--fg); }
+.tk-tr:focus-visible { outline: 0; background: var(--surface-hover); color: var(--fg); }
+.tk-td { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tk-td.end { text-align: right; font-family: var(--mono); font-size: 11.5px; }
+.tk-proc { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.tk-proc b { font-weight: 500; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-proc small { font: 400 11px/1.4 var(--ui); color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-badge { flex: none; padding: 1px 7px; border-radius: 999px; font: 500 9.5px/1.6 var(--ui); letter-spacing: .05em; text-transform: uppercase; color: var(--accent); background: rgb(var(--accent-a) / .12); border: 1px solid rgb(var(--accent-a) / .25); }
+.tk-badge.warn { color: var(--warn); background: rgb(var(--warn-a) / .12); border-color: rgb(var(--warn-a) / .3); }
+.tk-empty { display: flex; align-items: center; gap: 8px; margin: 0; padding: 16px 10px; font: var(--t-body); font-size: 13px; color: var(--fg-faint); }
+.tk-empty[hidden] { display: none; }
+.tk-state { display: inline-flex; align-items: center; gap: 6px; font: 500 11.5px/1.5 var(--ui); color: var(--fg-dim); text-transform: capitalize; }
+.tk-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.tk-state.ok { color: var(--ok); }
+.tk-state.warn { color: var(--warn); }
+.tk-state.danger { color: var(--danger); }
+.tk-state.idle { color: var(--fg-faint); }
+
+/* the processes toolbar */
+.tk-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tk-toolbar-gap { flex: 1; }
+.tk-search-box { display: inline-flex; align-items: center; gap: 8px; flex: 0 1 320px; min-width: 200px; height: 34px; padding: 0 13px; border-radius: 999px; background: var(--surface); border: 1px solid var(--glass-border); }
+.tk-search-box svg { flex: none; color: var(--fg-faint); }
+.tk-search { flex: 1; min-width: 0; height: 100%; padding: 0; background: transparent; border: 0; outline: 0; color: var(--fg); font: var(--t-label); font-size: 13px; }
+.tk-search::-webkit-search-cancel-button { display: none; }
+.tk-toolbar .btn.on { color: var(--accent); border-color: rgb(var(--accent-a) / .45); background: rgb(var(--accent-a) / .12); }
+.tk-note { display: flex; align-items: flex-start; gap: 8px; margin: 2px 0 0; font: var(--t-caption); color: var(--fg-faint); }
+.tk-note svg { flex: none; margin-top: 1px; }
+
+/* per-thread load, one column per hardware thread */
+.tk-cores { display: flex; align-items: stretch; gap: 3px; height: 78px; }
+.tk-core { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; min-width: 5px; }
+.tk-core-fill { display: flex; flex-direction: column; justify-content: flex-end; width: 100%; flex: 1; border-radius: 3px; background: var(--surface); overflow: hidden; }
+.tk-core-fill > i { display: block; width: 100%; height: 2%; background: var(--accent); transition: height 400ms ease-out; }
+.tk-core small { font: 400 8.5px/1 var(--mono); color: var(--fg-faint); }
+
+/* network interfaces and sensor tiles */
+.tk-iface { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 16px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--glass-border); }
+.tk-iface-head { display: flex; align-items: center; gap: 10px; }
+.tk-iface-head h3 { flex: 1; margin: 0; font: 600 13px/1.3 var(--mono); letter-spacing: -.01em; color: var(--fg); }
+.tk-iface-mark { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; border-radius: 7px; color: var(--accent); background: rgb(var(--accent-a) / .1); box-shadow: inset 0 0 0 1px rgb(var(--accent-a) / .2); }
+.tk-iface .tk-facts { margin: 0; }
+.tk-legend { display: flex; gap: 16px; font: var(--t-caption); color: var(--fg-dim); }
+.tk-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.tk-legend i { width: 12px; height: 2px; border-radius: 1px; }
+.tk-sensors { display: grid; grid-template-columns: repeat(auto-fill, minmax(186px, 1fr)); gap: 12px; }
+.tk-sensor { padding: 11px 13px 13px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--glass-border); }
+.tk-sensor-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.tk-sensor-name { font: var(--t-label); font-size: 12.5px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-sensor-head strong { font: 600 14px/1 var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; }
+.tk-sensor-chip { display: block; margin: 3px 0 9px; font: 400 9.5px/1.4 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--fg-faint); }
+
+/* the right-click menu, and what it asks before it ends anything */
+.tk-menu { position: fixed; z-index: 80; display: flex; flex-direction: column; gap: 2px; min-width: 236px; padding: 6px; border-radius: var(--r-md); background: rgb(16 21 28 / .98); border: 1px solid var(--glass-border-strong); box-shadow: var(--shadow-2); }
+.tk-menu-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 7px 10px; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; color: var(--fg); }
+.tk-menu-item:hover { background: var(--surface-hover); }
+.tk-menu-item b { font: 500 12.5px/1.3 var(--ui); }
+.tk-menu-item small { font: 400 11px/1.4 var(--ui); color: var(--fg-faint); }
+.tk-confirm { display: flex; flex-direction: column; gap: 10px; }
+.tk-confirm p { margin: 0; font: var(--t-body); }
+.tk-confirm-meta { font-size: 12.5px; color: var(--fg-faint); }
+.tk-confirm-cmd, .tk-code { display: block; max-height: 140px; overflow: auto; padding: 9px 11px; border-radius: var(--r-sm); background: var(--bg-0); border: 1px solid var(--hairline); font: 400 11.5px/1.6 var(--mono); color: var(--fg-dim); word-break: break-all; }
+.tk-detail { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow-y: auto; }
+.tk-detail .tk-facts { margin: 0; }
+
+@container (max-width: 900px) {
+  .tk-split { grid-template-columns: minmax(0, 1fr); }
+  .tk-facts { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* the readout in its three homes: the desktop widget, the work rail, the
+   gaming rail (which already supplies the body padding) */
+.dtasks-body { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.work-card .gaming-rail-body { padding: 10px 0 4px; }
+.gaming-rail-body > .readout + .gaming-meta { margin-top: 14px; }
+

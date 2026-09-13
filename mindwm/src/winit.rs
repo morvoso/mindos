@@ -4,6 +4,7 @@ use std::{
 };
 
 #[cfg(feature = "egl")]
+use crate::recover::LockAnyway;
 use smithay::backend::renderer::ImportEgl;
 #[cfg(feature = "debug")]
 use smithay::{
@@ -93,10 +94,14 @@ impl Backend for WinitData {
     fn update_led_state(&mut self, _led_state: LedState) {}
 }
 
-pub fn run_winit() {
+/// Run nested inside another Wayland or X11 session.
+///
+/// `session_startup` runs `[startup].exec` (the MindOS session: the shell,
+/// the autostart entries, the systemd user environment). It is off for
+/// nested instances unless asked for; see [`AnvilState::skip_startup`].
+pub fn run_winit(session_startup: bool) {
     let mut event_loop = EventLoop::try_new().unwrap();
     let display = Display::new().unwrap();
-    let mut display_handle = display.handle();
 
     #[cfg_attr(not(feature = "egl"), allow(unused_mut))]
     let (mut backend, mut winit) = match winit::init::<GlesRenderer>() {
@@ -205,6 +210,9 @@ pub fn run_winit() {
         .update_formats(state.backend_data.backend.renderer().shm_formats());
     state.space.map_output(&output, (0, 0));
 
+    if !session_startup {
+        state.skip_startup();
+    }
     #[cfg(feature = "xwayland")]
     state.start_xwayland();
     state.run_startup();
@@ -213,6 +221,9 @@ pub fn run_winit() {
 
     let mut pointer_element = PointerElement::default();
 
+    crate::sched::prioritise_loop();
+    state.loop_watch.watch();
+    let mut recovery = crate::recover::Recovery::default();
     while state.running.load(Ordering::SeqCst) {
         let status = winit.dispatch_new_events(|event| match event {
             WinitEvent::Resized { size, .. } => {
@@ -288,8 +299,7 @@ pub fn run_winit() {
                         .data_map
                         .get::<Mutex<CursorImageAttributes>>()
                         .unwrap()
-                        .lock()
-                        .unwrap()
+                        .lock_anyway()
                         .hotspot
                 })
             } else {
@@ -363,13 +373,11 @@ pub fn run_winit() {
                 if let Some(bar) = mindbar.render_element(renderer, &output.name(), output_size, scale.x) {
                     elements.push(CustomRenderElements::Overlay(bar));
                 }
-                // The startup screen goes away as soon as the shell maps its
-                // desktop (a background layer surface), not when a window opens.
-                let desktop_up = {
-                    let layers = smithay::desktop::layer_map_for_output(&output);
-                    let up = layers.layers_on(smithay::wayland::shell::wlr_layer::Layer::Background).next().is_some();
-                    up
-                };
+                // The startup screen goes away as soon as the shell's home
+                // screen is up, not when a window opens -- and stays away
+                // while that surface moves between layers, which is what
+                // Super+D does to it.
+                let desktop_up = crate::shell::desktop_up(&output);
                 let backdrop: Vec<_> = mindbar
                     .backdrop_elements(renderer, output_size, scale.x, desktop_up, show_wordmark)
                     .into_iter()
@@ -474,18 +482,23 @@ pub fn run_winit() {
             }
         }
 
-        let result = event_loop.dispatch(Some(Duration::from_millis(1)), &mut state);
-        if result.is_err() {
+        // The nested backend is for development, but a panic while handling
+        // a client is a panic either way: see `recover`.
+        let turn = recovery.turn(|| {
+            let result = event_loop.dispatch(Some(Duration::from_millis(1)), &mut state);
+            state.loop_watch.beat();
+            if result.is_err() {
+                state.running.store(false, Ordering::SeqCst);
+            } else {
+                state.after_dispatch();
+            }
+        });
+        if turn.is_none() {
+            state.loop_watch.beat();
+        }
+        if recovery.giving_up() {
+            error!("the compositor cannot get past a panic and is stopping");
             state.running.store(false, Ordering::SeqCst);
-        } else {
-            state.space.refresh();
-            state.refresh_focus();
-            state.layout_refresh();
-            state.refresh_pointer_focus();
-            state.refresh_decorations();
-            state.ipc_refresh();
-            state.popups.cleanup();
-            display_handle.flush_clients().unwrap();
         }
 
         #[cfg(feature = "debug")]

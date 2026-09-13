@@ -23,6 +23,22 @@ export interface SettingSpec {
   when?: (config: Config) => boolean;
 }
 
+/**
+ * A transient card the panel shows next to a widget — the task bar's window
+ * list. It is drawn inside the panel window, which grows to make room for it
+ * (the same trick edit mode's settings strip uses), so hovering from the
+ * widget onto the card never leaves the surface and no popup window has to be
+ * created for a pointer that may move on in 200 ms.
+ */
+export interface Flyout {
+  /** Show `content` beside `anchor`. Showing another `key` replaces it. */
+  show(key: string, content: HTMLElement, anchor: Element): void;
+  /** Take it down; with a `key`, only if that is what is showing. */
+  hide(key?: string): void;
+  /** The key of the card on screen, if any. */
+  shown(): string | undefined;
+}
+
 export interface WidgetCtx {
   id: string;
   type: string;
@@ -35,6 +51,8 @@ export interface WidgetCtx {
   origin(): { x: number; y: number };
   /** Output-space rectangle of an element, tagged with the panel edge. */
   anchorOf(el: Element): Anchor;
+  /** Only panels have one; the desktop has nowhere to put it. */
+  flyout?: Flyout;
   openPopup(name: string, arg?: Record<string, unknown>, opts?: { keyboard?: boolean; anchor?: Anchor }): void;
   togglePopup(name: string, arg?: Record<string, unknown>, opts?: { keyboard?: boolean; anchor?: Anchor }): void;
   setConfig(patch: Config): void;

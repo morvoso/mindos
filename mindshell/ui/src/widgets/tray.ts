@@ -10,10 +10,10 @@ registerWidget({
   description: 'Status icons from running applications (StatusNotifier).',
   icon: 'box',
   containers: ['panel'],
-  defaults: { hidePassive: true, iconSize: 16 },
+  defaults: { hidePassive: true, iconSize: 0 },
   settings: {
     hidePassive: { label: 'Hide passive items', type: 'boolean', help: 'Icons whose status is passive (no attention required)' },
-    iconSize: { label: 'Icon size', type: 'number', min: 12, max: 28, step: 2, unit: 'px' },
+    iconSize: { label: 'Icon size', type: 'number', min: 0, max: 28, step: 2, unit: 'px', help: '0 follows the panel: a taller bar gets bigger icons' },
   },
   create(ctx) {
     const el = h('div', { class: 'w w-tray' });
@@ -21,7 +21,11 @@ registerWidget({
     const render = () => {
       const items = ctx.store.state.tray.filter((t) => !(cfg.hidePassive && t.status === 'passive'));
       el.classList.toggle('empty', items.length === 0);
-      el.style.setProperty('--tray-ic', `${Number(cfg.iconSize) || 16}px`);
+      // 0 (the default) leaves `--tray-ic` to app.css, which derives it from
+      // the panel's thickness; any other value pins the icon to that size.
+      const fixed = Math.max(0, Number(cfg.iconSize) || 0);
+      if (fixed) el.style.setProperty('--tray-ic', `${fixed}px`);
+      else el.style.removeProperty('--tray-ic');
       reconcile(
         el,
         items,

@@ -437,7 +437,7 @@ impl Canvas {
                 let inv = 1.0 - sa as f32 / 255.0;
                 for c in 0..4 {
                     let v = src.data[si + c] as f32 + self.data[di + c] as f32 * inv;
-                    self.data[di + c] = v.round().min(255.0) as u8;
+                    self.data[di + c] = (v + 0.5).min(255.0) as u8;
                 }
             }
         }
@@ -476,10 +476,12 @@ impl Canvas {
         let i = ((y * self.width + x) * 4) as usize;
         let inv = 1.0 - a;
         let px = &mut self.data[i..i + 4];
-        px[0] = (color[2] * a * 255.0 + px[0] as f32 * inv).round().min(255.0) as u8;
-        px[1] = (color[1] * a * 255.0 + px[1] as f32 * inv).round().min(255.0) as u8;
-        px[2] = (color[0] * a * 255.0 + px[2] as f32 * inv).round().min(255.0) as u8;
-        px[3] = (a * 255.0 + px[3] as f32 * inv).round().min(255.0) as u8;
+        // Every term is non-negative, so a half and a truncation round the
+        // same way `round` does and leave no call to libm on the inner loop.
+        px[0] = (color[2] * a * 255.0 + px[0] as f32 * inv + 0.5).min(255.0) as u8;
+        px[1] = (color[1] * a * 255.0 + px[1] as f32 * inv + 0.5).min(255.0) as u8;
+        px[2] = (color[0] * a * 255.0 + px[2] as f32 * inv + 0.5).min(255.0) as u8;
+        px[3] = (a * 255.0 + px[3] as f32 * inv + 0.5).min(255.0) as u8;
     }
 }
 
@@ -634,7 +636,11 @@ impl TextRenderer {
                     if coverage <= 0.0 {
                         continue;
                     }
-                    let a = color[3] * curve[coverage.round().clamp(0.0, 255.0) as usize];
+                    // `roundf` was a quarter of the compositor's whole CPU while the
+                    // startup screen was up. Coverage is a lerp of two bytes, so it is
+                    // never negative: adding a half and truncating is the same rounding
+                    // without the call.
+                    let a = color[3] * curve[(coverage + 0.5).min(255.0) as usize];
                     canvas.blend(gx + col as i32, gy + row as i32, [color[0], color[1], color[2], a]);
                 }
             }
@@ -776,8 +782,10 @@ impl TextRenderer {
         (adv.round() as i32, 0)
     }
 
-    /// `draw` with a soft glow: the text is stamped around its position in
-    /// `glow` (low alpha) before the real text is drawn on top.
+    /// `draw` with a soft glow behind it.
+    ///
+    /// See [`halo`]: the glow is a blur of the text, laid down once, not the
+    /// text stamped a few hundred times.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_glow(
         &mut self,
@@ -791,26 +799,15 @@ impl TextRenderer {
         radius: i32,
         face: Face,
     ) -> i32 {
-        let r = radius.max(1);
-        for dy in -r..=r {
-            for dx in -r..=r {
-                let d = ((dx * dx + dy * dy) as f32).sqrt();
-                if d > r as f32 + 0.5 || (dx == 0 && dy == 0) {
-                    continue;
-                }
-                let falloff = 1.0 - d / (r as f32 + 1.0);
-                let a = glow[3] * falloff * falloff;
-                self.draw(canvas, x + dx, y + dy, None, text, px, [glow[0], glow[1], glow[2], a], face);
-            }
-        }
+        let mut mask = Canvas::new(canvas.width, canvas.height);
+        self.draw(&mut mask, x, y, None, text, px, [glow[0], glow[1], glow[2], 1.0], face);
+        halo(canvas, &mask, radius.max(1), glow, 1);
         self.draw(canvas, x, y, None, text, px, color, face)
     }
 
     /// `draw_spaced` with a soft glow behind it: the wordmark of the startup
     /// screen, which has to match `measure_spaced` exactly to stay centred, so
-    /// the glow is stamped from the same routine rather than a plain `draw`.
-    /// Wide glows are stamped every other pixel; the result is as soft and
-    /// costs a quarter as much, which matters on the first frame after boot.
+    /// the mask is set from the same routine rather than a plain `draw`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_spaced_glow(
         &mut self,
@@ -826,21 +823,11 @@ impl TextRenderer {
         tracking: i32,
     ) -> i32 {
         let r = radius.max(1);
-        let step = if r > 4 { 2 } else { 1 };
-        let mut dy = -r;
-        while dy <= r {
-            let mut dx = -r;
-            while dx <= r {
-                let d = ((dx * dx + dy * dy) as f32).sqrt();
-                if d <= r as f32 + 0.5 && !(dx == 0 && dy == 0) {
-                    let falloff = 1.0 - d / (r as f32 + 1.0);
-                    let a = glow[3] * falloff * falloff * step as f32;
-                    self.draw_spaced(canvas, x + dx, y + dy, text, px, [glow[0], glow[1], glow[2], a], face, tracking);
-                }
-                dx += step;
-            }
-            dy += step;
-        }
+        let mut mask = Canvas::new(canvas.width, canvas.height);
+        self.draw_spaced(&mut mask, x, y, text, px, [glow[0], glow[1], glow[2], 1.0], face, tracking);
+        // Wide glows were stamped every other pixel; the weight that saved is
+        // part of how bright the wordmark looks, so it stays in the sum.
+        halo(canvas, &mask, r, glow, if r > 4 { 2 } else { 1 });
         self.draw_spaced(canvas, x, y, text, px, color, face, tracking)
     }
 
@@ -849,5 +836,265 @@ impl TextRenderer {
             .horizontal_line_metrics(px)
             .map(|m| m.new_line_size.ceil() as i32)
             .unwrap_or(px as i32 + 4)
+    }
+}
+
+/// Lay `glow` down behind the text in `mask` as a halo `radius` pixels wide.
+///
+/// The glow used to be *stamped*: the whole string laid out and rasterised
+/// again once per offset inside the radius, a few hundred times over. For the
+/// startup wordmark, which is set a few hundred pixels tall, that was 1.9
+/// seconds of one core -- and it is the event loop's core, so every display,
+/// every client and all input stood still for as long as it took. It was the
+/// longest stall of an ordinary session.
+///
+/// A halo is a blur of the text, so blur the text: rasterise it once into
+/// `mask`, spread its coverage with [`spread`], and lay the colour down in one
+/// pass. The cost stops depending on the radius, and the picture does not
+/// change, because the stamp was itself a convolution -- the same disc of
+/// falloff-squared weights, applied one offset at a time.
+///
+/// Two things keep the look. The blur is scaled by the total weight the stamps
+/// used to lay down ([`stamp_weight`]), and that sum is turned back into an
+/// alpha through `1 - e^-s`: stamping composited source-over, so where the mask
+/// was solid all round the result was `1 - Π(1 - aᵢ)`, and this is the same
+/// curve for the small alphas a glow is made of. It saturates the same way, so
+/// a strong glow stays strong instead of going flat.
+///
+/// `mask` must be the size of `canvas`; only its alpha is read.
+fn halo(canvas: &mut Canvas, mask: &Canvas, radius: i32, glow: Rgba, step: i32) {
+    if glow[3] <= 0.0 || radius < 1 {
+        return;
+    }
+    let (w, h) = (canvas.width, canvas.height);
+    debug_assert_eq!((mask.width, mask.height), (w, h));
+    let mut field: Vec<f32> = mask.data.chunks_exact(4).map(|px| px[3] as f32 / 255.0).collect();
+    spread(&mut field, w, h, radius);
+    let gain = stamp_weight(radius, glow[3], step);
+    for y in 0..h {
+        for x in 0..w {
+            let sum = field[(y * w + x) as usize] * gain;
+            if sum <= 0.002 {
+                continue;
+            }
+            canvas.blend(x, y, [glow[0], glow[1], glow[2], 1.0 - (-sum).exp()]);
+        }
+    }
+}
+
+/// Spread `field` (one coverage value per pixel of a `w`×`h` image) out over
+/// `radius` pixels, in place.
+///
+/// Three box passes, each a running sum, so one pass costs the same whatever
+/// the radius and three of them are a gaussian to the eye. The width is chosen
+/// to match the disc the glow used to be stamped over: weights `(1 - d/r)²`
+/// across a disc of radius `r` have variance `r²/10` on each axis, and three
+/// boxes of width `n` have `(n² - 1)/4`.
+fn spread(field: &mut [f32], w: i32, h: i32, radius: i32) {
+    let sigma = radius as f32 / 3.162;
+    let mut n = (4.0 * sigma * sigma + 1.0).sqrt().round().max(1.0) as i32;
+    if n % 2 == 0 {
+        n += 1;
+    }
+    let half = n / 2;
+    if half < 1 || w < 1 || h < 1 {
+        return;
+    }
+    let mut tmp = vec![0f32; field.len()];
+    for _ in 0..3 {
+        box_rows(field, &mut tmp, w, h, half);
+        box_cols(&tmp, field, w, h, half);
+    }
+}
+
+/// One horizontal box pass. Outside the image counts as nothing, which is what
+/// a glow wants: there is no ink out there to spread.
+fn box_rows(src: &[f32], dst: &mut [f32], w: i32, h: i32, half: i32) {
+    let width = (2 * half + 1) as f32;
+    for y in 0..h {
+        let row = (y * w) as usize;
+        let mut acc: f32 = (0..=half.min(w - 1)).map(|k| src[row + k as usize]).sum();
+        for x in 0..w {
+            dst[row + x as usize] = acc / width;
+            let entering = x + half + 1;
+            if entering < w {
+                acc += src[row + entering as usize];
+            }
+            let leaving = x - half;
+            if leaving >= 0 {
+                acc -= src[row + leaving as usize];
+            }
+        }
+    }
+}
+
+/// One vertical box pass, the transpose of [`box_rows`].
+fn box_cols(src: &[f32], dst: &mut [f32], w: i32, h: i32, half: i32) {
+    let width = (2 * half + 1) as f32;
+    let stride = w as usize;
+    for x in 0..w {
+        let col = x as usize;
+        let mut acc: f32 = (0..=half.min(h - 1)).map(|k| src[col + k as usize * stride]).sum();
+        for y in 0..h {
+            dst[col + y as usize * stride] = acc / width;
+            let entering = y + half + 1;
+            if entering < h {
+                acc += src[col + entering as usize * stride];
+            }
+            let leaving = y - half;
+            if leaving >= 0 {
+                acc -= src[col + leaving as usize * stride];
+            }
+        }
+    }
+}
+
+/// The total alpha the old stamp loop laid down at a point the mask covered
+/// from every direction: the same disc, the same falloff, the same
+/// every-other-pixel step for wide glows. [`halo`] scales the blur by this so
+/// the glow keeps the strength it was drawn with.
+///
+/// The sparse pass is kept exactly as it was, including the part of it that
+/// was a mistake: stepping by two drops three offsets in four but each
+/// surviving stamp was only counted twice, so a wide glow came out about half
+/// as strong as a dense one. That is the glow the startup screen has always
+/// shown, so it is the glow this reproduces.
+fn stamp_weight(radius: i32, alpha: f32, step: i32) -> f32 {
+    let r = radius.max(1);
+    let step = step.max(1);
+    let mut total = 0.0;
+    let mut dy = -r;
+    while dy <= r {
+        let mut dx = -r;
+        while dx <= r {
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
+            if d <= r as f32 + 0.5 && !(dx == 0 && dy == 0) {
+                let falloff = 1.0 - d / (r as f32 + 1.0);
+                total += alpha * falloff * falloff * step as f32;
+            }
+            dx += step;
+        }
+        dy += step;
+    }
+    total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// The alpha of one pixel, which is all these tests look at.
+    fn alpha_at(canvas: &Canvas, x: i32, y: i32) -> u8 {
+        canvas.data[((y * canvas.width + x) * 4 + 3) as usize]
+    }
+
+    /// A glow costs a small multiple of the text it sits behind.
+    ///
+    /// It used to cost a few hundred times as much, because it was stamped:
+    /// the string was laid out and rasterised again at every offset inside the
+    /// radius. On the startup screen, where the wordmark is set a few hundred
+    /// pixels tall, that was 1.9 seconds inside one call -- on the thread that
+    /// also runs every display, every client and all input. Nothing about the
+    /// picture needed it; a halo is a blur, and a blur is cheap.
+    ///
+    /// The bound is a ratio rather than a time so it means the same thing in a
+    /// debug build, on a slow machine, and under a loaded test runner.
+    #[test]
+    fn a_glow_costs_about_what_the_text_costs() {
+        let mut text = TextRenderer::new();
+        // The startup wordmark as the 3072x1728 display actually sets it.
+        let (px, tracking, radius) = (358.0, 65, 29);
+        let wordmark = "MINDOS";
+        let (w, h) = (2200, 520);
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let glow = [0.2, 0.6, 1.0, 0.14];
+
+        // The first pass loads and hints the faces; that is not the measurement.
+        let mut warm = Canvas::new(w, h);
+        text.draw_spaced(&mut warm, 60, 60, wordmark, px, white, Face::Display, tracking);
+
+        let mut plain = Canvas::new(w, h);
+        let started = Instant::now();
+        text.draw_spaced(&mut plain, 60, 60, wordmark, px, white, Face::Display, tracking);
+        let one_pass = started.elapsed();
+
+        let mut glowing = Canvas::new(w, h);
+        let started = Instant::now();
+        text.draw_spaced_glow(&mut glowing, 60, 60, wordmark, px, white, glow, radius, Face::Display, tracking);
+        let with_glow = started.elapsed();
+
+        eprintln!("the wordmark: {one_pass:?} plain, {with_glow:?} with its glow");
+        assert!(
+            with_glow < one_pass * 20,
+            "the glow ({with_glow:?}) has to stay within reach of the text it is behind \
+             ({one_pass:?}); stamping it cost several hundred times as much and stopped \
+             every display for two seconds"
+        );
+    }
+
+    /// The halo is a blur: brightest over the shape, fading outwards, gone
+    /// beyond the radius, and the same on all four sides -- the off-by-one a
+    /// running-sum blur invites shows up as a glow that leans.
+    #[test]
+    fn the_halo_surrounds_the_shape_and_fades_out() {
+        let (w, h, r) = (201, 201, 20);
+        let mut mask = Canvas::new(w, h);
+        mask.fill_rect(90, 90, 21, 21, [1.0, 1.0, 1.0, 1.0]);
+        let mut canvas = Canvas::new(w, h);
+        halo(&mut canvas, &mask, r, [0.2, 0.6, 1.0, 0.2], 1);
+
+        let centre = alpha_at(&canvas, 100, 100);
+        let near = alpha_at(&canvas, 100, 75);
+        let far = alpha_at(&canvas, 100, 55);
+        assert!(centre > near, "the glow is strongest over the shape ({centre} vs {near})");
+        assert!(near > 0, "the glow reaches past the shape");
+        assert!(far < near, "and fades with distance ({far} vs {near})");
+        assert_eq!(alpha_at(&canvas, 100, 5), 0, "nothing this far out");
+
+        for d in [10, 20, 25, 30] {
+            let up = alpha_at(&canvas, 100, 100 - d);
+            let down = alpha_at(&canvas, 100, 100 + d);
+            let left = alpha_at(&canvas, 100 - d, 100);
+            let right = alpha_at(&canvas, 100 + d, 100);
+            assert!(
+                [down, left, right].iter().all(|&v| v.abs_diff(up) <= 1),
+                "the glow leans at {d}px out: up {up}, down {down}, left {left}, right {right}"
+            );
+        }
+    }
+
+    /// Blurring nothing stays nothing, and a glow with no alpha draws nothing:
+    /// the two cases a startup screen hits before it has anything to say.
+    #[test]
+    fn an_empty_glow_draws_nothing() {
+        let mask = Canvas::new(64, 64);
+        let mut canvas = Canvas::new(64, 64);
+        halo(&mut canvas, &mask, 8, [1.0, 1.0, 1.0, 0.5], 1);
+        assert!(canvas.data.iter().all(|&b| b == 0), "no ink, no glow");
+
+        let mut mask = Canvas::new(64, 64);
+        mask.fill_rect(24, 24, 16, 16, [1.0, 1.0, 1.0, 1.0]);
+        halo(&mut canvas, &mask, 8, [1.0, 1.0, 1.0, 0.0], 1);
+        assert!(canvas.data.iter().all(|&b| b == 0), "a transparent glow is not a glow");
+    }
+
+    /// The weight the blur is scaled by has to answer the question the stamp
+    /// loop answered: how much alpha landed on a point the mask covered from
+    /// every side. More radius or more alpha means more of it.
+    #[test]
+    fn the_glow_keeps_the_strength_it_was_drawn_with() {
+        assert!(stamp_weight(20, 0.2, 1) > stamp_weight(8, 0.2, 1));
+        assert!(stamp_weight(20, 0.4, 1) > stamp_weight(20, 0.2, 1));
+        // A wide glow was stamped every other pixel: a quarter of the
+        // offsets, each counted twice, so half the strength of a dense one.
+        // The startup screen has always looked like that and still does.
+        let dense = stamp_weight(20, 0.2, 1);
+        let sparse = stamp_weight(20, 0.2, 2);
+        let ratio = sparse / dense;
+        assert!(
+            (0.45..0.55).contains(&ratio),
+            "the sparse glow is half the dense one, as it has always been: {ratio}"
+        );
     }
 }

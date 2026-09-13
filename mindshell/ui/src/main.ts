@@ -18,7 +18,9 @@ async function main(): Promise<void> {
   if (!bridge.hasHost()) installMock();
   const info = bridge.windowInfo();
   document.documentElement.dataset.kind = info.kind;
+  const tStart = performance.now();
   await store.init();
+  const tState = performance.now();
   initAppearance();
   // Quiet while a game runs: no animations, samplers slowed or stopped.
   setQuiet(!!store.state.game);
@@ -49,6 +51,19 @@ async function main(): Promise<void> {
     default:
       renderPreview(root);
   }
+  const tRender = performance.now();
+  requestAnimationFrame(() => {
+    bridge.send('shell.timing', {
+      kind: info.kind,
+      id: info.id,
+      output: info.output,
+      script: Math.round(tStart),
+      state: Math.round(tState - tStart),
+      render: Math.round(tRender - tState),
+      frame: Math.round(performance.now() - tRender),
+      total: Math.round(performance.now()),
+    });
+  });
   bridge.send('shell.ready', { kind: info.kind, id: info.id, popup: info.popup });
   if (!['toast', 'panel'].includes(info.kind)) installController();
 }

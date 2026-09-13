@@ -22,9 +22,19 @@ export interface AppFrame {
   setActive(id: string): void;
 }
 
+/** What the sidebar's search box calls itself, for an app that is not Settings. */
+export interface FrameSearch {
+  placeholder: string;
+  /** Shown when nothing matches; name a couple of things that would. */
+  empty: string;
+  /** The hint beside the shortcut at the foot of the sidebar. */
+  foot: string;
+}
+
 /** The standard app window: a sidebar with the app's name and pages, and a content column. */
-export function appFrame(root: HTMLElement, title: string, items: NavItem[], onNav: (id: string) => void): AppFrame {
-  const nav = h('nav', { class: 'app-nav', 'aria-label': 'Settings pages' });
+export function appFrame(root: HTMLElement, title: string, items: NavItem[], onNav: (id: string) => void, search_?: FrameSearch): AppFrame {
+  const words = search_ ?? { placeholder: 'Find a setting', empty: 'No matching settings. Try \u201cGPU\u201d, \u201cWi-Fi\u201d or \u201cdisplay\u201d.', foot: 'Find settings' };
+  const nav = h('nav', { class: 'app-nav', 'aria-label': `${title} pages` });
   const buttons = new Map<string, HTMLButtonElement>();
   const groups = new Map<string, HTMLElement>();
   for (const it of items) {
@@ -38,8 +48,8 @@ export function appFrame(root: HTMLElement, title: string, items: NavItem[], onN
     buttons.set(it.id, b);
     groups.get(group)!.appendChild(b);
   }
-  const search = h('input', { type: 'search', class: 'nav-search-input', placeholder: 'Find a setting', 'aria-label': 'Find a setting', autocomplete: 'off', spellcheck: false });
-  const empty = h('p', { class: 'nav-empty', hidden: true, role: 'status' }, 'No matching settings. Try “GPU”, “Wi-Fi” or “display”.');
+  const search = h('input', { type: 'search', class: 'nav-search-input', placeholder: words.placeholder, 'aria-label': words.placeholder, autocomplete: 'off', spellcheck: false });
+  const empty = h('p', { class: 'nav-empty', hidden: true, role: 'status' }, words.empty);
   const filter = () => {
     const words = search.value.trim().toLowerCase().split(/\s+/);
     for (const item of items) {
@@ -73,7 +83,7 @@ export function appFrame(root: HTMLElement, title: string, items: NavItem[], onN
   });
   const side = h('aside', { class: 'app-side' }, h('div', { class: 'app-brand' }, h('span', { class: 'app-brand-mark' }, icon('mind', 20)), h('span', { class: 'app-brand-copy' }, h('span', { class: 'app-brand-text' }, 'MindOS'), h('span', { class: 'app-brand-caption' }, title))),
     h('div', { class: 'nav-search' }, icon('search', 15), search), nav, empty,
-    h('div', { class: 'nav-foot' }, h('kbd', {}, 'Ctrl K'), ' Find settings'));
+    h('div', { class: 'nav-foot' }, h('kbd', {}, 'Ctrl K'), ` ${words.foot}`));
   const content = h('main', { class: 'app-content', tabindex: -1 });
   root.append(side, content);
   const disposeGlass = frostSidebar(side);

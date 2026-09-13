@@ -36,6 +36,24 @@ GameMode disable the transition. No animation runs at rest. The header reads
 `MINDOS // <panel title>` and has an icon-only theme switch; hardware readings
 appear only in the System panel.
 
+Switching modes also says what the machine is for, so the performance mode
+follows it: **Gaming** sets `mindos-perf set performance`, **Work** sets
+`balanced`. Only an actual switch does this — a shell that restarts, or a
+display that becomes the primary one, leaves a mode the user chose by hand
+alone — and a game already running keeps its own mode until it ends, so this
+is what the machine returns to rather than something that fights GameMode.
+Either mode can still be overridden from the panel's performance widget or
+Settings › Performance.
+
+Both modes carry the same **System** card on the right: the load graph, the
+processor, graphics and memory meters, the network, disk and container line,
+the busiest processes and *Open Task Manager* for the rest (see
+[the Task Manager](SHELL.md#the-task-manager)). It samples once every three
+seconds through the shell's shared sampler, so the card, the panel's `sysmon`
+widget and any open Task Manager page cost one call between them — and while a
+game is running the desktop stops sampling altogether, the card saying so
+instead of drawing stale numbers.
+
 Gaming has the library, sessions, downloads, friends and system tools.
 Work has everyday application launchers, recent files from Documents,
 persistent desktop notes and this monitor's open windows. Missing applications
@@ -47,6 +65,25 @@ from desktop entries and `mindshell --app`. The session socket forwards these
 requests to the shell; standalone windows remain a fallback when no shell runs.
 The Back button returns to the mode's home panel. Companion stays a separate
 window so it can be pinned beside a game.
+
+Opening one of these brings the desktop forward over the windows, fading in;
+clicking a window sends it back, fading out, and the page it had open is put
+away so what shows between the windows is the desktop again. Super + D toggles
+the desktop by hand, Escape sends it back, and nothing else moves it — changing
+the window layout, editing a panel or a window opening on another screen leave
+an open page exactly where it is. Summoning the desktop again returns to that
+page. See *The home screen and the windows* in SHELL.md.
+
+The desktop itself is an overlay: with nothing open it is the whole screen,
+the first window crossfades it away, and closing the last one brings it back.
+It reserves nothing — it and the windows are never on screen at once — so
+maximised, tiled, columned and snapped windows get the output minus the user's
+panels, which stay visible in both views. Fullscreen windows and games still
+get the whole screen, layer surfaces included: while a game covers a display
+the panels on it are neither drawn nor clickable, whether the game went
+fullscreen, went borderless, or simply sized itself to the screen. Super + D
+brings them back with the home screen. The `desktop-view` widget in the panel
+says which view the screen is in and switches between them.
 
 Only the primary monitor shows the desktop panels, navigation and shelf. Other
 monitors show the wallpaper and application windows. Changing the primary display
@@ -60,7 +97,7 @@ disconnected monitors fall back to a connected display.
 | Screen / feature | Implementation |
 | --- | --- |
 | Library | Installed Steam, Heroic Epic/GOG, Lutris and native desktop games; cached Steam art, source/search/sort/favorites, launch/focus, held-session resume, completion and cold-storage status |
-| Desktop sidebar | Local Mind, real CPU/GPU/memory, existing power profiles, managed sessions, Steam manifest download progress, connected Steam friends and launcher shortcuts |
+| Desktop sidebar | Local Mind, the live system readout (processor, graphics, memory, network, disks, containers, busiest processes) with a link to the Task Manager, existing power profiles, managed sessions, Steam manifest download progress, connected Steam friends and launcher shortcuts |
 | Gaming Center | Sessions, saves, storage, downloads, party, audio, frame history/comparison, connections, local activity and real systemd boot information |
 | Companion | Local/direct HTTPS video, saved per-game guide links and notes, playback controls, right-third snap with game left two-thirds, display selection, restore positions, audio ducking |
 | Super+Space | Existing Mind bar now indexes installed games plus session, save and companion actions; natural-language help still uses the configured Mind model |

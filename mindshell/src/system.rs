@@ -17,7 +17,7 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
 /// Whether `cmd` is on the PATH. The answer is kept for ten minutes: the
 /// samplers ask many times a minute between them, and a helper installed
 /// or removed meanwhile shows up on the next check.
-fn have(cmd: &str) -> bool {
+pub fn have(cmd: &str) -> bool {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static KNOWN: OnceLock<Mutex<HashMap<String, (Instant, bool)>>> = OnceLock::new();

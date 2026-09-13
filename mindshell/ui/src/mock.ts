@@ -1,4 +1,5 @@
 import { gamingMock } from './gaming-mock';
+import { systemMock } from './mock-system';
 import { INPUT_DEFAULTS } from './apps/settings-input';
 // A fake mindshell host for developing the UI in a browser. Installed by
 // main.ts when window.webkit.messageHandlers.mindos is missing. It answers
@@ -18,6 +19,8 @@ export interface MockHooks {
   closePopup?: (name: string) => void;
   /** A fit-to-content panel reported its length. */
   panelFit?: (panel: string, length: number) => void;
+  /** A panel asked for extra thickness to show a widget's flyout card. */
+  panelFlyout?: (panel: string, size: number) => void;
   openApp?: (name: string, page?: string, arg?: string) => void;
 }
 
@@ -175,14 +178,14 @@ export function installMock(): MindosGlobal {
   const now = () => Math.floor(Date.now() / 1000);
   // ----- notices, updates, health (the Mind daemon subscription) -----
   const notices: MindNotice[] = [
-    { id: 'updates:available', level: 'warn', title: '14 updates, one of them the NVIDIA driver', body: 'nvidia-utils 580.65 → 580.82 and linux-mindos 6.17.3 → 6.17.4. The driver and kernel change together, so expect a reboot; nothing in the news mentions manual steps. A snapshot is taken first.', source: 'updates', time: now() - 1800, actions: [{ label: 'Update now', kind: 'request', arg: { type: 'apply_updates' } }, { label: 'What changes?', kind: 'chat', arg: 'What is in the pending update and could it break my games?' }, { label: 'Details', kind: 'settings', arg: 'updates' }] },
+    { id: 'updates:available', level: 'warn', title: '14 updates, one of them the NVIDIA driver', body: 'nvidia-utils 580.65 → 580.82 and linux 6.17.3 → 6.17.4. The driver and kernel change together, so expect a reboot; nothing in the news mentions manual steps. A snapshot is taken first.', source: 'updates', time: now() - 1800, actions: [{ label: 'Update now', kind: 'request', arg: { type: 'apply_updates' } }, { label: 'What changes?', kind: 'chat', arg: 'What is in the pending update and could it break my games?' }, { label: 'Details', kind: 'settings', arg: 'updates' }] },
     { id: 'health:pacnew', level: 'info', title: 'A config file wants a look', body: '/etc/pacman.conf.pacnew arrived with the last update. Your file is untouched; the new one may have new defaults.', source: 'health', time: now() - 7200, actions: [{ label: 'Show the difference', kind: 'chat', arg: 'Show me what changed in /etc/pacman.conf.pacnew versus my /etc/pacman.conf' }] },
   ];
   let autoApply = false;
   const updates: UpdateStatus = {
     checked_at: now() - 1800,
     packages: [
-      { name: 'linux-mindos', from: '6.17.3-1', to: '6.17.4-1', tag: 'kernel' }, { name: 'nvidia-utils', from: '580.65.06-2', to: '580.82.07-1', tag: 'gpu' }, { name: 'lib32-nvidia-utils', from: '580.65.06-2', to: '580.82.07-1', tag: 'gpu' },
+      { name: 'linux', from: '6.17.3.arch1-1', to: '6.17.4.arch1-1', tag: 'kernel' }, { name: 'nvidia-utils', from: '580.65.06-2', to: '580.82.07-1', tag: 'gpu' }, { name: 'lib32-nvidia-utils', from: '580.65.06-2', to: '580.82.07-1', tag: 'gpu' },
       { name: 'mesa', from: '25.2.3-1', to: '25.2.4-1', tag: 'gpu' }, { name: 'steam', from: '1.0.0.82-1', to: '1.0.0.83-1', tag: 'gaming' }, { name: 'pipewire', from: '1.4.7-1', to: '1.4.8-1', tag: 'gaming' },
       { name: 'firefox', from: '143.0-1', to: '143.0.1-1', tag: '' }, { name: 'curl', from: '8.16.0-1', to: '8.16.0-2', tag: '' }, { name: 'gtk4', from: '4.20.1-1', to: '4.20.2-1', tag: 'graphics' },
       { name: 'mindshell', from: '0.2.0-15', to: '0.2.0-16', tag: 'mindos' }, { name: 'python', from: '3.13.7-1', to: '3.13.7-2', tag: '' }, { name: 'zsh', from: '5.9-6', to: '5.9-7', tag: '' }, { name: 'git', from: '2.51.0-1', to: '2.51.1-1', tag: '' }, { name: 'openssl', from: '3.5.2-1', to: '3.5.3-1', tag: 'core' },
@@ -521,6 +524,9 @@ export function installMock(): MindosGlobal {
     };
   };
 
+  // The Task Manager and the desktop readout (see mock-system.ts).
+  const sys = systemMock(t0);
+
   const focused = () => windows.find((w) => w.focused)?.id ?? null;
   const pushWindows = () => emit('windows', { windows: windows.map((w) => ({ ...w })), focused: focused() });
 
@@ -546,6 +552,7 @@ export function installMock(): MindosGlobal {
       tray: TRAY,
       layout,
       editMode,
+      desktopHome: true,
       config: { icon_theme: 'breeze-dark', hardware_acceleration: 'always', terminal: 'kitty', icon_size: 48 },
       mind: { ...mind },
       notify: notifyState(),
@@ -707,6 +714,12 @@ export function installMock(): MindosGlobal {
     'lock.wake': () => pushIdle({ stage: 'active' }),
     'lock.blank': () => pushIdle({ stage: 'blank', locked: prefs.idle?.lock_on_blank ?? true }),
     'system.stats': stats,
+    'system.overview': (p) => sys.overview(p),
+    'system.processes': (p) => sys.processes(p),
+    'system.process': (p) => sys.process(p),
+    'system.kill': (p) => sys.kill(p),
+    'system.containers': (p) => sys.containers(p),
+    'system.services': () => sys.services(),
     'audio.get': () => ({ ...audio }),
     'audio.set': (p) => {
       audio.volume = Math.max(0, Math.min(1.5, Number(p.volume)));
@@ -738,6 +751,10 @@ export function installMock(): MindosGlobal {
     'icons.resolve': (p) => letterIcon(String(p.name), hashHue(String(p.name))),
     'panel.fit': (p) => {
       mockHooks.panelFit?.(String(p.panel ?? ''), Number(p.length) || 0);
+      return {};
+    },
+    'panel.flyout': (p) => {
+      mockHooks.panelFlyout?.(String(p.panel ?? ''), Number(p.size) || 0);
       return {};
     },
     'wm.layoutMode': () => modeEvent(),

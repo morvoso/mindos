@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Task Manager
+Comment=Processes, load, memory, drives, network, sensors, containers and services
+Exec=mindshell --app tasks
+Icon=utilities-system-monitor
+Categories=System;Monitor;
+Keywords=task;process;kill;end;cpu;gpu;memory;ram;disk;network;temperature;sensor;docker;podman;container;service;systemd;monitor;performance;btop;htop;
+Terminal=false

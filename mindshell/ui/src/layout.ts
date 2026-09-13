@@ -27,10 +27,16 @@ export function isFitPanel(p: { length: number }): boolean {
 export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout {
   const base = defaultLayout();
   if (!raw || typeof raw !== 'object') return base;
-  const panels = Array.isArray(raw.panels) ? raw.panels : base.panels;
+  const panels = (Array.isArray(raw.panels) ? raw.panels : base.panels).slice();
   const desktop = raw.desktop && typeof raw.desktop === 'object' ? raw.desktop : base.desktop;
+  // 5 added the view indicator. It is the only thing that says which of the two
+  // desktop views the screen is in, and a layout saved before it existed has no
+  // way to know to ask for it, so it is put in the first panel for them.
+  if ((Number(raw.version) || 0) < 5 && panels.length && !panels.some((p) => (p.widgets ?? []).some((w) => w.type === 'desktop-view'))) {
+    panels[0] = { ...panels[0], widgets: [{ id: 'view', type: 'desktop-view', config: {} }, ...(panels[0].widgets ?? [])] };
+  }
   return {
-    version: 4,
+    version: 5,
     panels: panels.map((p, i) => ({
       id: p.id ?? `panel-${i}`,
       output: p.output ?? '*',

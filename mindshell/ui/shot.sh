@@ -33,6 +33,16 @@ shot app-performance     'kind=app&id=settings&arg=%7B%22page%22%3A%22performanc
 shot app-games           'kind=app&id=settings&arg=%7B%22page%22%3A%22games%22%7D' 1040,760
 shot app-software        'kind=app&id=settings&arg=%7B%22page%22%3A%22software%22%7D' 1040,760
 shot app-input           'kind=app&id=settings&arg=%7B%22page%22%3A%22input%22%7D' 1040,760
+# The Task Manager, one shot per page.
+shot tasks-overview      'kind=app&id=tasks' 1360,900
+shot tasks-processes     'kind=app&id=tasks&arg=%7B%22page%22%3A%22processes%22%7D' 1360,900
+shot tasks-performance   'kind=app&id=tasks&arg=%7B%22page%22%3A%22performance%22%7D' 1360,900
+shot tasks-storage       'kind=app&id=tasks&arg=%7B%22page%22%3A%22storage%22%7D' 1360,900
+shot tasks-network       'kind=app&id=tasks&arg=%7B%22page%22%3A%22network%22%7D' 1360,900
+shot tasks-sensors       'kind=app&id=tasks&arg=%7B%22page%22%3A%22sensors%22%7D' 1360,900
+shot tasks-containers    'kind=app&id=tasks&arg=%7B%22page%22%3A%22containers%22%7D' 1360,900
+shot tasks-services      'kind=app&id=tasks&arg=%7B%22page%22%3A%22services%22%7D' 1360,900
+shot tasks-system        'kind=app&id=tasks&arg=%7B%22page%22%3A%22system%22%7D' 1360,900
 shot preview-notifications 'kind=preview&popup=notifications'
 shot preview-perf        'kind=preview&popup=perf'
 shot preview-auth        'kind=preview&popup=auth'

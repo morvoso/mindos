@@ -9,6 +9,7 @@
 //! any backend and costs nothing while it is closed. The look is the MindOS
 //! look: a square charcoal card, light hairlines and the shared green accent.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use serde_json::Value;
@@ -17,7 +18,8 @@ use smithay::backend::renderer::element::memory::{MemoryRenderBuffer, MemoryRend
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::{ImportMem, Renderer};
 use smithay::input::keyboard::{Keysym, ModifiersState};
-use smithay::utils::{Logical, Point, Size, Transform};
+use smithay::utils::{Buffer, Logical, Point, Rectangle, Size, Transform};
+use tracing::info;
 
 use crate::launcher::{self, AppEntry};
 use crate::markdown::{self, Style};
@@ -163,6 +165,58 @@ struct Cached {
     scale: i32,
 }
 
+/// Everything on the startup screen that does not move, rasterised once for
+/// one output geometry: the card (wordmark, track and caption) with its
+/// measurements -- width, height, the wordmark's middle and the track's row,
+/// in canvas pixels -- the key hints, and the four HUD corners.
+struct StartupArt {
+    card: MemoryRenderBuffer,
+    card_geometry: (i32, i32, i32, i32),
+    hints: MemoryRenderBuffer,
+    hints_size: Size<i32, Logical>,
+    corners: Vec<MemoryRenderBuffer>,
+    corner_side: i32,
+    /// The two pieces that move -- the sweep along the track and the hairline's
+    /// streak -- each with the canvas it is drawn on. Both are redrawn every
+    /// frame, so they are kept and drawn *into* rather than made again: a new
+    /// `MemoryRenderBuffer` is a new texture, and at 240 Hz on two displays
+    /// that was the better part of a thousand texture allocations a second and
+    /// a megabyte of uploads for a dot travelling along a line.
+    sweep: Animated,
+    scan: Animated,
+}
+
+/// A buffer that is redrawn in place: the canvas it is painted on, and the
+/// upload that keeps its identity from one frame to the next.
+struct Animated {
+    canvas: Canvas,
+    buffer: MemoryRenderBuffer,
+}
+
+impl Animated {
+    fn new(width: i32, height: i32, s: i32) -> Self {
+        let canvas = Canvas::new(width, height);
+        let buffer = MindBar::buffer_of(&canvas, s);
+        Animated { canvas, buffer }
+    }
+
+    /// Clear the canvas, let `draw` paint this frame on it, and hand the
+    /// result to the buffer. The damage is the whole canvas: it is a strip a
+    /// few pixels tall, and working out which columns the head moved through
+    /// would cost more than uploading it.
+    fn frame(&mut self, draw: impl FnOnce(&mut Canvas)) -> &MemoryRenderBuffer {
+        self.canvas.data.fill(0);
+        draw(&mut self.canvas);
+        let size = Size::<i32, Buffer>::from((self.canvas.width, self.canvas.height));
+        let pixels = &self.canvas.data;
+        let _ = self.buffer.render().draw(|slice| {
+            slice.copy_from_slice(pixels);
+            Ok::<_, std::convert::Infallible>(vec![Rectangle::from_size(size)])
+        });
+        &self.buffer
+    }
+}
+
 /// Something you can click inside the card. Coordinates are card-local and
 /// unscaled, so a click maps to one whatever the display scale is.
 #[derive(Debug, Clone)]
@@ -237,13 +291,12 @@ pub struct MindBar {
     layout_output_size: Option<Size<i32, Logical>>,
     /// The panel's shadow, drawn once per size (it is the slow part).
     shadow: Option<(Size<i32, Logical>, i32, Canvas)>,
-    /// The startup screen's card (wordmark, track, caption), its hints and its
-    /// HUD corners, with the card's measurements: width, height, the wordmark's
-    /// middle and the track's row, all in canvas pixels.
-    wordmark: Option<Cached>,
-    card_geometry: (i32, i32, i32, i32),
-    hints: Option<Cached>,
-    corners: Option<(i32, i32, Vec<MemoryRenderBuffer>)>,
+    /// The startup screen's fixed artwork, one entry per output geometry,
+    /// dropped again when that output's desktop comes up. Keyed rather than
+    /// kept in a single slot because two monitors of different size or scale
+    /// would otherwise take turns invalidating it and rasterise the wordmark
+    /// again on every frame of every output.
+    startup_art: HashMap<(i32, i32, i32), StartupArt>,
     /// When the startup screen went up (the sweep's clock).
     backdrop_since: Option<Instant>,
     text: TextRenderer,
@@ -282,10 +335,7 @@ impl MindBar {
             panel: None,
             layout_output_size: None,
             shadow: None,
-            wordmark: None,
-            card_geometry: (0, 0, 0, 0),
-            hints: None,
-            corners: None,
+            startup_art: HashMap::new(),
             backdrop_since: None,
             text,
             osd: Default::default(),
@@ -306,9 +356,7 @@ impl MindBar {
     /// GPU-backed copies must be uploaded again after the display device resumes.
     pub fn invalidate_graphics(&mut self) {
         self.panel = None;
-        self.wordmark = None;
-        self.hints = None;
-        self.corners = None;
+        self.startup_art.clear();
         self.osd.clear();
         self.dirty = true;
     }
@@ -1283,6 +1331,82 @@ impl MindBar {
         canvas
     }
 
+    /// The startup screen's fixed artwork for one output geometry, rasterised
+    /// on first use and kept. Every output that shows the screen gets its own
+    /// entry: a single slot would be invalidated by each output in turn, which
+    /// is the whole cost of the screen paid again on every frame.
+    fn startup_art_for(&mut self, output_size: Size<i32, Logical>, s: i32, cscale: f32) -> &mut StartupArt {
+        let key = (output_size.w, output_size.h, s);
+        if !self.startup_art.contains_key(&key) {
+            let art = self.build_startup_art(output_size, s, cscale);
+            self.startup_art.insert(key, art);
+        }
+        self.startup_art.get_mut(&key).expect("just inserted")
+    }
+
+    /// Rasterise everything fixed on the startup screen for one output
+    /// geometry. This is the expensive part -- the wordmark is set in display
+    /// type a couple of hundred pixels tall, and measuring it walks the string
+    /// once per candidate size -- so it happens on the first frame an output
+    /// shows the screen and never again while it is up.
+    fn build_startup_art(&mut self, output_size: Size<i32, Logical>, s: i32, cscale: f32) -> StartupArt {
+        // This is drawn on the event loop, so whatever it costs is time no
+        // display updates and no client is served. It is here in the journal
+        // because it has twice been the longest stall of a session, and if it
+        // ever grows again -- or starts happening more than once an output --
+        // the line says so before anyone has to go looking.
+        let started = Instant::now();
+        let c = move |v: f32| (v * cscale).round() as i32;
+        let ls = cscale / s as f32;
+        let u = |v: f32| (v * ls).round() as i32;
+        let accent = self.accent;
+
+        // The wordmark is set as large as the output will take, stepping down
+        // until it fits between the margins.
+        let tracking = |px: f32| (px * 0.18).round() as i32;
+        let room = (output_size.w - u(80.0)) * s;
+        let mut title_px = 112.0 * cscale;
+        while title_px > 24.0 * cscale
+            && self.text.measure_spaced(TITLE, title_px, Face::Display, tracking(title_px)) > room
+        {
+            title_px *= 0.85;
+        }
+        let (canvas, title_mid, bar_y) = self.draw_startup_card(&c, title_px, tracking(title_px));
+        let card_geometry = (canvas.width, canvas.height, title_mid, bar_y);
+        let card = Self::buffer_of(&canvas, s);
+
+        // The hints only appear once the wait runs long, but they are drawn
+        // now: a stall six seconds into the boot is exactly what this screen
+        // exists to avoid.
+        let hints_canvas = self.draw_startup_hints(&c);
+        let hints_size = Size::from((hints_canvas.width, hints_canvas.height));
+        let hints = Self::buffer_of(&hints_canvas, s);
+
+        let corner_side = c(32.0).max(6);
+        let corners = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
+            .iter()
+            .map(|(dx, dy)| Self::buffer_of(&Self::draw_corner(&c, accent, *dx, *dy), s))
+            .collect();
+
+        // The two moving pieces, sized once: the sweep sits on the card's
+        // track, the streak on the hairline low on the screen.
+        let sweep = Animated::new(c(360.0), c(16.0).max(4), s);
+        let scan = Animated::new(
+            ((output_size.w as f32 * 0.56) as i32 * s).max(2),
+            c(10.0).max(3),
+            s,
+        );
+
+        info!(
+            width = output_size.w,
+            height = output_size.h,
+            scale = s,
+            took_ms = started.elapsed().as_millis() as u64,
+            "startup screen drawn"
+        );
+        StartupArt { card, card_geometry, hints, hints_size, corners, corner_side, sweep, scan }
+    }
+
     /// The startup screen: the boot splash, continued by the compositor.
     ///
     /// Plymouth gives up the display the moment the session starts, and the
@@ -1308,6 +1432,11 @@ impl MindBar {
     {
         if !enabled || desktop_up || output_size.w < 200 || output_size.h < 120 {
             self.backdrop_since = None;
+            // The screen is over for this output: hand its artwork back. It is
+            // a few megabytes of canvas and texture per geometry, and once the
+            // desktop is up nothing asks for it again this session.
+            let s = scale.ceil().max(1.0) as i32;
+            self.startup_art.remove(&(output_size.w, output_size.h, s));
             return Vec::new();
         }
         let elapsed = self.backdrop_since.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
@@ -1322,81 +1451,62 @@ impl MindBar {
         let accent = self.accent;
         let mut out = Vec::new();
 
-        // ---- the card: wordmark, track, caption (redrawn only when the output changes)
-        let mut title_px = 112.0 * cscale;
-        let tracking = |px: f32| (px * 0.18).round() as i32;
-        let room = (output_size.w - u(80.0)) * s;
-        while title_px > 24.0 * cscale
-            && self.text.measure_spaced(TITLE, title_px, Face::Display, tracking(title_px)) > room
-        {
-            title_px *= 0.85;
-        }
-        let stale = match &self.wordmark {
-            Some(card) => card.scale != s || card.size.w != output_size.w || card.size.h != output_size.h,
-            None => true,
-        };
-        if stale {
-            let (canvas, title_mid, bar_y) = self.draw_startup_card(&c, title_px, tracking(title_px));
-            self.wordmark = Some(Cached {
-                buffer: Self::buffer_of(&canvas, s),
-                size: output_size,
-                scale: s,
-            });
-            self.card_geometry = (canvas.width, canvas.height, title_mid, bar_y);
-        }
-        let (card_w, card_h, title_mid, bar_y) = self.card_geometry;
+        // ---- the fixed artwork: measured and rasterised once per output
+        // geometry, and from then on only composited. The wordmark is by far
+        // the most expensive thing on this screen and none of it changes while
+        // the screen is up.
+        let art = self.startup_art_for(output_size, s, cscale);
+        let (card_w, card_h, title_mid, bar_y) = art.card_geometry;
         // The wordmark sits where the splash had it: 30 units above centre.
         let card_x = (output_size.w - card_w / s) / 2;
         let card_y = output_size.h / 2 - u(30.0) - title_mid / s;
-        if let Some(card) = &self.wordmark {
-            out.extend(Self::buffer_element(renderer, &card.buffer, (card_x, card_y).into(), scale));
-        }
+        out.extend(Self::buffer_element(renderer, &art.card, (card_x, card_y).into(), scale));
 
         // ---- the sweep along the track: the splash's progress head, without a
         // number to report, so it runs on a 1.9 s loop while the shell starts.
-        let bar_w = c(360.0);
-        let strip_h = c(16.0).max(4);
-        let mut strip = Canvas::new(bar_w, strip_h);
+        let (bar_w, strip_h) = (art.sweep.canvas.width, art.sweep.canvas.height);
         let seg = c(120.0).max(8);
         let phase = (elapsed / 1.9).fract();
         let head = (-seg as f32 + (bar_w + seg) as f32 * phase) as i32;
         let mid = strip_h / 2;
         let th = c(3.0).max(2);
-        for x in head.max(0)..(head + seg).min(bar_w) {
-            let t = (x - head) as f32 / seg as f32;
-            let a = (t * t * t).clamp(0.0, 1.0);
-            strip.fill_rect(x, mid - th / 2, 1, th, alpha(accent, a));
-        }
-        let hx = head + seg;
-        if hx > 0 && hx < bar_w {
-            strip.fill_circle(hx, mid, c(6.0).max(3), alpha(accent, 0.22));
-            strip.fill_circle(hx, mid, c(3.0).max(2), alpha(WHITE, 0.9));
-        }
+        let strip = art.sweep.frame(|strip| {
+            for x in head.max(0)..(head + seg).min(bar_w) {
+                let t = (x - head) as f32 / seg as f32;
+                let a = (t * t * t).clamp(0.0, 1.0);
+                strip.fill_rect(x, mid - th / 2, 1, th, alpha(accent, a));
+            }
+            let hx = head + seg;
+            if hx > 0 && hx < bar_w {
+                strip.fill_circle(hx, mid, c(6.0).max(3), alpha(accent, 0.22));
+                strip.fill_circle(hx, mid, c(3.0).max(2), alpha(WHITE, 0.9));
+            }
+        });
         out.extend(Self::buffer_element(
             renderer,
-            &Self::buffer_of(&strip, s),
+            strip,
             (card_x + (card_w - bar_w) / 2 / s, card_y + (bar_y - strip_h / 2) / s).into(),
             scale,
         ));
 
         // ---- the hairline low on the screen with its streak, exactly where
         // the splash drew it (0.84 of the height, 0.56 of the width).
-        let line_w = ((output_size.w as f32 * 0.56) as i32 * s).max(2);
-        let line_h = c(10.0).max(3);
-        let mut scan = Canvas::new(line_w, line_h);
+        let (line_w, line_h) = (art.scan.canvas.width, art.scan.canvas.height);
         let ly = line_h / 2;
-        scan.fill_rect(0, ly, line_w, c(1.0).max(1), alpha(HAIRLINE, 0.9));
         let streak = c(260.0).max(16);
         let travel = line_w + streak;
         let sx = (-streak as f32 + travel as f32 * (elapsed / 2.6).fract()) as i32;
-        for x in sx.max(0)..(sx + streak).min(line_w) {
-            let t = ((x - sx) as f32 / streak as f32 * 2.0 - 1.0).abs();
-            let a = (1.0 - t).max(0.0).powf(1.3) * 0.9;
-            scan.fill_rect(x, ly - c(1.0).max(1), 1, c(3.0).max(2), alpha(accent, a));
-        }
+        let scan = art.scan.frame(|scan| {
+            scan.fill_rect(0, ly, line_w, c(1.0).max(1), alpha(HAIRLINE, 0.9));
+            for x in sx.max(0)..(sx + streak).min(line_w) {
+                let t = ((x - sx) as f32 / streak as f32 * 2.0 - 1.0).abs();
+                let a = (1.0 - t).max(0.0).powf(1.3) * 0.9;
+                scan.fill_rect(x, ly - c(1.0).max(1), 1, c(3.0).max(2), alpha(accent, a));
+            }
+        });
         out.extend(Self::buffer_element(
             renderer,
-            &Self::buffer_of(&scan, s),
+            scan,
             (
                 (output_size.w - line_w / s) / 2,
                 (output_size.h as f32 * 0.84) as i32 - line_h / (2 * s),
@@ -1406,49 +1516,26 @@ impl MindBar {
         ));
 
         // ---- the HUD corners
-        let side = c(32.0).max(6);
-        if self.corners.as_ref().map(|(sc, sd, _)| *sc != s || *sd != side).unwrap_or(true) {
-            let corners = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
-                .iter()
-                .map(|(dx, dy)| Self::buffer_of(&Self::draw_corner(&c, accent, *dx, *dy), s))
-                .collect();
-            self.corners = Some((s, side, corners));
-        }
-        if let Some((_, _, corners)) = &self.corners {
-            let inset = u(32.0);
-            let far_x = output_size.w - inset - side / s;
-            let far_y = output_size.h - inset - side / s;
-            for (buffer, loc) in corners.iter().zip([
-                (inset, inset),
-                (far_x, inset),
-                (inset, far_y),
-                (far_x, far_y),
-            ]) {
-                out.extend(Self::buffer_element(renderer, buffer, loc.into(), scale));
-            }
+        let side = art.corner_side;
+        let inset = u(32.0);
+        let far_x = output_size.w - inset - side / s;
+        let far_y = output_size.h - inset - side / s;
+        for (buffer, loc) in art.corners.iter().zip([
+            (inset, inset),
+            (far_x, inset),
+            (inset, far_y),
+            (far_x, far_y),
+        ]) {
+            out.extend(Self::buffer_element(renderer, buffer, loc.into(), scale));
         }
 
         // ---- the key hints, once the wait is long enough to want them
         if elapsed >= HINTS_AFTER {
-            let stale = match &self.hints {
-                Some(h) => h.scale != s,
-                None => true,
-            };
-            if stale {
-                let canvas = self.draw_startup_hints(&c);
-                self.hints = Some(Cached {
-                    buffer: Self::buffer_of(&canvas, s),
-                    size: Size::from((canvas.width, canvas.height)),
-                    scale: s,
-                });
-            }
-            if let Some(hints) = &self.hints {
-                let loc = (
-                    (output_size.w - hints.size.w / s) / 2,
-                    card_y + card_h / s + u(26.0),
-                );
-                out.extend(Self::buffer_element(renderer, &hints.buffer, loc.into(), scale));
-            }
+            let loc = (
+                (output_size.w - art.hints_size.w / s) / 2,
+                card_y + card_h / s + u(26.0),
+            );
+            out.extend(Self::buffer_element(renderer, &art.hints, loc.into(), scale));
         }
         out
     }
@@ -1630,5 +1717,145 @@ mod tests {
         let hints = bar.draw_startup_hints(&c);
         paste(&mut desktop, &hints, (1920 - hints.width) / 2, 1080 - 120 - hints.height);
         write_ppm(&dir.join("desktop.ppm"), &desktop);
+    }
+
+    /// The startup screen's artwork is rasterised once per output geometry.
+    ///
+    /// This is the boot hang the user reported. The splash's wordmark is set a
+    /// couple of hundred pixels tall and measuring it walks the string once per
+    /// candidate size; with the caches in a single slot, two monitors of
+    /// different geometry invalidated each other's entry and every frame of
+    /// every output paid for the whole screen again. Measured on the live
+    /// machine that was 95% of a core inside `rasterize_runs`, on the one
+    /// thread that also dispatches every Wayland client and all input -- so the
+    /// shell the splash is waiting for could not start, and the splash ran
+    /// longer. The test alternates the two real outputs of that machine and
+    /// insists the second frame onwards costs nothing.
+    #[test]
+    fn startup_art_survives_two_outputs() {
+        // What `backdrop_elements` derives from an output before it draws.
+        fn art_of(bar: &mut MindBar, size: Size<i32, Logical>, scale: f64) -> (i32, i32, i32, i32) {
+            let s = scale.ceil().max(1.0) as i32;
+            let ls = (size.h as f32 / 1080.0).clamp(0.6, 2.0);
+            bar.startup_art_for(size, s, ls * s as f32).card_geometry
+        }
+        // DP-4 is 3840x2160 at scale 2 and DP-5 2560x1440 at scale 1, both at
+        // 240 Hz: different logical size *and* different scale, which is what
+        // made them take turns evicting each other.
+        let big = (Size::<i32, Logical>::from((1920, 1080)), 2.0);
+        let small = (Size::<i32, Logical>::from((2560, 1440)), 1.0);
+
+        let mut bar = MindBar::new(TextRenderer::new(), fake_apps(), crate::config::FOREGROUND, crate::config::ACCENT);
+        let started = Instant::now();
+        let big_geometry = art_of(&mut bar, big.0, big.1);
+        let cold = started.elapsed();
+        // The first build also loads and hints the faces; the second is what a
+        // frame of the old code paid once the fonts were warm.
+        let started = Instant::now();
+        let small_geometry = art_of(&mut bar, small.0, small.1);
+        let build = started.elapsed();
+        assert_ne!(big_geometry, small_geometry, "the two outputs really do lay the card out differently");
+        assert_eq!(bar.startup_art.len(), 2, "each output keeps its own artwork");
+
+        // A second of the boot as it actually happens: 240 frames on each output.
+        let started = Instant::now();
+        for _ in 0..240 {
+            assert_eq!(art_of(&mut bar, big.0, big.1), big_geometry);
+            assert_eq!(art_of(&mut bar, small.0, small.1), small_geometry);
+        }
+        let second = started.elapsed();
+        eprintln!(
+            "startup art: {cold:?} cold, {build:?} warm, {second:?} for the next 480 frames \
+             (rebuilding it per frame asks for {:.0}% of a core at 240 Hz on two outputs)",
+            build.as_secs_f64() * 480.0 * 100.0
+        );
+        assert_eq!(bar.startup_art.len(), 2, "frames must not add entries");
+        assert!(
+            second < build,
+            "a second of frames on both outputs ({second:?}) must cost less than one build ({build:?})"
+        );
+
+        // Waking from sleep drops the uploads; the next frame builds them again.
+        bar.invalidate_graphics();
+        assert!(bar.startup_art.is_empty(), "wake releases the artwork");
+        assert_eq!(art_of(&mut bar, big.0, big.1), big_geometry);
+    }
+
+    /// What one frame of the startup screen costs, both outputs, everything in
+    /// it: the fixed artwork composited, the sweep and the hairline scan built
+    /// and uploaded again because they move. The compositor draws this on the
+    /// event loop -- the thread that also serves every Wayland client and all
+    /// input -- at the displays' refresh rate, so the budget is the frame: at
+    /// 240 Hz on two outputs, 2 ms a frame is half a core.
+    #[test]
+    fn a_startup_frame_costs_little() {
+        use smithay::backend::renderer::pixman::PixmanRenderer;
+        use std::time::Duration;
+        let mut renderer = PixmanRenderer::new().unwrap();
+        let mut bar = MindBar::new(TextRenderer::new(), fake_apps(), crate::config::FOREGROUND, crate::config::ACCENT);
+        let outputs = [(Size::<i32, Logical>::from((1920, 1080)), 2.0), (Size::from((2560, 1440)), 1.0)];
+
+        // The first frame on each output draws the artwork; the ones after it
+        // are what the screen actually costs while it waits for the shell.
+        for (size, scale) in outputs {
+            assert!(!bar.backdrop_elements(&mut renderer, size, scale, false, true).is_empty());
+        }
+        const FRAMES: u32 = 240;
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            for (size, scale) in outputs {
+                bar.backdrop_elements(&mut renderer, size, scale, false, true);
+            }
+        }
+        let each = started.elapsed() / FRAMES;
+        eprintln!("startup screen: {each:?} a frame for both outputs, {:.0}% of a core at 240 Hz", each.as_secs_f64() * 240.0 * 100.0);
+        assert!(
+            each < Duration::from_millis(4),
+            "a frame of the startup screen took {each:?}; it is drawn on the event loop and everything waits behind it"
+        );
+
+        // And it goes away the moment the shell has a desktop up, artwork and
+        // all: it is megabytes of canvas and texture per output for a screen
+        // that is over for the rest of the session.
+        for (size, scale) in outputs {
+            assert!(bar.backdrop_elements(&mut renderer, size, scale, true, true).is_empty());
+        }
+        assert!(bar.startup_art.is_empty(), "the screen gives its memory back");
+    }
+
+    /// The moving pieces keep their texture and still move.
+    ///
+    /// They are drawn into the same buffer every frame rather than a new one,
+    /// which is what stops the compositor allocating a texture per piece per
+    /// output per frame -- close to a thousand a second on two 240 Hz displays.
+    /// The risk in that is a screen that looks right and has stopped moving, so
+    /// this checks both halves: the same buffer, different pixels.
+    #[test]
+    fn the_sweep_keeps_its_texture_and_still_moves() {
+        use smithay::backend::renderer::{element::Element, pixman::PixmanRenderer};
+        use std::time::Duration;
+        let mut renderer = PixmanRenderer::new().unwrap();
+        let mut bar = MindBar::new(TextRenderer::new(), fake_apps(), crate::config::FOREGROUND, crate::config::ACCENT);
+        let size = Size::<i32, Logical>::from((1920, 1080));
+
+        let first = bar.backdrop_elements(&mut renderer, size, 2.0, false, true);
+        let ids: Vec<_> = first.iter().map(|e| e.id().clone()).collect();
+        let sweep = bar.startup_art.values().next().unwrap().sweep.canvas.data.clone();
+        assert!(sweep.iter().any(|&b| b != 0), "the sweep is on the strip somewhere");
+        drop(first);
+
+        // Half a loop later the head is at the other end of the track.
+        bar.backdrop_since = Some(Instant::now() - Duration::from_millis(950));
+        let later = bar.backdrop_elements(&mut renderer, size, 2.0, false, true);
+        assert_eq!(
+            ids,
+            later.iter().map(|e| e.id().clone()).collect::<Vec<_>>(),
+            "every piece of the screen keeps the texture it had"
+        );
+        assert_ne!(
+            sweep,
+            bar.startup_art.values().next().unwrap().sweep.canvas.data,
+            "the sweep has to move; a still screen says the machine is stuck"
+        );
     }
 }

@@ -85,6 +85,11 @@ The full text is in `mindwm/LICENSE-smithay.txt` and is installed to
 derivative work to be distributed under other terms so long as that notice
 travels with it, which it does.
 
+`mindwm/vendor/smithay/` is Smithay 0.7.0 itself, carried in the tree with a
+few changes to its Xwayland window manager (listed in
+`mindwm/vendor/smithay/MINDOS-PATCHES.md`). Its `LICENSE` file stays with it,
+and the notice above covers it too.
+
 ## Rust crates and Node tooling — MIT / Apache-2.0
 
 `mindwm`, `mindshell` and `mindd` link a number of Rust crates (Smithay, the

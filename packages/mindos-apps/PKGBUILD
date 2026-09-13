@@ -1,7 +1,7 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-apps
 pkgver=0.1.0
-pkgrel=6
+pkgrel=7
 pkgdesc="The MindOS standard applications (browser, files, images, archives, text, PDF, media, calculator) in the MindOS look: libadwaita colours, default handlers, Open in Terminal in the file manager, the mindos-wallpaper command"
 arch=(any)
 url="https://github.com/morvoso/mindos"

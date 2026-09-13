@@ -578,10 +578,24 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 self.layout.dirty = true;
             }
         }
+        // The bar's strip counts only while the shell's desktop is up, and
+        // that comes and goes without a new report: rearrange when the room
+        // it takes differs from what the windows were last laid out around.
+        for output in self.space.outputs() {
+            output.user_data().insert_if_missing(crate::shell::DesktopBarApplied::default);
+            let applied = output.user_data().get::<crate::shell::DesktopBarApplied>().unwrap();
+            let bar = crate::shell::desktop_bar(output);
+            if applied.0.replace(bar) != bar {
+                changed = true;
+            }
+        }
         if self.layout.dirty || changed || self.layout.animating() {
             self.layout.dirty = false;
             self.arrange_all();
         }
+        // After the arranging, so a game that has just been given the whole
+        // screen is seen to cover it on the same turn.
+        self.refresh_game_screens();
     }
 
     pub fn arrange_all(&mut self) {
@@ -720,7 +734,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     continue;
                 }
                 self.remember_untiled(w);
-                let (rect, tiled) = if w.pending_maximized() { (area, false) } else { (rect, true) };
+                let (rect, tiled) = if w.pending_maximized() {
+                    (self.maximized_area(w).unwrap_or(area), false)
+                } else {
+                    (rect, true)
+                };
                 let loc = self.apply_rect(w, rect, tiled);
                 if let Some(mut clip) = self.space.output_geometry(output) {
                     // Space input/render origins subtract the window geometry.
@@ -740,7 +758,8 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 let loc = self.apply_rect(w, snap_rect(area, &zone), false);
                 targets.push((w.clone(), loc));
             } else if w.pending_maximized() {
-                let loc = self.apply_rect(w, area, false);
+                let rect = self.maximized_area(w).unwrap_or(area);
+                let loc = self.apply_rect(w, rect, false);
                 targets.push((w.clone(), loc));
             } else if let Some(loc) = self.ensure_untiled(w) {
                 targets.push((w.clone(), loc));

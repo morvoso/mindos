@@ -24,11 +24,13 @@ mod layout;
 mod mind;
 mod media;
 mod gaming;
+mod metrics;
 mod mindwatch;
 mod notify;
 mod pointer;
 mod polkit;
 mod portal;
+mod ready;
 mod scheme;
 mod sleepwatch;
 mod system;
@@ -126,7 +128,7 @@ pub fn quit_requested() -> bool {
 
 
 /// The apps `--app` accepts (each is a page set in the UI bundle).
-pub const APPS: &[&str] = &["settings", "library", "gaming", "greeter"];
+pub const APPS: &[&str] = &["settings", "library", "gaming", "tasks", "greeter"];
 
 fn usage() {
     println!(
@@ -140,6 +142,14 @@ fn usage() {
 /// When the process started: the desktop's first view logs how long it took to
 /// come up, which is the number to watch when the boot feels slow.
 pub static STARTED: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+
+/// Temporary startup instrumentation: milliseconds since `STARTED`.
+#[macro_export]
+macro_rules! mark {
+    ($name:literal) => {
+        tracing::info!(ms = $crate::STARTED.elapsed().as_millis() as u64, "startup: {}", $name)
+    };
+}
 
 fn main() {
     std::sync::LazyLock::force(&STARTED);
@@ -225,17 +235,21 @@ fn main() {
     // colour scheme: claiming the name after GTK is up means both sides wait
     // for each other, and the desktop appears only when D-Bus gives up 25
     // seconds later.
+    mark!("logging up");
     if opts.app.is_none() {
         portal::start();
     }
+    mark!("portal thread spawned");
 
     // GTK must talk to a Wayland compositor with the layer-shell protocol.
     std::env::set_var("GDK_BACKEND", "wayland");
     prefer_gl_renderer_on_nvidia();
+    mark!("before gtk::init");
     if let Err(e) = gtk::init() {
         tracing::error!(%e, "cannot initialise GTK (is WAYLAND_DISPLAY set?)");
         std::process::exit(1);
     }
+    mark!("gtk::init done");
     let needs_layer_shell = opts.app.as_deref().map(|a| a == "greeter").unwrap_or(true);
     if needs_layer_shell && !gtk4_layer_shell::is_supported() {
         tracing::error!("the compositor does not support wlr-layer-shell; mindshell cannot run here");
@@ -243,11 +257,22 @@ fn main() {
     }
 
 
+    // The session's autostart applications are held until the desktop is on
+    // screen (mindos-shell.service is Type=notify); this is the promise that
+    // they are released even if it never gets there.
+    if opts.app.is_none() {
+        ready::arm_fallback();
+    }
+
     let main_loop = glib::MainLoop::new(None, false);
     let (tx, rx) = async_channel::unbounded::<HostEvent>();
+    mark!("before App::new");
     let app = app::App::new(opts, tx.clone(), main_loop.clone());
+    mark!("App::new done");
     app.sync_windows();
+    mark!("sync_windows done");
     app.start_background();
+    mark!("start_background done");
 
     {
         let app = app.clone();

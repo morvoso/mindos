@@ -26,13 +26,40 @@ bar.x = left; bar.y = screen.y + screen.h-100*s;
 bar.w = Math.Int(screen.w*0.42); bar.h = Math.Int(4*s);
 bar.track = Sprite(rule.image.Scale(bar.w, bar.h)); bar.track.SetPosition(bar.x,bar.y,5);
 bar.fill = Sprite(); bar.fill.SetPosition(bar.x,bar.y,6);
-bar.progress = 0; elapsed = 0;
+bar.progress = 0; bar.target = 0; bar.drawn = -1; elapsed = 0;
+# Plymouth's fraction comes from the cached profile in /var/lib/plymouth/boot-duration,
+# a list of "fraction:unit" replayed against the units that actually start. That model
+# has two flaws in this boot. The graphics driver's probe is a multi-second stretch
+# with no unit to record, so the fraction stands still through it; and the fifty-odd
+# units that start once the root is up are all crammed into its last quarter. Taken
+# literally the bar hangs, snaps and then rockets -- which reads as a stuttering
+# splash rather than as a slow boot.
+#
+# So the reported fraction is only ever a floor. The bar creeps on elapsed time as
+# well, so a stretch the model cannot see still moves; and whichever is ahead, the
+# drawn value approaches it a bounded step at a time, which turns a jump in the model
+# into a glide on screen. Only whole-pixel changes are pushed to the sprite.
+#
+# EXPECTED is a rough whole-boot time in seconds. It sets the creep rate and nothing
+# else: the moment the real fraction is ahead of the clock, the real fraction wins.
+EXPECTED = 18;
 fun progress_callback(duration, progress)
 {
   global.elapsed = duration;
-  if (progress > bar.progress) bar.progress = progress;
+  if (progress > bar.target) bar.target = progress;
+
+  goal = bar.target;
+  t = duration / EXPECTED; if (t > 0.99) t = 0.99;
+  if (t > goal) goal = t;
+
+  step = (goal - bar.progress) * 0.08;
+  if (step < 0.0004) step = 0.0004;          # ~1% a second, so it never sits still
+  if (bar.progress + step > goal) bar.progress = goal;
+  else bar.progress = bar.progress + step;
+  if (bar.progress > 1) bar.progress = 1;
+
   w = Math.Int(bar.w*bar.progress); if (w < 1) w = 1;
-  bar.fill.SetImage(accent.image.Scale(w,bar.h));
+  if (w != bar.drawn) { bar.drawn = w; bar.fill.SetImage(accent.image.Scale(w,bar.h)); }
 }
 Plymouth.SetBootProgressFunction(progress_callback);
 # Systemd keeps sending unit names; the splash stays quiet and ignores them.
@@ -59,5 +86,5 @@ fun normal() { global.prompt = Sprite(); global.bullets = Sprite(); }
 Plymouth.SetDisplayPasswordFunction(display_password);
 Plymouth.SetDisplayQuestionFunction(display_question);
 Plymouth.SetDisplayNormalFunction(normal);
-fun quit() { bar.fill.SetImage(accent.image.Scale(bar.w,bar.h)); }
+fun quit() { bar.drawn = bar.w; bar.fill.SetImage(accent.image.Scale(bar.w,bar.h)); }
 Plymouth.SetQuitFunction(quit);

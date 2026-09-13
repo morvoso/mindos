@@ -88,7 +88,35 @@ fn mtime_secs(meta: &std::fs::Metadata) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// `{"path", "parent", "entries": [{name, path, dir, size, mtime, hidden, symlink, mime, icon, image}]}`.
+/// The name and icon a shortcut should be drawn with: the application's own
+/// for a `.desktop` file, the file's own name for a Windows `.lnk`. `None` for
+/// everything else, which is drawn by its file type as usual.
+fn shortcut_of(path: &Path, theme: &str, size: u16) -> Option<(String, Option<String>)> {
+    let extension = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("desktop") => {
+            let text = std::fs::read_to_string(path).ok()?;
+            let entry = crate::apps::parse_desktop_entry(&text, "", &crate::apps::current_desktop())?;
+            let icon = icons::resolve(&entry.icon, size, theme)
+                .map(|p| icon_url(&p.to_string_lossy(), size))
+                .or_else(|| icons::resolve("application-x-executable", size, theme).map(|p| icon_url(&p.to_string_lossy(), size)));
+            Some((entry.name, icon))
+        }
+        // Wine's own shortcut file. Its target lives inside a prefix, so the
+        // icon comes from the theme rather than from the file.
+        Some("lnk") => {
+            let name = path.file_stem()?.to_string_lossy().into_owned();
+            let icon = ["wine", "application-x-ms-shortcut", "application-x-executable"]
+                .iter()
+                .find_map(|n| icons::resolve(n, size, theme))
+                .map(|p| icon_url(&p.to_string_lossy(), size));
+            Some((name, icon))
+        }
+        _ => None,
+    }
+}
+
+/// `{"path", "parent", "entries": [{name, path, dir, size, mtime, hidden, symlink, mime, icon, image, shortcut, label}]}`.
 pub fn list(path: &Path, show_hidden: bool, theme: &str, icon_size: u16) -> Result<Value, String> {
     let dir = std::fs::read_dir(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut cache = HashMap::new();
@@ -108,7 +136,13 @@ pub fn list(path: &Path, show_hidden: bool, theme: &str, icon_size: u16) -> Resu
             Err(_) => (false, 0, 0.0),
         };
         let mime = mime_of(&full, is_dir);
-        let icon = mime_icon(&mime, &mut cache, theme, icon_size);
+        // A shortcut is shown as the thing it points at, not as the file it is:
+        // the application's own name and icon, the way Windows draws them.
+        let shortcut = if is_dir { None } else { shortcut_of(&full, theme, icon_size) };
+        let icon = shortcut
+            .as_ref()
+            .and_then(|s| s.1.clone())
+            .unwrap_or_else(|| mime_icon(&mime, &mut cache, theme, icon_size));
         let value = json!({
             "name": name,
             "path": full.to_string_lossy(),
@@ -119,7 +153,9 @@ pub fn list(path: &Path, show_hidden: bool, theme: &str, icon_size: u16) -> Resu
             "symlink": symlink,
             "mime": mime,
             "icon": icon,
-            "image": !is_dir && is_image(&full),
+            "image": !is_dir && is_image(&full) && shortcut.is_none(),
+            "shortcut": shortcut.is_some(),
+            "label": shortcut.map(|s| s.0),
         });
         entries.push((is_dir, name.to_lowercase(), value));
     }
@@ -170,6 +206,14 @@ pub fn trash(paths: &[PathBuf]) -> Result<usize, String> {
 /// whether that application wants a terminal.
 pub fn opener(path: &Path) -> Option<(String, bool)> {
     let is_dir = path.is_dir();
+    let quoted = crate::app::shell_quote(&path.to_string_lossy());
+    // Clicking a shortcut has to start the program. Left to the mime database,
+    // a `.desktop` file opens in a text editor and a `.lnk` in nothing at all.
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("desktop") if !is_dir => return Some((format!("gio launch {quoted}"), false)),
+        Some("lnk") if !is_dir => return Some((format!("mindos-win open {quoted}"), false)),
+        _ => {}
+    }
     let mime = mime_of(path, is_dir);
     let info = gio::AppInfo::default_for_type(&mime, false).or_else(|| {
         // No default for the exact type: text-ish files open in the text editor.
@@ -186,7 +230,7 @@ pub fn opener(path: &Path) -> Option<(String, bool)> {
         .map(|id| desktop_entry_wants_terminal(&id))
         .unwrap_or(false);
     let exec = crate::apps::clean_exec(&cmdline);
-    Some((format!("{exec} {}", crate::app::shell_quote(&path.to_string_lossy())), terminal))
+    Some((format!("{exec} {quoted}"), terminal))
 }
 
 /// Whether the desktop entry `id` (e.g. `foot.desktop`) has `Terminal=true`.

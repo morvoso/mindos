@@ -1,13 +1,14 @@
 import { appearanceControls } from './appearance';
 import * as bridge from './bridge';
-import { every, gib, h } from './dom';
+import { every, h } from './dom';
 import { renderGameLibrary } from './game-library';
 import { openGaming } from './gaming';
 import { icon } from './icons';
 import { modeInfo, perfRefresh, perfSubscribe, perfSwitch } from './perf';
+import { systemReadout } from './readout';
 import { store } from './state';
 import { systemControls } from './system-menu';
-import type { PerfStatus, Stats } from './types';
+import type { PerfStatus } from './types';
 
 export function renderGamingDesktop(root: HTMLElement, output: string): { el: HTMLElement; destroy: () => void } {
   const workspace = h('div', { class: 'gaming-workspace' });
@@ -24,7 +25,7 @@ export function renderGamingDesktop(root: HTMLElement, output: string): { el: HT
   workspace.append(header, nav, library, rail, feedback);
   root.append(workspace);
   const report = (message: string) => { feedback.textContent = message; feedback.hidden = !message; };
-  let alive = true, statsBusy = false;
+  let alive = true;
   const act = async (fn: () => Promise<unknown>) => { try { await fn(); report(''); } catch (e) { if (alive) report(String(e)); } };
   const settings = (page: string) => bridge.call('shell.openApp', { name: 'settings', page });
   const app = (pattern: RegExp) => {
@@ -48,11 +49,17 @@ export function renderGamingDesktop(root: HTMLElement, output: string): { el: HT
 
   const section = (name: string, sub: string, body: HTMLElement) => h('section', { class: 'gaming-rail-card' },
     h('header', { class: 'gaming-panel-title' }, h('h2', {}, name), h('span', { class: 'gaming-meta' }, sub)), body);
-  const metrics = h('div', { class: 'gaming-metrics' });
-  const metric = (name: string, value: string, percent?: number) => h('div', { class: 'gaming-metric' },
-    h('div', {}, h('span', { class: 'gaming-meta' }, name), h('span', { class: 'gaming-meta' }, value)),
-    h('div', { class: 'gaming-meter' }, h('span', { style: { width: `${Math.max(0, Math.min(100, percent || 0))}%` } })));
-  metrics.append(h('p', { class: 'gaming-meta' }, 'Waiting for system readings…'));
+  // The rail's readout is the Task Manager in miniature: the same shared
+  // sampler, one call every three seconds for the whole card, and a way
+  // through to the full thing. The top-bar line comes off the same sample.
+  const paused = h('p', { class: 'gaming-meta', hidden: true }, 'Sampling paused while gaming');
+  const readout = systemReadout({
+    intervalMs: 3000,
+    onSample: (v) => {
+      const card = v.gpus[0];
+      status.textContent = `${card?.util != null ? `GPU ${Math.round(card.util)}%${card.temp != null ? ` · ${Math.round(card.temp)}°` : ''}` : 'GPU unavailable'} / CPU ${Math.round(v.cpu.usage)}%`;
+    },
+  });
   const profile = h('div', { class: 'gaming-profiles' });
   const profileLabel = h('p', { class: 'gaming-meta' });
   let perf: PerfStatus | undefined, switching = false;
@@ -68,7 +75,7 @@ export function renderGamingDesktop(root: HTMLElement, output: string): { el: HT
       },
     }, mode === 'performance' ? 'Max' : modeInfo(mode).label)));
   };
-  const system = h('div', { class: 'gaming-rail-body' }, metrics, profileLabel, profile,
+  const system = h('div', { class: 'gaming-rail-body' }, paused, readout.el, profileLabel, profile,
     h('button', { class: 'gaming-text-action', onclick: () => void act(() => settings('performance')) }, 'Performance settings', icon('arrow-right', 12)));
   const launchers = h('div', { class: 'gaming-rail-body gaming-launchers' });
   const renderLaunchers = () => {
@@ -86,34 +93,25 @@ export function renderGamingDesktop(root: HTMLElement, output: string): { el: HT
   };
   rail.append(section('System', 'Live readings', system), section('Launchers', 'Connected locally', launchers),
     h('p', { class: 'gaming-rail-foot gaming-meta' }, ''));
-  const sample = async () => {
-    if (statsBusy || store.state.game || document.hidden || store.state.editMode) return;
-    statsBusy = true;
-    try {
-      const s = await bridge.call<Stats>('system.stats');
-      if (!alive || store.state.game) return;
-      metrics.replaceChildren(metric('GPU', s.gpu ? `${Math.round(s.gpu.util)}%${s.gpu.temp != null ? ` · ${Math.round(s.gpu.temp)}°` : ''}` : 'Unavailable', s.gpu?.util),
-        metric('CPU', `${Math.round(s.cpu)}%`, s.cpu),
-        metric('Memory', `${gib(s.memUsed)} / ${gib(s.memTotal)} GB`, s.memTotal ? s.memUsed / s.memTotal * 100 : 0));
-      status.textContent = `${s.gpu ? `GPU ${Math.round(s.gpu.util)}%${s.gpu.temp != null ? ` · ${Math.round(s.gpu.temp)}°` : ''}` : 'GPU unavailable'} / CPU ${Math.round(s.cpu)}%`;
-    } catch { if (alive) { status.textContent = 'Telemetry unavailable'; metrics.replaceChildren(h('p', { class: 'gaming-meta' }, 'System readings unavailable')); } }
-    finally { statsBusy = false; }
-  };
+  // Only the padding: whether the workspace is on screen at all is the home
+  // screen's business (see workspace.ts).
   const layout = () => {
-    workspace.hidden = store.state.editMode;
-    root.classList.toggle('gaming-active', !store.state.editMode);
     const pads = { top: 0, right: 0, bottom: 80, left: 0 };
     for (const p of store.state.layout.panels) if (p.output === '*' || p.output === output) pads[p.edge] = Math.max(pads[p.edge], p.size + p.margin * 2);
     for (const edge of ['top', 'right', 'bottom', 'left'] as const) workspace.style.setProperty(`--gaming-${edge}`, `${pads[edge]}px`);
   };
+  // A game gets the machine to itself: the readout's timer already stops on a
+  // desktop surface while one runs (see quiet.ts), so the card only has to say
+  // why the numbers have stopped moving.
   const gameState = () => {
-    if (store.state.game) { status.textContent = 'GameMode active / Desktop at rest'; metrics.replaceChildren(h('p', { class: 'gaming-meta' }, 'Sampling paused while gaming')); }
-    else void sample();
+    paused.hidden = !store.state.game;
+    readout.el.hidden = !!store.state.game;
+    if (store.state.game) status.textContent = 'GameMode active / Desktop at rest';
   };
   layout(); renderLaunchers(); renderPerf(); gameState();
   const disposeLibrary = renderGameLibrary(library, toggleLibrary);
-  const offs = [store.on('editMode', layout), store.on('layout', layout), store.on('apps', renderLaunchers), store.on('game', gameState),
-    perfSubscribe(workspace, (s) => { perf = s; renderPerf(); }), every(workspace, 3000, () => void sample()),
+  const offs = [store.on('layout', layout), store.on('apps', renderLaunchers), store.on('game', gameState),
+    perfSubscribe(workspace, (s) => { perf = s; renderPerf(); }),
     every(workspace, 15000, () => { if (!store.state.game && !document.hidden) void perfRefresh(); })];
-  return { el: workspace, destroy: () => { alive = false; offs.forEach((off) => off()); appearance.destroy(); systemMenu.destroy(); disposeLibrary(); workspace.remove(); } };
+  return { el: workspace, destroy: () => { alive = false; offs.forEach((off) => off()); readout.destroy(); appearance.destroy(); systemMenu.destroy(); disposeLibrary(); workspace.remove(); } };
 }

@@ -62,3 +62,10 @@ REGEDIT4
 "Tahoma"="Inter"
 "Consolas"="JetBrains Mono"
 "Lucida Console"="JetBrains Mono"
+
+; WPF asks for a hardware render target that Wine cannot give it, and paints
+; nothing at all when it does not get one -- the program opens as a black
+; rectangle. Its software renderer draws the same window and is fast enough for
+; the desk-tool kind of program that WPF is used for.
+[HKEY_CURRENT_USER\Software\Microsoft\Avalon.Graphics]
+"DisableHWAcceleration"=dword:00000001

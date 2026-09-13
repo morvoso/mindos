@@ -2,7 +2,7 @@
 # The MindOS compositor (Smithay based, Wayland + XWayland on DRM/KMS), built from ../../mindwm.
 pkgname=mindwm
 pkgver=0.1.0
-pkgrel=42
+pkgrel=47
 pkgdesc="MindOS compositor: game-mode Wayland/XWayland compositor with the Mind bar"
 arch=(x86_64)
 url="https://github.com/morvoso/mindos"
@@ -10,7 +10,9 @@ license=('LicenseRef-MindOS' MIT OFL-1.1 Bitstream-Vera)
 depends=(glibc gcc-libs wayland libinput libxkbcommon mesa libglvnd libdrm pixman seatd
          systemd-libs xorg-xwayland glib2 libevdev libgudev gdk-pixbuf2 librsvg)
 makedepends=(rust clang lld rsync wayland-protocols pkgconf)
-options=(!lto !debug)
+# debug: the stripped symbols go to mindwm-debug under /usr/lib/debug, so a
+# core from the loop watchdog's deadlock abort can name the lock.
+options=(!lto debug)
 
 _srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export CARGO_HOME="${CARGO_HOME:-$_srcroot/build/cargo-home}"

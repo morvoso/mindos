@@ -1,7 +1,11 @@
 #!/bin/bash
 # session-startup: run by mindwm once its Wayland socket is up (WAYLAND_DISPLAY,
 # DISPLAY and MINDWM_SOCKET, the shell IPC socket, are set). Publishes them to
-# systemd --user / D-Bus and launches autostart entries.
+# systemd --user / D-Bus, brings the desktop up, and then -- not before -- lets
+# the session's autostart applications go.
+
+# The compositor this runs for (mindwm's `sh -c` execs this script).
+compositor=$PPID
 
 systemctl --user import-environment WAYLAND_DISPLAY DISPLAY MINDWM_SOCKET XDG_CURRENT_DESKTOP XDG_CONFIG_DIRS \
   XDG_SESSION_TYPE XDG_SESSION_DESKTOP 2>/dev/null
@@ -27,11 +31,57 @@ for dir in /etc/xdg/mindos/autostart "${XDG_CONFIG_HOME:-$HOME/.config}/mindos/a
   done
 done
 
+# The desktop, before anything else is allowed to paint.
+#
+# The shell is not one of the entries above: it is the session, and everything
+# that follows waits for it. The XDG autostart applications -- Discord and
+# Steam among them -- wait for nothing themselves, so they used to come up in
+# front of the compositor's startup screen while the desktop was still loading.
+# mindos-shell.service is Type=notify and reports ready when its desktop view
+# is actually on screen, so this returns at the right moment; it gives up after
+# fifteen seconds of its own accord, and the timeout here is for a user manager
+# that is not answering at all.
+start_shell() {
+  # is-system-running exits non-zero for anything but "running" -- "degraded"
+  # is any failed unit at all, e.g. the previous shell after the compositor
+  # went away, and at a cold boot the manager is often still "starting" -- so
+  # read the state itself. Only a manager that is gone, stopping or in
+  # emergency has no job run for it.
+  case "$(systemctl --user is-system-running 2>/dev/null)" in
+  initializing|starting|running|degraded)
+    # The user manager outlives the session. When the previous one ended
+    # abruptly (compositor crash, `systemctl restart greetd`) the shell
+    # crash-looped into its start limit and a plain start would be refused for
+    # a minute: clear that first, or this login has no shell. `restart` because
+    # the last session's shell may still be running against a compositor that
+    # is gone.
+    systemctl --user reset-failed mindos-shell.service 2>/dev/null
+    # However this ends -- ready, timed out, or failed into its restart loop --
+    # the unit owns the shell from here; a second one started below would only
+    # fight it for the layer surfaces.
+    timeout 35 systemctl --user restart mindos-shell.service
+    return ;;
+  esac
+  # No user manager to run the unit: the shell still has to come up, and
+  # nothing is waiting on it.
+  setsid -f mindshell >/dev/null 2>&1
+}
+start_shell
+
 # Generate units from the standard desktop autostart directories after the
 # session environment is available. Its search paths come from environment.d;
 # imported variables above are passed to the apps. The generator handles user overrides,
 # Hidden, TryExec, OnlyShowIn and NotShowIn, without shell-evaluating Exec.
 systemctl --user daemon-reload
+# A compositor that crashed while this ran is started again by mindos-session,
+# which stops mindos-session.target first, and the new compositor's
+# session-startup lets the applications go against the new display. Starting
+# the target from here would start them before that display is up, where they
+# fail, and leave the target active, so the new start would not bring them back.
+if ! kill -0 "$compositor" 2>/dev/null; then
+  echo "session-startup: the compositor it ran for is gone; leaving the session to the next one" >&2
+  exit 0
+fi
 systemctl --user start --no-block mindos-session.target
 if [[ ${MINDOS_OPEN_LIBRARY:-0} == 1 ]]; then
   setsid -f mindshell --app library >/dev/null 2>&1

@@ -2,19 +2,27 @@
 # mindos-win: Windows programs on MindOS, one Wine prefix per program.
 #
 #   mindos-win install INSTALLER [--name NAME] [--dpi N] [--silent]
-#       Create a prefix for the program, theme it, run its installer. Wine's
-#       menu builder turns the program's Start Menu shortcuts into desktop
-#       entries (~/.local/share/applications/wine/), which the dock and the
-#       Mind bar pick up with the Windows badge.
+#       Create a prefix for the program, theme it, run its installer in a
+#       Windows desktop of its own. Wine's menu builder turns the program's
+#       Start Menu shortcuts into desktop entries
+#       (~/.local/share/applications/wine/), which the dock and the Mind bar
+#       pick up with the Windows badge.
 #   mindos-win create NAME [--dpi N]      an empty themed prefix
 #   mindos-win run NAME [ENTRY|EXE ...]   start the program and wait for it (its
 #                                         first desktop entry, the entry whose
 #                                         name matches, or an .exe path)
+#   mindos-win open PATH                  open an .exe or .lnk in the prefix that owns it
+#   mindos-win needs NAME                 Windows runtimes the program is missing
+#   mindos-win provide NAME VERB...       add a runtime to the prefix (winetricks verbs)
 #   mindos-win exec NAME COMMAND...       run any Windows command in the prefix
 #   mindos-win tricks NAME ARGS...        winetricks in the prefix
 #   mindos-win theme NAME [--dpi N]       re-apply the MindOS look
-#   mindos-win list                       prefixes and their entries
+#   mindos-win list [--json]              prefixes and their entries
+#   mindos-win uninstall NAME             the program's own uninstaller, then the prefix
 #   mindos-win remove NAME                delete the prefix and its entries
+#
+# DPI defaults to the scale the desktop itself is drawn at, so Windows programs
+# come out the size everything else on screen is.
 #
 # Prefixes live in ~/.local/share/mindos/win/<name>; MINDOS_WIN_ROOT overrides.
 set -euo pipefail
@@ -27,7 +35,7 @@ WINE="${WINE:-wine}"
 
 die() { echo "mindos-win: $*" >&2; exit 1; }
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # "Notepad++ 8.9 Setup.exe" -> notepad-plus-plus-8-9-setup
 slugify() {
@@ -50,6 +58,63 @@ setup_env() {
   export WINEDEBUG="${WINEDEBUG:--all}"
 }
 no_prompts() { export WINEDLLOVERRIDES="mscoree=d;mshtml=d${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"; }
+
+# "DPI WIDTH HEIGHT" for the screen the desktop calls primary: the DPI Windows
+# would call this scale (96 is Windows unscaled), and the screen's size in the
+# same logical pixels Wine's X11 windows are measured in. Falls back to the
+# Windows defaults when the compositor is not there to ask (a VM test, a TTY).
+display_info() {
+  python3 - <<'PY'
+import json, os, socket
+
+dpi, width, height = 96, 1024, 768
+try:
+    run = os.environ.get('XDG_RUNTIME_DIR') or '/run/user/%d' % os.getuid()
+    sock = os.path.join(run, 'mindwm-%s.sock' % (os.environ.get('WAYLAND_DISPLAY') or 'wayland-0'))
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(2.0)
+    s.connect(sock)
+    s.sendall(b'{"id":1,"type":"get_outputs"}\n')
+    buf = b''
+    while b'\n' not in buf:
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    outputs = [o for o in json.loads(buf.split(b'\n')[0])['result']['outputs'] if o.get('enabled')]
+    if outputs:
+        out = next((o for o in outputs if o.get('primary')), outputs[0])
+        dpi = max(96, min(240, int(round(96 * float(out.get('scale') or 1)))))
+        width, height = int(out['width']), int(out['height'])
+except Exception:
+    pass
+print(dpi, width, height)
+PY
+}
+
+# `auto` (the default) is the desktop's own scale.
+resolve_dpi() {
+  case "${1:-auto}" in
+    auto|"") display_info | cut -d' ' -f1 ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# The size of the Windows desktop an installer is given: Windows' own 1024x768
+# setup window grown by the scale, and never larger than the screen it sits on.
+setup_desktop_size() {
+  local dpi="$1" info sw sh w h
+  info=$(display_info)
+  sw=$(printf '%s' "$info" | cut -d' ' -f2)
+  sh=$(printf '%s' "$info" | cut -d' ' -f3)
+  w=$(( 1024 * dpi / 96 ))
+  h=$(( 768 * dpi / 96 ))
+  [ "$w" -gt $(( sw - 80 )) ] && w=$(( sw - 80 ))
+  [ "$h" -gt $(( sh - 120 )) ] && h=$(( sh - 120 ))
+  [ "$w" -lt 640 ] && w=640
+  [ "$h" -lt 480 ] && h=480
+  printf '%dx%d' "$w" "$h"
+}
 
 # The desktop entries Wine generated for a prefix (their Exec names it).
 entries_of() {
@@ -75,28 +140,61 @@ entry_name() { sed -n 's/^Name=//p' "$1" | head -1; }
 entry_exec() { sed -n 's/^Exec=//p' "$1" | head -1 | sed -E 's/ %[a-zA-Z]//g; s/\\\\/\\/g'; }
 
 apply_theme() {
-  local prefix="$1" dpi="${2:-96}"
+  local prefix="$1" dpi
+  dpi=$(resolve_dpi "${2:-auto}")
   [[ $dpi =~ ^[0-9]{2,3}$ && $dpi -ge 48 && $dpi -le 768 ]] || die "DPI must be between 48 and 768"
   setup_env "$prefix"
-  [ -f "$THEME" ] && "$WINE" regedit /S "$THEME"
+  if [ -f "$THEME" ]; then
+    "$WINE" regedit /S "$THEME"
+    cp -f "$THEME" "$prefix/mindos-win-theme.reg"
+  fi
   local reg
   reg=$(mktemp --suffix=.reg)
   printf 'REGEDIT4\n\n[HKEY_CURRENT_USER\\Control Panel\\Desktop]\n"LogPixels"=dword:%08x\n\n[HKEY_CURRENT_USER\\Software\\Wine\\Fonts]\n"LogPixels"=dword:%08x\n' "$dpi" "$dpi" > "$reg"
   "$WINE" regedit /S "$reg"
   rm -f "$reg"
-  wineserver -w
+  # No wait here: the next wine command shares this prefix's wineserver and so
+  # sees the new settings at once, and waiting would mean waiting for whatever
+  # the person already has open in the prefix to be closed.
+}
+
+# The theme file gains settings as more kinds of Windows program are made to
+# work -- the one that stops WPF programs painting black arrived after the first
+# prefixes were made. A prefix keeps the theme it was given, and takes a newer
+# one the next time it is asked to run something. The DPI is left alone: it is
+# the one theme setting a person may have chosen by hand.
+refresh_theme() {
+  local prefix="$1" stamp="$1/mindos-win-theme.reg"
+  [ -f "$THEME" ] || return 0
+  cmp -s "$THEME" "$stamp" && return 0
+  (setup_env "$prefix"; "$WINE" regedit /S "$THEME" >/dev/null 2>&1) || return 0
+  cp -f "$THEME" "$stamp"
 }
 
 write_meta() {
   local prefix="$1" name="$2" installer="${3:-}"
   python3 - "$prefix/mindos-win.json" "$name" "$installer" <<'PY'
 import datetime, json, pathlib, sys
-pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(name=sys.argv[2], installer=sys.argv[3], created=datetime.datetime.now().isoformat())) + '\n')
+path = pathlib.Path(sys.argv[1])
+try:
+    meta = json.loads(path.read_text())
+except (OSError, ValueError):
+    meta = {}
+meta.setdefault('created', datetime.datetime.now().isoformat())
+meta['name'] = sys.argv[2]
+if sys.argv[3]:
+    meta['installer'] = sys.argv[3]
+meta.setdefault('installer', '')
+path.write_text(json.dumps(meta) + '\n')
 PY
 }
 
+meta_name() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$1/mindos-win.json" 2>/dev/null || true
+}
+
 cmd_create() {
-  local name="" dpi=96
+  local name="" dpi=auto
   while [ $# -gt 0 ]; do
     case "$1" in
       --dpi) dpi="$2"; shift 2 ;;
@@ -119,7 +217,7 @@ cmd_create() {
 }
 
 cmd_install() {
-  local installer="" name="" dpi=96 silent=""
+  local installer="" name="" dpi=auto silent=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --name) name="$2"; shift 2 ;;
@@ -132,7 +230,9 @@ cmd_install() {
   [ -n "$installer" ] || usage 1
   [ -f "$installer" ] || die "no such file: $installer"
   installer=$(readlink -f -- "$installer")
-  [ -n "$name" ] || name=$(slugify "$installer")
+  local named=1
+  [ -n "$name" ] || { name=$(slugify "$installer"); named=0; }
+  dpi=$(resolve_dpi "$dpi")
   local slug prefix
   slug=$(cmd_create "$name" --dpi "$dpi")
   prefix=$(prefix_of "$slug")
@@ -140,11 +240,19 @@ cmd_install() {
   local before
   before=$(entries_of "$prefix")
   echo "mindos-win: running the installer in $prefix"
+  # A setup program draws a full-screen background behind its wizard. With
+  # nothing to draw it on, that background is a stray window the desktop has to
+  # find room for -- the big white square. Its own Windows desktop is where it
+  # belongs, and it keeps the installer's other windows together with it.
+  local desktop
+  desktop=$(setup_desktop_size "$dpi")
   (
     setup_env "$prefix"; no_prompts
     case "${installer,,}" in
-      *.msi) "$WINE" msiexec /i "$installer" ${silent:+/qn} ;;
-      *) "$WINE" "$installer" ${silent:+/S} ;;
+      *.msi) if [ -n "$silent" ]; then "$WINE" msiexec /i "$installer" /qn
+             else "$WINE" explorer "/desktop=mindos-setup-$slug,$desktop" msiexec /i "$installer"; fi ;;
+      *) if [ -n "$silent" ]; then "$WINE" "$installer" /S
+         else "$WINE" explorer "/desktop=mindos-setup-$slug,$desktop" "$installer"; fi ;;
     esac
     wineserver -w
   )
@@ -153,12 +261,57 @@ cmd_install() {
   local new
   new=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
   if [ -n "$new" ]; then
-    echo "mindos-win: installed; new entries:"
+    # The program knows its own name; the file its installer was downloaded as
+    # ("LINQPad9Setup") is not it. Take the shortest new Start Menu entry,
+    # which is the program itself rather than its help or uninstall shortcuts.
+    if [ "$named" = 0 ]; then
+      local best="" candidate
+      while IFS= read -r e; do
+        candidate=$(entry_name "$e")
+        case "${candidate,,}" in *uninstall*|*readme*|*help*|*website*|*download*) continue ;; esac
+        if [ -z "$best" ] || [ "${#candidate}" -lt "${#best}" ]; then best="$candidate"; fi
+      done <<<"$new"
+      [ -n "$best" ] && { name="$best"; write_meta "$prefix" "$name" "$installer"; }
+    fi
+    echo "mindos-win: installed $name; new entries:"
     while IFS= read -r e; do printf '  %s  (%s)\n' "$(entry_name "$e")" "$e"; done <<<"$new"
   else
     echo "mindos-win: installed; no Start Menu entries appeared. Start it with:"
     echo "  mindos-win run $slug 'C:\\path\\to\\program.exe'"
   fi
+  local missing
+  missing=$(cmd_needs "$slug" || true)
+  [ -n "$missing" ] && echo "mindos-win: needs $missing"
+  return 0
+}
+
+# The entry that starts the program, out of everything the Start Menu folder
+# holds. An installer puts its uninstaller, its manual and its "download this
+# other thing" link beside the program itself; asked for the app, nobody means
+# those. Of what is left, the shortest name is the program (LINQPad's folder
+# has "LINQPad 9 (x64)" and "LINQPad 9 (x86 32-bit)").
+main_entry() {
+  local entries="$1"
+  printf '%s\n' "$entries" | python3 -c '
+import pathlib, sys
+
+SKIP = ("uninstall", "readme", "help", "website", "download", "documentation", "release notes")
+
+def name_of(path):
+    try:
+        for line in pathlib.Path(path).read_text("utf-8", "replace").splitlines():
+            if line.startswith("Name="):
+                return line[5:]
+    except OSError:
+        pass
+    return pathlib.Path(path).stem
+
+paths = [p for p in sys.stdin.read().splitlines() if p.strip()]
+named = [(name_of(p), p) for p in paths]
+wanted = [n for n in named if not any(w in n[0].lower() for w in SKIP)] or named
+if wanted:
+    print(min(wanted, key=lambda n: (len(n[0]), n[0]))[1])
+'
 }
 
 cmd_run() {
@@ -168,6 +321,7 @@ cmd_run() {
   prefix=$(prefix_of "$slug")
   [ -d "$prefix" ] || die "no such prefix: $slug (see mindos-win list)"
   local target="${1:-}"
+  refresh_theme "$prefix"
   # wine returns as soon as the program is started; with one prefix per
   # program, waiting for the prefix's wineserver is waiting for the program.
   setup_env "$prefix"
@@ -190,7 +344,7 @@ cmd_run() {
     done <<<"$entries"
     [ -n "$chosen" ] || die "no entry matching '$target' in $slug"
   else
-    chosen=$(printf '%s\n' "$entries" | head -1)
+    chosen=$(main_entry "$entries")
   fi
   local exec
   exec=$(entry_exec "$chosen")
@@ -198,6 +352,121 @@ cmd_run() {
   echo "mindos-win: $exec"
   gio launch "$chosen"
   exec wineserver -w
+}
+
+# Open an .exe or a Windows .lnk in whichever prefix owns it. A shortcut an
+# installer left on the desktop names a program inside its own prefix, so the
+# prefix is found from the path the shortcut points at rather than guessed.
+cmd_open() {
+  local path="${1:-}"; shift || true
+  [ -n "$path" ] || usage 1
+  path=$(readlink -f -- "$path")
+  [ -e "$path" ] || die "no such file: $path"
+  local slug
+  slug=$(python3 - "$ROOT" "$path" <<'PY'
+import pathlib, re, sys
+
+root, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+prefixes = [p for p in sorted(root.glob('*')) if (p / 'system.reg').is_file()] if root.is_dir() else []
+
+# Inside a prefix already: the directory above drive_c is the answer.
+for prefix in prefixes:
+    if target.is_relative_to(prefix):
+        print(prefix.name)
+        raise SystemExit
+
+# A .lnk stores its target as a Windows path; map it into each prefix in turn
+# and take the prefix where that program actually exists.
+if target.suffix.lower() == '.lnk':
+    blob = target.read_bytes()
+    paths = set()
+    for encoding in ('utf-16-le', 'latin-1'):
+        for match in re.finditer(r'[A-Za-z]:\\[^\x00<>"|?*]{2,200}', blob.decode(encoding, 'ignore')):
+            paths.add(match.group(0).rstrip('\\ '))
+    for prefix in prefixes:
+        for windows in paths:
+            unix = prefix / 'drive_c' / windows[3:].replace('\\', '/')
+            if unix.exists():
+                print(prefix.name)
+                raise SystemExit
+PY
+)
+  if [ -z "$slug" ]; then
+    case "${path,,}" in
+      *.exe|*.msi) exec mindos-win-open "$path" ;;
+      *) die "no Windows program is installed for $path" ;;
+    esac
+  fi
+  local prefix
+  prefix=$(prefix_of "$slug")
+  setup_env "$prefix"
+  "$WINE" start /unix "$path" "$@"
+  exec wineserver -w
+}
+
+# Windows runtimes the programs in a prefix need and the prefix does not have.
+# A program that links Microsoft's .NET host exits without a word when the
+# runtime is missing, which reads on the desktop as "the app does not open".
+cmd_needs() {
+  local slug="${1:-}"
+  [ -n "$slug" ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug"
+  python3 - "$prefix" <<'PY'
+import pathlib, re, sys
+
+prefix = pathlib.Path(sys.argv[1])
+drive = prefix / 'drive_c'
+
+# The .NET host is already there when a runtime was installed into the prefix.
+fxr = drive / 'Program Files' / 'dotnet' / 'host' / 'fxr'
+if fxr.is_dir() and any(fxr.iterdir()):
+    raise SystemExit
+
+programs = []
+for name in ('Program Files', 'Program Files (x86)'):
+    base = drive / name
+    if base.is_dir():
+        programs.extend(p for p in base.rglob('*.exe') if not p.name.lower().startswith('unins'))
+
+wanted = None
+for exe in programs[:400]:
+    try:
+        blob = exe.read_bytes()
+    except OSError:
+        continue
+    if b'hostfxr' not in blob and b'h\x00o\x00s\x00t\x00f\x00x\x00r\x00' not in blob:
+        continue
+    text = blob.decode('utf-16-le', 'ignore') + blob.decode('latin-1', 'ignore')
+    versions = [int(v) for v in re.findall(r'requires \.NET (\d+)', text)]
+    # winetricks ships the LTS desktop runtimes; take the newest it has that
+    # the program will accept, else its current default.
+    available = [6, 7, 8, 9]
+    usable = [v for v in versions if v in available]
+    wanted = max(usable) if usable else max(available)
+    break
+
+if wanted:
+    print('dotnetdesktop%d' % wanted)
+PY
+}
+
+# Add a runtime to a prefix. winetricks knows where Microsoft keeps them.
+cmd_provide() {
+  local slug="${1:-}"; shift || true
+  [ -n "$slug" ] && [ $# -gt 0 ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug"
+  setup_env "$prefix"
+  local verb
+  for verb in "$@"; do
+    [[ $verb =~ ^[a-z0-9_]+$ ]] || die "not a winetricks verb: $verb"
+  done
+  echo "mindos-win: adding $* to $slug"
+  winetricks -q -f "$@"
+  wineserver -w
 }
 
 cmd_exec() {
@@ -221,7 +490,7 @@ cmd_tricks() {
 }
 
 cmd_theme() {
-  local slug="" dpi=96
+  local slug="" dpi=auto
   while [ $# -gt 0 ]; do
     case "$1" in
       --dpi) dpi="$2"; shift 2 ;;
@@ -236,19 +505,143 @@ cmd_theme() {
 }
 
 cmd_list() {
+  if [ "${1:-}" = "--json" ]; then
+    list_json
+    return
+  fi
   [ -d "$ROOT" ] || { echo "no Windows programs installed"; return; }
   local d
   for d in "$ROOT"/*/; do
     [ -f "$d/system.reg" ] || continue
     local slug name
     slug=$(basename "$d")
-    name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$d/mindos-win.json" 2>/dev/null || true)
+    name=$(meta_name "${d%/}")
     printf '%s\t%s\n' "$slug" "${name:-$slug}"
     local e
     while IFS= read -r e; do
       if [ -n "$e" ]; then printf '\t%s\n' "$(entry_name "$e")"; fi
     done <<<"$(entries_of "$d")"
   done
+}
+
+# The same list as JSON, for the graphical Windows helpers: the slug, the name
+# the program calls itself, and the entries the dock and the Mind bar show.
+list_json() {
+  local d rows=""
+  if [ -d "$ROOT" ]; then
+    for d in "$ROOT"/*/; do
+      [ -f "$d/system.reg" ] || continue
+      rows+=$(printf '%s\t%s\t%s' "$(basename "$d")" "$(meta_name "${d%/}")" "$(entries_of "$d" | tr '\n' '|')")
+      rows+=$'\n'
+    done
+  fi
+  printf '%s' "$rows" | python3 -c '
+import json, pathlib, sys
+
+def name_of(path):
+    try:
+        for line in pathlib.Path(path).read_text("utf-8", "replace").splitlines():
+            if line.startswith("Name="):
+                return line[5:]
+    except OSError:
+        pass
+    return pathlib.Path(path).stem
+
+apps = []
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    slug, name, joined = (line.split("\t") + ["", ""])[:3]
+    files = [f for f in joined.split("|") if f]
+    apps.append({"slug": slug, "name": name or slug,
+                 "entries": [{"file": f, "name": name_of(f)} for f in files]})
+print(json.dumps(apps, indent=1))
+'
+}
+
+# What Windows itself would run to remove the program: the UninstallString the
+# installer recorded in the prefix's registry, the way Add/Remove Programs
+# reads it. Prints one command line per program, most useful first.
+uninstall_strings() {
+  local prefix="$1"
+  python3 - "$prefix" <<'PY'
+import pathlib, re, sys
+
+prefix = pathlib.Path(sys.argv[1])
+found = []
+for name in ('system.reg', 'user.reg'):
+    path = prefix / name
+    if not path.is_file():
+        continue
+    key, values = None, {}
+    for line in path.read_text('utf-8', 'replace').splitlines():
+        if line.startswith('['):
+            if key and 'UninstallString' in values:
+                found.append((values.get('DisplayName', ''), values['UninstallString']))
+            key = line
+            values = {}
+            continue
+        if key and 'CurrentVersion\\\\Uninstall\\\\' in key:
+            match = re.match(r'"([^"]+)"="(.*)"$', line)
+            if match:
+                values[match.group(1)] = match.group(2).replace('\\\\', '\\').replace('\\"', '"')
+    if key and 'UninstallString' in values:
+        found.append((values.get('DisplayName', ''), values['UninstallString']))
+
+# Windows Installer products list msiexec; anything else names its own program.
+for display, command in found:
+    print(command)
+PY
+}
+
+# Remove the program the way Windows would, then take the prefix with it.
+# Running the program's own uninstaller first lets it undo whatever it did
+# outside its folder, and it is what a Windows user expects to see.
+cmd_uninstall() {
+  local slug="" keep=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --keep-prefix) keep=1; shift ;;
+      -*) die "unknown option $1" ;;
+      *) slug="$1"; shift ;;
+    esac
+  done
+  [ -n "$slug" ] || usage 1
+  local prefix
+  prefix=$(prefix_of "$slug")
+  [ -d "$prefix" ] || die "no such prefix: $slug (see mindos-win list)"
+  # A Windows uninstaller empties the prefix, and the desktop shortcuts can
+  # only be traced back to it while its files are still there.
+  local shortcuts
+  shortcuts=$(desktop_shortcuts "$prefix")
+  local commands
+  commands=$(uninstall_strings "$prefix")
+  if [ -n "$commands" ]; then
+    local desktop
+    desktop=$(setup_desktop_size "$(resolve_dpi auto)")
+    local line
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      echo "mindos-win: running the program's uninstaller: $line"
+      (
+        setup_env "$prefix"; no_prompts
+        # The uninstaller is a setup program too, and draws the same
+        # full-screen background; it gets the same Windows desktop.
+        "$WINE" explorer "/desktop=mindos-setup-$slug,$desktop" cmd /c "$line" || true
+        wineserver -w
+      )
+    done <<<"$commands"
+  else
+    echo "mindos-win: the program recorded no uninstaller; removing its prefix"
+  fi
+  [ -n "$keep" ] && return 0
+  # The shortcuts were noted before the uninstaller emptied the prefix: by now
+  # there is nothing left for them to be recognised by.
+  local path
+  while IFS= read -r path; do
+    [ -n "$path" ] && rm -f -- "$path"
+  done <<<"$shortcuts"
+  cmd_remove "$slug"
 }
 
 cmd_remove() {
@@ -263,18 +656,72 @@ cmd_remove() {
     if [ -n "$e" ]; then rm -f -- "$e"; fi
   done <<<"$(entries_of "$prefix")"
   rm -f -- "$APPS/mindos-win-$slug.desktop"
+  # The shortcuts the installer put on the desktop point into the prefix that
+  # is going away; they would be dead icons.
+  remove_desktop_shortcuts "$prefix"
   rm -rf -- "$prefix"
+  update-desktop-database "$APPS" >/dev/null 2>&1 || true
   echo "mindos-win: removed $slug"
+}
+
+# Desktop files and Windows shortcuts on the user's desktop that name a prefix.
+# The desktop shortcuts that point into this prefix, one path per line.
+desktop_shortcuts() {
+  local prefix="$1"
+  python3 - "$prefix" <<'PY'
+import os, pathlib, re, subprocess, sys
+
+prefix = pathlib.Path(sys.argv[1])
+try:
+    desktop = pathlib.Path(subprocess.run(['xdg-user-dir', 'DESKTOP'], capture_output=True, text=True).stdout.strip())
+except OSError:
+    desktop = pathlib.Path.home() / 'Desktop'
+if not desktop.is_dir():
+    desktop = pathlib.Path.home() / 'Desktop'
+if not desktop.is_dir():
+    raise SystemExit
+
+for path in sorted(desktop.glob('*.desktop')):
+    try:
+        if str(prefix) in path.read_text('utf-8', 'replace'):
+            print(path)
+    except OSError:
+        pass
+for path in sorted(desktop.glob('*.lnk')):
+    try:
+        blob = path.read_bytes()
+        text = blob.decode('utf-16-le', 'ignore') + blob.decode('latin-1', 'ignore')
+        for match in re.finditer(r'[A-Za-z]:\\[^\x00<>"|?*]{2,200}', text):
+            if (prefix / 'drive_c' / match.group(0).rstrip('\\ ')[3:].replace('\\', '/')).exists():
+                print(path)
+                break
+    except OSError:
+        pass
+PY
+}
+
+remove_desktop_shortcuts() {
+  local path
+  while IFS= read -r path; do
+    # `if` rather than `&&`: under set -e a false && on the last line of the
+    # loop is the function's exit status, and would end the removal here --
+    # silently, and before the prefix itself is gone.
+    if [ -n "$path" ]; then rm -f -- "$path"; fi
+  done <<<"$(desktop_shortcuts "$1")"
 }
 
 case "${1:-}" in
   install) shift; cmd_install "$@" ;;
   create) shift; cmd_create "$@" ;;
   run) shift; cmd_run "$@" ;;
+  open) shift; cmd_open "$@" ;;
+  needs) shift; cmd_needs "$@" ;;
+  provide) shift; cmd_provide "$@" ;;
   exec) shift; cmd_exec "$@" ;;
   tricks) shift; cmd_tricks "$@" ;;
   theme) shift; cmd_theme "$@" ;;
-  list) cmd_list ;;
+  list) shift; cmd_list "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
   remove|rm) shift; cmd_remove "$@" ;;
   -h|--help|help|"") usage 0 ;;
   *) die "unknown command '$1' (try --help)" ;;

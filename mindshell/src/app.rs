@@ -25,6 +25,7 @@ use crate::greeter;
 use crate::icons;
 use crate::ipc::{IpcClient, IpcEvent};
 use crate::layout::{Layout, Panel};
+use crate::metrics::Metrics;
 use crate::mind;
 use crate::notify::NotifyHandle;
 use crate::pointer;
@@ -48,6 +49,19 @@ const GPU_MAPPING_FAILURE_BURST: usize = 200;
 
 /// The exit status that asks systemd for a fresh shell (`Restart=on-failure`).
 const EXIT_GPU_ADDRESS_SPACE_LOST: i32 = 87;
+
+/// How long to wait before bringing a crashed web view back the first time.
+/// Short enough that a one-off crash is a flicker rather than an outage.
+const RELOAD_AFTER: Duration = Duration::from_millis(500);
+
+/// The longest that wait ever grows to. Half a minute is nothing next to a
+/// session, and it is slow enough that a view crashing on every load costs
+/// the machine nothing while it keeps trying.
+const RELOAD_AT_MOST: Duration = Duration::from_secs(30);
+
+/// Web process crashes further apart than this are two pieces of bad luck
+/// rather than one thing going wrong repeatedly, and the wait starts over.
+const CRASHES_UNRELATED: Duration = Duration::from_secs(60);
 
 /// How many times the kernel refused a GPU mapping in the last `seconds`,
 /// counted no further than the burst that settles the question. The driver is
@@ -113,6 +127,11 @@ fn app_title(name: &str) -> String {
 struct State {
     layout: Layout,
     edit_mode: bool,
+    /// Whether the primary screen is showing the home screen rather than the
+    /// windows. The desktop decides it; the panels need it for the view
+    /// indicator, including the ones that start before it has said, which is
+    /// what `None` is -- a session with nothing open starts at home.
+    desktop_view_home: Option<bool>,
     windows: Value,
     focused: Value,
     ipc_outputs: Vec<Value>,
@@ -192,6 +211,11 @@ pub struct App {
     retired: RefCell<Vec<Rc<ShellWindow>>>,
     first_view: RefCell<Option<webkit::WebView>>,
     stats: RefCell<system::Stats>,
+    /// The Task Manager's view of the machine. Rates are differences between
+    /// two samples, so the state that gets subtracted outlives any one call;
+    /// the walk itself runs on a worker thread, hence the mutex rather than a
+    /// `RefCell`.
+    metrics: Arc<std::sync::Mutex<Metrics>>,
     /// When the UI last asked for `system.stats` (milliseconds since start,
     /// plus one; 0 = never): the GPU sampler runs only while that is recent.
     stats_wanted: Arc<AtomicU64>,
@@ -243,6 +267,7 @@ impl App {
         // One web process renders every view. Its caches are bounded at a
         // few gigabytes rather than a share of the machine's memory, and
         // WebKit trims them under pressure instead of ever killing it.
+        crate::mark!("config + icon theme done");
         let mut pressure = webkit::MemoryPressureSettings::new();
         pressure.set_memory_limit(3072);
         pressure.set_conservative_threshold(0.66);
@@ -251,6 +276,7 @@ impl App {
         pressure.set_poll_interval(30.0);
         webkit::NetworkSession::set_memory_pressure_settings(&mut pressure);
         let web_context = webkit::WebContext::builder().memory_pressure_settings(&pressure).build();
+        crate::mark!("WebContext built");
         web_context.set_cache_model(webkit::CacheModel::DocumentViewer);
         let network_session = if app_mode.as_ref().map(|m| m.name == "greeter").unwrap_or(false) {
             // The login screen keeps nothing on disk.
@@ -263,6 +289,7 @@ impl App {
             webkit::NetworkSession::new(Some(&data_dir.to_string_lossy()), Some(&cache_dir.to_string_lossy()))
         };
 
+        crate::mark!("NetworkSession built");
         let settings = webkit::Settings::new();
         settings.set_enable_developer_extras(devtools);
         settings.set_hardware_acceleration_policy(if config.hardware_acceleration() {
@@ -291,12 +318,14 @@ impl App {
         settings.set_enable_dns_prefetching(false);
         settings.set_user_agent(Some(&format!("mindshell/{}", env!("CARGO_PKG_VERSION"))));
 
+        crate::mark!("webkit settings done");
         let ipc = IpcClient::start(events.clone());
         if app_mode.is_none() { crate::workspace::start(events.clone()); }
         let tray = if app_mode.is_some() { None } else { Some(TrayHandle::start(events.clone(), icon_theme.clone())) };
         let notify = if app_mode.is_some() { None } else { Some(NotifyHandle::start(events.clone())) };
         let polkit = if app_mode.is_some() { None } else { Some(PolkitHandle::start(events.clone())) };
         let layout = Layout::load();
+        crate::mark!("ipc/tray/notify/polkit/layout done");
 
         let app = Rc::new(App {
             config,
@@ -321,6 +350,7 @@ impl App {
             retired: RefCell::new(Vec::new()),
             first_view: RefCell::new(None),
             stats: RefCell::new(system::Stats::default()),
+            metrics: Arc::new(std::sync::Mutex::new(Metrics::new())),
             stats_wanted: Arc::new(AtomicU64::new(0)),
             helper_cache: RefCell::new(HashMap::new()),
             helper_inflight: RefCell::new(HashMap::new()),
@@ -338,8 +368,10 @@ impl App {
             lock_on_sleep: Arc::new(AtomicBool::new(true)),
             unlocking: Cell::new(false),
         });
+        crate::mark!("App struct built");
         crate::scheme::register(&app.web_context, Rc::downgrade(&app));
         windows::install_css();
+        crate::mark!("scheme + css done");
         app.watch_layout();
         app.watch_desktop();
         app.watch_icon_theme();
@@ -882,8 +914,11 @@ impl App {
                 }
                 match self.find_window(Kind::Panel, &panel.id, name) {
                     Some(w) => {
-                        // Keep the length the UI measured for fit-to-content panels.
+                        // Keep what the page told us about this window: the
+                        // length a fit-to-content panel measured, and the room
+                        // a flyout card is currently using.
                         spec.fit = w.panel.borrow().as_ref().map(|s| s.fit).unwrap_or(0);
+                        spec.flyout = w.panel.borrow().as_ref().map(|s| s.flyout).unwrap_or(0);
                         if w.panel.borrow().as_ref() != Some(&spec) {
                             *w.panel.borrow_mut() = Some(spec);
                             w.apply_geometry(edit_mode);
@@ -1059,13 +1094,44 @@ impl App {
         view.set_hexpand(true);
         let devtools = self.devtools;
         view.connect_context_menu(move |_, _, _| !devtools);
-        view.connect_web_process_terminated(|view, reason| {
+        // A web process that dies once is an accident, and reloading half a
+        // second later gets the panel back before anyone has finished
+        // noticing. A web process that dies on every load is a loop, and
+        // reloading it twice a second forever buys nothing: the view is
+        // blank either way, and each attempt costs a new process, its share
+        // of memory, and another crash in the journal. So the wait doubles.
+        //
+        // It never grows into giving up. What kills a web process is usually
+        // something that passes -- a driver taken out from under it by a
+        // suspend, a page tripping over a half-written file, an update
+        // landing underneath a running desktop -- and a panel that comes
+        // back after half a minute is worth a great deal more than one that
+        // decided not to. Crashes far enough apart are separate accidents
+        // and start the count again, so a desktop that is merely unlucky
+        // once an hour still recovers immediately every time.
+        let crashes = Cell::new(0u32);
+        let last_crash: Cell<Option<Instant>> = Cell::new(None);
+        view.connect_web_process_terminated(move |view, reason| {
             if crate::quit_requested() {
                 return; // systemd stopped the whole cgroup; we are on our way out too
             }
-            tracing::error!(?reason, "web process terminated; reloading the view");
+            let now = Instant::now();
+            let in_a_row = match last_crash.replace(Some(now)) {
+                Some(last) if now.duration_since(last) < CRASHES_UNRELATED => crashes.get() + 1,
+                _ => 1,
+            };
+            crashes.set(in_a_row);
+            let wait = RELOAD_AFTER
+                .saturating_mul(1u32.checked_shl(in_a_row - 1).unwrap_or(u32::MAX))
+                .min(RELOAD_AT_MOST);
+            tracing::error!(
+                ?reason,
+                in_a_row,
+                wait_ms = wait.as_millis() as u64,
+                "web process terminated; reloading the view"
+            );
             let view = view.clone();
-            glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            glib::timeout_add_local_once(wait, move || {
                 if !crate::quit_requested() {
                     view.reload();
                 }
@@ -1246,6 +1312,21 @@ impl App {
                 }
                 blocking(move || system::power(&action)).await.map(|_| Value::Null)
             }
+            "shell.timing" => {
+                tracing::info!(
+                    host_ms = crate::STARTED.elapsed().as_millis() as u64,
+                    kind = params.get("kind").and_then(serde_json::Value::as_str).unwrap_or(""),
+                    id = params.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
+                    output = params.get("output").and_then(serde_json::Value::as_str).unwrap_or(""),
+                    script_ms = params.get("script").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                    state_ms = params.get("state").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                    render_ms = params.get("render").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                    frame_ms = params.get("frame").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                    page_ms = params.get("total").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                    "startup: view timing"
+                );
+                Ok(serde_json::Value::Null)
+            }
             "shell.ready" => {
                 let first_desktop = win.kind == Kind::Desktop && !win.ready.get();
                 win.ready.set(true);
@@ -1254,6 +1335,10 @@ impl App {
                 // takes its startup screen down as this view maps.
                 if first_desktop {
                     tracing::info!(ms = crate::STARTED.elapsed().as_millis() as u64, output = win.output, "desktop up");
+                    // Release the session's autostart applications. Until this
+                    // they were free to paint over the compositor's startup
+                    // screen, and Discord regularly did.
+                    crate::ready::desktop_up();
                     // The compositor started before the shell and drew its
                     // chrome in whatever mindwm.toml says. Tell it the palette
                     // this session actually uses.
@@ -1334,6 +1419,29 @@ impl App {
                 }
                 Ok(json!({ "applied": changed }))
             }
+            "panel.flyout" => {
+                // A widget wants room for a card beside itself (the task bar's
+                // window list). The window grows; the exclusive zone does not,
+                // so no window on the screen moves out of the way for it.
+                if win.kind != Kind::Panel {
+                    return Err("panel.flyout: not a panel window".into());
+                }
+                let size = params.get("size").and_then(Value::as_f64).unwrap_or(0.0).round().max(0.0) as i32;
+                let changed = {
+                    let mut spec = win.panel.borrow_mut();
+                    match spec.as_mut() {
+                        Some(s) if s.flyout != size => {
+                            s.flyout = size;
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+                if changed {
+                    win.apply_geometry(self.state.borrow().edit_mode);
+                }
+                Ok(json!({ "applied": changed }))
+            }
             "popup.close" => {
                 let name = params
                     .get("name")
@@ -1383,6 +1491,18 @@ impl App {
                     (str_param("exec")?, params.get("terminal").and_then(Value::as_bool).unwrap_or(false))
                 };
                 self.launch(&exec, terminal).await
+            }
+            // Uninstalling is the same gesture whichever world the app came
+            // from; mindos-uninstall asks first and does the right removal.
+            "apps.uninstall" => {
+                let target = if let Some(id) = params.get("id").and_then(Value::as_str) {
+                    let state = self.state.borrow();
+                    let app = apps::find(&state.apps, id).ok_or_else(|| format!("unknown application '{id}'"))?;
+                    app.desktop_file.to_string_lossy().into_owned()
+                } else {
+                    fs::expand(&str_param("path")?).to_string_lossy().into_owned()
+                };
+                self.launch(&format!("mindos-uninstall {}", shell_quote(&target)), false).await
             }
             "tray.items" => Ok(self.tray_items_json()),
             "tray.activate" | "tray.secondaryActivate" => {
@@ -1549,6 +1669,38 @@ impl App {
                 let mut v = self.stats.borrow_mut().snapshot();
                 v["gpu"] = self.state.borrow().gpu.clone().unwrap_or(Value::Null);
                 Ok(v)
+            }
+            // The Task Manager and the desktop readout. Every one of these
+            // walks `/proc` or waits on another program, so every one of them
+            // runs on a worker thread: a frame missed here is a frame missed
+            // in whatever game is running.
+            "system.overview" => {
+                let metrics = self.metrics.clone();
+                let params = params.clone();
+                blocking(move || Ok(metrics.lock().expect("metrics").overview(&params))).await
+            }
+            "system.processes" => {
+                let metrics = self.metrics.clone();
+                let params = params.clone();
+                blocking(move || Ok(metrics.lock().expect("metrics").processes(&params))).await
+            }
+            "system.process" => {
+                let pid = params.get("pid").and_then(Value::as_i64).ok_or("system.process: missing 'pid'")? as i32;
+                blocking(move || crate::metrics::process_detail(pid)).await
+            }
+            "system.kill" => {
+                let pid = params.get("pid").and_then(Value::as_i64).ok_or("system.kill: missing 'pid'")? as i32;
+                let signal = params.get("signal").and_then(Value::as_str).unwrap_or("TERM").to_string();
+                blocking(move || crate::metrics::signal(pid, &signal)).await.map(|_| json!({"pid": pid}))
+            }
+            "system.containers" => {
+                let metrics = self.metrics.clone();
+                let params = params.clone();
+                blocking(move || Ok(metrics.lock().expect("metrics").container_list(&params))).await
+            }
+            "system.services" => {
+                let metrics = self.metrics.clone();
+                blocking(move || Ok(metrics.lock().expect("metrics").services())).await
             }
             "audio.get" => Ok(system::audio_value(&self.state.borrow().audio)),
             "audio.set" => {
@@ -1732,11 +1884,47 @@ impl App {
                 let arg = params.get("arg").and_then(Value::as_str).unwrap_or("");
                 self.open_app(&name, page, arg)
             }
-            "desktop.panel" => {
-                use gtk4_layer_shell::{Layer, LayerShell};
-                if win.kind == Kind::Desktop {
-                    win.window.set_layer(if params["active"] == true { Layer::Top } else { Layer::Background });
+            "desktop.view" => {
+                // Which of the two views the primary screen is in: the home
+                // screen, or the windows. Only the desktop knows, and only the
+                // panels can show it -- they are the one thing on screen in
+                // both -- so it comes through here on its way to them.
+                if win.kind != Kind::Desktop {
+                    return Err("desktop.view: not a desktop window".into());
                 }
+                let home = params.get("home") == Some(&Value::Bool(true));
+                if self.state.borrow_mut().desktop_view_home.replace(home) != Some(home) {
+                    self.broadcast("desktop_view", &json!({ "home": home }));
+                }
+                Ok(json!({ "home": home }))
+            }
+            "desktop.bar" => {
+                // How much of the top of the screen the desktop's own bar
+                // covers. The desktop window is anchored to every edge and so
+                // reserves nothing of itself; this is what keeps windows from
+                // opening underneath the bar.
+                if win.kind != Kind::Desktop {
+                    return Err("desktop.bar: not a desktop window".into());
+                }
+                let size = params.get("size").and_then(Value::as_i64).unwrap_or(0).clamp(0, 10_000) as i32;
+                if win.bar.replace(size) != size {
+                    let _ = self.ipc.send(json!({ "type": "desktop_bar", "output": win.output, "size": size }));
+                }
+                Ok(json!({ "size": size }))
+            }
+            "desktop.panel" => {
+                // `fade: false` when the desktop knows the change cannot be
+                // seen -- the same page is on screen before and after, and
+                // only the layer under it moves.
+                let fade = params.get("fade") != Some(&Value::Bool(false));
+                self.present_desktop(win, params["active"] == true, fade);
+                Ok(Value::Null)
+            }
+            "desktop.toggle" => {
+                // The view indicator in the panel asks for the same thing
+                // Super+D does, and by the same route: the desktop decides
+                // what the switch means, there is only the one rule for it.
+                self.broadcast("shortcut", &json!({ "name": "desktop" }));
                 Ok(Value::Null)
             }
             "app.close" => {
@@ -1782,6 +1970,48 @@ impl App {
 
     fn tray(&self) -> Result<&TrayHandle, String> {
         self.tray.as_ref().ok_or_else(|| "the tray is not available in app windows".to_string())
+    }
+
+    /// Bring the desktop's system UI forward over the windows, or send it back
+    /// behind them, fading either way.
+    ///
+    /// The desktop is one surface, so it cannot be both the wallpaper behind
+    /// the windows and a page over them: the fade is the surface's own opacity
+    /// and the layer change goes with it. Going forward, it stops painting an
+    /// opaque ground, rises invisible over the windows and fades in over them;
+    /// coming back it fades out, and only once it is gone does it drop behind
+    /// the windows and become the wallpaper again. The layer, the ground and
+    /// the opacity always change together in one frame, or the desktop blinks.
+    fn present_desktop(&self, win: &Rc<ShellWindow>, active: bool, fade: bool) {
+        if win.kind != Kind::Desktop || win.presenting.replace(active) == active {
+            return;
+        }
+        let edit_mode = self.state.borrow().edit_mode;
+        if active {
+            win.window.set_opacity(0.0);
+            win.window.remove_css_class("opaque");
+            win.view.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+            win.apply_geometry(edit_mode);
+            win.fade(1.0, |_| ());
+        } else {
+            // Nothing can see the page once the fade is over, so that is when
+            // the desktop puts an open system page away and goes back to
+            // looking like the desktop behind the windows.
+            let js = bridge::dispatch_js("desktop.away", &Value::Null);
+            // Straight to the end of the fade when there is nothing to fade
+            // from: `fade` stops the running animation, and a target it is
+            // already at finishes in this frame instead of over the next ten.
+            if !fade {
+                win.window.set_opacity(0.0);
+            }
+            win.fade(0.0, move |win| {
+                win.window.add_css_class("opaque");
+                win.view.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
+                win.apply_geometry(edit_mode);
+                win.window.set_opacity(1.0);
+                win.eval(&js);
+            });
+        }
     }
 
     /// Start `mindshell --app NAME` as a separate process (its own window,
@@ -1835,6 +2065,7 @@ impl App {
             "tray": self.tray_items_locked(&state),
             "layout": state.layout.to_value(),
             "editMode": state.edit_mode,
+            "desktopHome": state.desktop_view_home.unwrap_or(true),
             "config": self.config_json(),
             "app": self.app_mode.as_ref().map(|m| json!({ "name": m.name, "page": m.page, "arg": m.arg })),
             "version": env!("CARGO_PKG_VERSION"),
@@ -2523,17 +2754,24 @@ impl App {
                 "windows" => {
                     let windows = value.get("windows").cloned().unwrap_or(json!([]));
                     let focused = value.get("focused").cloned().unwrap_or(Value::Null);
-                    {
+                    let previous = {
                         let mut state = self.state.borrow_mut();
                         state.windows = windows.clone();
-                        state.focused = focused.clone();
-                    }
-                    if !focused.is_null() {
-                        // A launched or focused application must remain reachable
-                        // even when a system page is raised over the desktop.
-                        use gtk4_layer_shell::{Layer, LayerShell};
-                        for win in self.windows.borrow().iter().filter(|w| w.kind == Kind::Desktop) {
-                            win.window.set_layer(Layer::Background);
+                        std::mem::replace(&mut state.focused, focused.clone())
+                    };
+                    // A window taking the keyboard is the one thing that sends
+                    // the desktop's system UI back behind the windows: the user
+                    // clicked a task bar entry, or something they started came
+                    // up. The same window reporting the same focus again is not
+                    // that -- a relayout, a new window on another screen or a
+                    // title change used to drop an open page behind the tiles.
+                    // The page fades itself out and asks for the layer change.
+                    if !focused.is_null() && focused != previous {
+                        let js = bridge::dispatch_js("desktop.present", &json!({ "active": false }));
+                        for win in self.windows.borrow().iter() {
+                            if win.kind == Kind::Desktop && win.presenting.get() {
+                                win.eval(&js);
+                            }
                         }
                     }
                     self.broadcast("windows", &json!({ "windows": windows, "focused": focused }));
