@@ -214,6 +214,22 @@ pub enum Request {
     /// back afterwards. Harmless on a single screen, which has nowhere to
     /// move anything to.
     GameScene { on: bool },
+    /// Reset every display, as the reset key (Super+Ctrl+Shift+B) does.
+    ResetDisplays,
+    /// Break a display on purpose, to test that it comes back. Only honoured
+    /// when mindwm runs with `MINDWM_DEBUG_FAULTS` set. `fault` is
+    /// `lose_vblank` (`count` page flip events dropped), `reject_frames`
+    /// (every frame refused for `ms`) or `stall` (the compositor's thread
+    /// sleeps for `ms`); `output` names one output, all of them when left out.
+    DebugFault {
+        fault: String,
+        #[serde(default)]
+        output: Option<String>,
+        #[serde(default)]
+        count: Option<u32>,
+        #[serde(default)]
+        ms: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -583,6 +599,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     }
 
     fn ipc_client_ready(&mut self, id: u64) {
+        let _phase = crate::stall::enter(crate::stall::Phase::Ipc);
         let lines = match self.ipc.read_client(id) {
             Ok(lines) => lines,
             Err(err) => {
@@ -868,6 +885,33 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 self.game_scene(on);
                 Reply::Ok(Value::Null)
             }
+            Request::ResetDisplays => {
+                BackendData::reset_displays(self);
+                ok()
+            }
+            Request::DebugFault {
+                fault,
+                output,
+                count,
+                ms,
+            } => {
+                if std::env::var_os("MINDWM_DEBUG_FAULTS").is_none() {
+                    return Reply::Err("faults are only injected when mindwm runs with MINDWM_DEBUG_FAULTS set".into());
+                }
+                if fault == "stall" {
+                    // What a call that blocks on the event loop does: every
+                    // display and the pointer stop, and the stall watcher
+                    // should say so.
+                    let ms = ms.unwrap_or(3000).min(60_000);
+                    warn!(ms, "debug fault: the compositor's thread sleeps");
+                    std::thread::sleep(Duration::from_millis(ms));
+                    return ok();
+                }
+                match BackendData::debug_fault(self, &fault, output.as_deref(), count, ms) {
+                    Ok(()) => ok(),
+                    Err(err) => Reply::Err(err),
+                }
+            }
         }
     }
 
@@ -936,6 +980,19 @@ mod tests {
                 action: PanelAction::Open,
                 text: None,
                 ask: false,
+            })
+        );
+
+        let (_, req) = parse_request(r#"{"type":"reset_displays"}"#);
+        assert_eq!(req, Ok(Request::ResetDisplays));
+        let (_, req) = parse_request(r#"{"type":"debug_fault","fault":"lose_vblank","output":"DP-1","count":3}"#);
+        assert_eq!(
+            req,
+            Ok(Request::DebugFault {
+                fault: "lose_vblank".into(),
+                output: Some("DP-1".into()),
+                count: Some(3),
+                ms: None,
             })
         );
 

@@ -762,6 +762,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 Generic::new(display, Interest::READ, Mode::Level),
                 |_, display, data| {
                     profiling::scope!("dispatch_clients");
+                    let _phase = crate::stall::enter(crate::stall::Phase::Clients);
                     // Safety: we don't drop the display
                     unsafe {
                         display.get_mut().dispatch_clients(data).unwrap();
@@ -943,6 +944,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             }
         };
         if let Err(err) = self.handle.insert_source(source, |event, _, data| {
+            let _phase = crate::stall::enter(crate::stall::Phase::Tray);
             if let ChannelEvent::Msg(event) = event {
                 if let Some(tray) = data.xtray.as_mut() {
                     tray.handle_event(event);
@@ -954,6 +956,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         }
         let poll = Timer::from_duration(crate::xtray::POLL);
         if let Err(err) = self.handle.insert_source(poll, |_, _, data| {
+            let _phase = crate::stall::enter(crate::stall::Phase::Tray);
             if let Some(tray) = data.xtray.as_mut() {
                 tray.poll();
             }
@@ -991,39 +994,42 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
         let ret = self
             .handle
-            .insert_source(xwayland, move |event, _, data| match event {
-                XWaylandEvent::Ready {
-                    x11_socket,
-                    display_number,
-                } => {
-                    let xwayland_scale = std::env::var("ANVIL_XWAYLAND_SCALE")
-                        .ok()
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(1.);
-                    data.client_compositor_state(&client)
-                        .set_client_scale(xwayland_scale);
-                    let mut wm = X11Wm::start_wm(data.handle.clone(), x11_socket, client.clone())
-                        .expect("Failed to attach X11 Window Manager");
+            .insert_source(xwayland, move |event, _, data| {
+                let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
+                match event {
+                    XWaylandEvent::Ready {
+                        x11_socket,
+                        display_number,
+                    } => {
+                        let xwayland_scale = std::env::var("ANVIL_XWAYLAND_SCALE")
+                            .ok()
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .unwrap_or(1.);
+                        data.client_compositor_state(&client)
+                            .set_client_scale(xwayland_scale);
+                        let mut wm = X11Wm::start_wm(data.handle.clone(), x11_socket, client.clone())
+                            .expect("Failed to attach X11 Window Manager");
 
-                    let mut cursor = Cursor::load();
-                    let (_, image) = cursor.get_image(CursorIcon::Default, 1, Duration::ZERO);
-                    wm.set_cursor(
-                        &image.pixels_rgba,
-                        Size::from((image.width as u16, image.height as u16)),
-                        Point::from((image.xhot as u16, image.yhot as u16)),
-                    )
-                    .expect("Failed to set xwayland default cursor");
-                    data.xwm = Some(wm);
-                    data.xdisplay = Some(display_number);
-                    data.xprops = crate::xprops::XProps::start(display_number);
-                    data.start_xtray(display_number);
-                    data.xwayland_ready = true;
-                    data.run_startup();
-                }
-                XWaylandEvent::Error => {
-                    warn!("XWayland crashed on startup");
-                    data.xwayland_ready = true;
-                    data.run_startup();
+                        let mut cursor = Cursor::load();
+                        let (_, image) = cursor.get_image(CursorIcon::Default, 1, Duration::ZERO);
+                        wm.set_cursor(
+                            &image.pixels_rgba,
+                            Size::from((image.width as u16, image.height as u16)),
+                            Point::from((image.xhot as u16, image.yhot as u16)),
+                        )
+                        .expect("Failed to set xwayland default cursor");
+                        data.xwm = Some(wm);
+                        data.xdisplay = Some(display_number);
+                        data.xprops = crate::xprops::XProps::start(display_number);
+                        data.start_xtray(display_number);
+                        data.xwayland_ready = true;
+                        data.run_startup();
+                    }
+                    XWaylandEvent::Error => {
+                        warn!("XWayland crashed on startup");
+                        data.xwayland_ready = true;
+                        data.run_startup();
+                    }
                 }
             });
         if let Err(e) = ret {
@@ -2350,6 +2356,32 @@ pub trait Backend {
     where
         Self: Sized + 'static,
     {
+    }
+
+    /// Reset every display, as if each monitor had been unplugged and
+    /// plugged in again: the reset key, for a display that looks wrong in a
+    /// way the compositor cannot see. Backends without real displays have
+    /// nothing to reset.
+    fn reset_displays(_state: &mut AnvilState<Self>)
+    where
+        Self: Sized + 'static,
+    {
+    }
+
+    /// Break a display on purpose, to test that it comes back: drop page
+    /// flip events (`lose_vblank`, `count` of them) or refuse frames
+    /// (`reject_frames`, for `ms`), on one output or all of them.
+    fn debug_fault(
+        _state: &mut AnvilState<Self>,
+        fault: &str,
+        _output: Option<&str>,
+        _count: Option<u32>,
+        _ms: Option<u64>,
+    ) -> Result<(), String>
+    where
+        Self: Sized + 'static,
+    {
+        Err(format!("this backend has no {fault} fault to inject"))
     }
 }
 

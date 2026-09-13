@@ -138,6 +138,17 @@ mod shortcut_tests {
     }
 
     #[test]
+    fn the_display_reset_key_needs_super_ctrl_and_shift() {
+        let all = ModifiersState { logo: true, ctrl: true, shift: true, ..Default::default() };
+        assert!(matches!(process_keyboard_shortcut(all, Keysym::B), Some(KeyAction::ResetDisplays)));
+        // Caps Lock turns Shift+B back into a small letter.
+        assert!(matches!(process_keyboard_shortcut(all, Keysym::b), Some(KeyAction::ResetDisplays)));
+        assert!(process_keyboard_shortcut(ModifiersState { ctrl: false, ..all }, Keysym::B).is_none());
+        assert!(process_keyboard_shortcut(ModifiersState { shift: false, ..all }, Keysym::b).is_none());
+        assert!(!is_reset_displays(&ModifiersState { alt: true, ..all }, Keysym::B));
+    }
+
+    #[test]
     fn caps_lock_does_not_disable_or_invert_super_shortcuts() {
         let logo = ModifiersState { logo: true, ..Default::default() };
         assert!(matches!(process_keyboard_shortcut(logo, Keysym::Q), Some(KeyAction::CloseWindow)));
@@ -169,12 +180,15 @@ mod shortcut_tests {
 
 impl<BackendData: Backend> AnvilState<BackendData> {
     fn process_common_key_action(&mut self, action: KeyAction) {
-        if self.idle.locked && !matches!(action, KeyAction::None | KeyAction::VtSwitch(_)) {
+        // Resetting the displays shows nothing that was not on them already,
+        // so a frozen lock screen or login screen can use it too.
+        let always = matches!(action, KeyAction::None | KeyAction::VtSwitch(_) | KeyAction::ResetDisplays);
+        if self.idle.locked && !always {
             // Locked: nothing but switching virtual terminals.
             debug!(?action, "ignored while the session is locked");
             return;
         }
-        if self.config.session.kiosk && !matches!(action, KeyAction::None | KeyAction::VtSwitch(_)) {
+        if self.config.session.kiosk && !always {
             // The login screen: nothing starts a program, opens the Mind bar
             // or ends the compositor from the keyboard.
             debug!(?action, "ignored in kiosk mode");
@@ -186,6 +200,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             KeyAction::Quit => {
                 info!("Quitting.");
                 self.running.store(false, Ordering::SeqCst);
+            }
+
+            KeyAction::ResetDisplays => {
+                info!("the display reset key was pressed");
+                BackendData::reset_displays(self);
             }
 
             KeyAction::Run(cmd) => {
@@ -309,14 +328,17 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                         continue;
                     }
                     keyboard.set_focus(self, Some(surface.into()), serial);
-                    keyboard.input::<(), _>(self, keycode, state, serial, time, |data, modifiers, _| {
+                    let action = keyboard.input(self, keycode, state, serial, time, |data, modifiers, handle| {
                         data.window_cycle.release(modifiers.alt, modifiers.logo);
-                        if state == KeyState::Released && data.suppressed_keys.contains(&keycode.raw()) {
+                        if state == KeyState::Pressed && is_reset_displays(modifiers, handle.modified_sym()) {
+                            data.suppressed_keys.push(keycode.raw());
+                            FilterResult::Intercept(KeyAction::ResetDisplays)
+                        } else if state == KeyState::Released && data.suppressed_keys.contains(&keycode.raw()) {
                             data.suppressed_keys.retain(|key| *key != keycode.raw());
-                            FilterResult::Intercept(())
+                            FilterResult::Intercept(KeyAction::None)
                         } else { FilterResult::Forward }
                     });
-                    return KeyAction::None;
+                    return action.unwrap_or(KeyAction::None);
                 };
             }
         }
@@ -344,7 +366,10 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 // so that we can decide on a release if the key
                 // should be forwarded to the client or not.
                 if let KeyState::Pressed = state {
-                    if data.window_cycle.active() && keysym == Keysym::Escape && !inhibited {
+                    if is_reset_displays(modifiers, keysym) {
+                        data.suppressed_keys.push(keycode.raw());
+                        FilterResult::Intercept(KeyAction::ResetDisplays)
+                    } else if data.window_cycle.active() && keysym == Keysym::Escape && !inhibited {
                         data.suppressed_keys.push(keycode.raw());
                         FilterResult::Intercept(KeyAction::CancelWindowCycle)
                     } else if data.mindbar.open && !(modifiers.logo || (modifiers.ctrl && modifiers.alt)) {
@@ -382,6 +407,26 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             .unwrap_or(KeyAction::None);
 
         action
+    }
+
+    /// The input that only woke the screen goes no further, but a key still
+    /// counts as held: the keyboard's state takes it, so a shortcut whose
+    /// first key did the waking (Super, then Ctrl+Shift+B on a screen that
+    /// looked frozen) still works, and the release is kept from the window
+    /// underneath like the press was.
+    fn swallow_wake_input<B: InputBackend>(&mut self, event: InputEvent<B>) {
+        let InputEvent::Keyboard { event, .. } = event else { return; };
+        let keycode = event.key_code();
+        let state = event.state();
+        let Some(keyboard) = self.seat.get_keyboard() else { return; };
+        keyboard.input(self, keycode, state, SCOUNTER.next_serial(), Event::time_msec(&event), |data, _, _| {
+            if state == KeyState::Pressed {
+                data.suppressed_keys.push(keycode.raw());
+            } else {
+                data.suppressed_keys.retain(|key| *key != keycode.raw());
+            }
+            FilterResult::Intercept(())
+        });
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, evt: B::PointerButtonEvent) {
@@ -1006,6 +1051,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     pub fn process_input_event_windowed<B: InputBackend>(&mut self, event: InputEvent<B>, output_name: &str) {
         self.request_repaint();
         if is_activity(&event) && self.note_activity() {
+            self.swallow_wake_input(event);
             return;
         }
         match event {
@@ -1120,6 +1166,7 @@ impl AnvilState<UdevData> {
         // The first key or click after the screen went to sleep only wakes it:
         // it must not reach the window (or the password field) underneath.
         if is_activity(&event) && self.note_activity() {
+            self.swallow_wake_input(event);
             return;
         }
         match event {
@@ -1664,6 +1711,9 @@ impl AnvilState<UdevData> {
 enum KeyAction {
     /// Quit the compositor
     Quit,
+    /// Super+Ctrl+Shift+B: reset every display, for a screen that froze or
+    /// went dark
+    ResetDisplays,
     /// Trigger a vt-switch
     VtSwitch(i32),
     /// run a command
@@ -1711,6 +1761,15 @@ pub fn next_serial() -> Serial {
     SCOUNTER.next_serial()
 }
 
+/// Super+Ctrl+Shift+B resets every display, the key Windows uses to restart
+/// its graphics driver. A frozen or dark screen is when nothing else on it
+/// can be reached, so this key is taken before a game that inhibits
+/// shortcuts, the Mind bar or the lock screen would get it.
+fn is_reset_displays(modifiers: &ModifiersState, keysym: Keysym) -> bool {
+    modifiers.logo && modifiers.ctrl && modifiers.shift && !modifiers.alt
+        && matches!(keysym, Keysym::B | Keysym::b)
+}
+
 /// MindOS keybindings. Super is the compositor modifier; everything else
 /// goes to the focused application (games see unmodified keys).
 fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Option<KeyAction> {
@@ -1748,6 +1807,8 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
     {
         // ctrl+alt+backspace / super+shift+e = quit
         Some(KeyAction::Quit)
+    } else if is_reset_displays(&modifiers, keysym) {
+        Some(KeyAction::ResetDisplays)
     } else if (xkb::KEY_XF86Switch_VT_1..=xkb::KEY_XF86Switch_VT_12).contains(&keysym.raw()) {
         // VTSwitch
         Some(KeyAction::VtSwitch(

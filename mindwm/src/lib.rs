@@ -15,6 +15,7 @@ pub mod config;
 pub mod capture;
 pub mod drawing;
 pub mod launcher;
+pub mod logging;
 pub mod markdown;
 pub mod mind;
 pub mod mindbar;
@@ -34,9 +35,12 @@ pub mod prefs;
 pub mod procinfo;
 pub mod render;
 pub mod shell;
+pub mod stall;
 pub mod state;
 #[cfg(feature = "udev")]
 pub mod edid;
+#[cfg(feature = "udev")]
+pub mod recovery;
 #[cfg(feature = "udev")]
 pub mod udev;
 #[cfg(feature = "winit")]

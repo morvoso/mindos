@@ -244,6 +244,7 @@ window.
 | `Super+1..9` | Move the pointer to output *n* |
 | `Super+Shift+D` | Toggle server/client-side decorations on the focused window |
 | `Super+L` | Lock the screen |
+| `Super+Ctrl+Shift+B` | Reset every display: each is switched off and its mode set again, for a screen that froze, went dark or lost its signal; pressed again within ten seconds, every display on the GPU goes off and on (see *The repaint loop* below). Works on the lock screen, the login screen and in a game that inhibits shortcuts |
 | `Super+Shift+E`, `Ctrl+Alt+Backspace` | Quit the compositor (ends the session) |
 | `Ctrl+Alt+F1..F12` | Switch virtual terminal |
 | `Super+Shift+P` / `Super+Shift+M` | Output scale up / down |
@@ -263,7 +264,8 @@ even when Shift is released first.
 For `Super` shortcuts, Super on its own
 does nothing, so a tap on it goes to the focused application like any other
 key. Other keys reach the application, and clients that use the
-keyboard-shortcuts-inhibit protocol get everything.
+keyboard-shortcuts-inhibit protocol get everything except `Super+Ctrl+Shift+B`:
+a frozen screen is exactly when nothing else on it can be reached.
 
 ## Hardware media controls
 
@@ -372,7 +374,10 @@ awake or when every timeout is *never*.
 * **The screensaver.** The stage goes to `screensaver`, the shell puts a
   `mindshell-lock` overlay on every output and draws a game there. The next
   key or click takes it away — and is swallowed, so the key that woke the
-  screen is not also typed into whatever was underneath. The pointer is
+  screen is not also typed into whatever was underneath. A key that wakes
+  the screen still counts as held, the way KWin does it, so a shortcut may
+  start with it: holding Super to wake the screen and then pressing
+  Ctrl+Shift+B still resets the displays. The pointer is
   hidden for as long as the stage is not `active`: a client only chooses a
   cursor when the pointer moves, and moving it is exactly what ends the
   screensaver, so leaving it to the shell would park an arrow in one place
@@ -382,7 +387,9 @@ awake or when every timeout is *never*.
   consider overlay layer surfaces in the `mindshell-lock` namespace, the
   output is cleared to opaque black behind them, and the IPC refuses anything
   that would start or focus a program. `Super+L` locks; only `Ctrl+Alt+F1..F12`
-  still works, so a locked machine can still be recovered from a text console.
+  and the display reset key `Super+Ctrl+Shift+B` still work, so a locked
+  machine can still be recovered from a text console, and a frozen lock
+  screen without unlocking it.
   There is no `ext-session-lock-v1` here: GTK — and therefore the shell —
   cannot speak it, so the compositor owns the lock state itself.
 * **The displays.** The stage goes to `blank` and the DRM backend clears every
@@ -533,7 +540,10 @@ names one more file loaded last (the greeter uses
 | `src/input_handler.rs` | Keybindings (`process_keyboard_shortcut`), Super+wheel window stepping, layer focus rules and Mind bar key routing |
 | `src/cursor.rs` | The pointer the compositor draws for a named shape: XCursor lookup, animation frames, and `configure` (the session-wide `XCURSOR_THEME` / `XCURSOR_SIZE`) |
 | `src/render.rs` | Output element assembly: cursor, Mind bar overlay, windows, startup screen |
-| `src/udev.rs`, `src/winit.rs` | DRM/KMS and nested backends (from anvil) |
+| `src/udev.rs`, `src/winit.rs` | DRM/KMS and nested backends (from anvil); `udev.rs` also keeps every display drawing: the page flip deadline, refused-frame retries, the reset helper thread, the connector probe thread and the watchdog |
+| `src/recovery.rs` | What a display that stops taking frames gets: failure classification, the reset steps, backoff and retry delays (see *The repaint loop*) |
+| `src/stall.rs` | The stall watcher: notices a blocked event loop and logs where it is stuck |
+| `src/logging.rs` | Logging through a thread, so a journal that falls behind never blocks the event loop |
 
 ## Development
 
@@ -580,21 +590,63 @@ was dispatched, which happens whenever a repaint kicked off from elsewhere
 supersedes an armed one. The event is dropped, and in the old code a repaint
 that then failed armed nothing in its place.
 
-So mindwm no longer trusts the vblank alone:
+So mindwm no longer trusts the vblank alone, and nothing it does about a
+display waits on the event loop:
 
 * **Every page flip has a deadline.** Thirty frames, and never less than a
-  second. If it passes, the output is reset: its surface is cleared, its
-  buffers dropped, and it is drawn again from scratch, which is the same thing
-  that switching the displays off and on does. KWin waits the same second and
+  second. If it passes, the output is reset. KWin waits the same second and
   gives the same reason, that a second "should always be longer than any real
   pageflip can take, even with PSR and modesets"; unlike KWin, which logs and
-  keeps waiting, mindwm resets the output.
-* **No error stops the loop.** A frame the hardware refuses (busy, out of
-  slots, momentarily owned by someone else, a rejected atomic test) schedules
-  the next frame instead of waiting. Only a paused session stops repainting,
-  and its resume handler starts every output again. Nothing in the render path
-  panics any more: a lost rendering context retries once a second rather than
-  taking the session down.
+  keeps waiting, mindwm resets the output. An event loop that was itself
+  stuck past the deadline does not reset a display that flipped in time:
+  calloop hands out the file descriptors that are ready before the timers
+  that expired in the same turn, so the vblank waiting on the DRM device is
+  read first.
+* **A refused frame is tried again.** A frame the kernel does not take (busy,
+  a failed atomic test, a rejected commit, the device briefly someone else's)
+  is retried a frame later for the first three refusals, then every 50 ms,
+  then every 250 ms, so a display that keeps refusing does not spin the
+  compositor. The first failed atomic test also reads the CRTC's state back
+  from the kernel, which is what a CRTC that another DRM master changed
+  during a VT switch needs. Two seconds of refusals end in a reset, unless
+  the device is someone else's for the moment or the renderer itself failed,
+  which only ever retry. Only a paused session stops repainting, and resuming
+  starts every output again. Nothing in the render path panics.
+* **Each reset goes further than the last.** An output that does not come
+  back is reset harder each time (`src/recovery.rs` holds the policy):
+
+  | reset | what it does |
+  | --- | --- |
+  | 1st | forget the frame that never came back and draw the whole screen again |
+  | 2nd | also read the CRTC's state back from the kernel, so the next frame commits everything instead of flipping what changed |
+  | 3rd | switch the output off and set its mode again with a new mode blob: what unplugging the monitor and plugging it back in does |
+  | 4th and later | switch every output on the GPU off, and light each again, the most demanding mode first |
+
+  The cause can skip the gentle steps. A lost vblank starts at the first.
+  Frames the kernel kept refusing start at the third: they were already
+  retried, and a mode blob that went stale across a suspend is refused
+  forever otherwise (a busy device, or one out of buffers, starts at the
+  second). A reset someone asked for starts at the third. An output that
+  shows frames ten seconds after its last reset is well again, and its next
+  incident starts from the bottom. From the fifth reset in a row mindwm waits
+  5, 15, 30 and then 60 seconds between tries, so a display that cannot be
+  lit does not flash every display on the GPU every second.
+* **The kernel lets go on a helper thread.** Every step starts with a
+  `mindwm-release` thread making the kernel give up what it still holds for
+  the CRTC: a blocking atomic commit that waits out a flip still queued
+  (NVIDIA's driver gives up on a stuck one only after three seconds, and logs
+  `Flip event timeout on head`), and for the third and fourth steps also
+  switches the CRTC off. The other displays, the pointer and every client
+  keep going meanwhile. Nothing is drawn or queued on the output until the
+  thread is done, and the Displays settings are told to try a mode, VRR or
+  on/off change again in a moment. A release still waiting after twelve
+  seconds is logged: the driver itself is then likely stuck. mindwm does not
+  use a page flip event's timestamp to tell a late event from the one it
+  waits for, because the first event after a modeset can carry the last
+  vblank from before the CRTC went dark (virtio-gpu's does), which would
+  leave every relit display looking stuck. It does not need to: the kernel
+  sends the event of any flip it held before it lets go of the CRTC, so that
+  event is handled before the reset queues a frame.
 * **The scan-out that froze an output loses the privilege.** If the frame that
   never reached the screen had a client's own buffer on the primary plane, that
   output composes from then on and says so in the journal. A client's buffer on
@@ -602,15 +654,38 @@ So mindwm no longer trusts the vblank alone:
   not time it out; a composed frame waits on the GPU instead, where the driver
   does. A game that has to be composed costs a little latency. A monitor that
   never updates costs everything.
-* **A slow watchdog covers the rest.** Every half second, an output that is lit
-  but has neither a timer armed nor a frame in flight, or a flip older than two
-  seconds, is reset the same way. It is the backstop for the deadline itself
-  failing to arm.
+* **A slow watchdog covers the rest.** Every half second, an output whose
+  flip outlived its deadline by a second without the deadline firing is
+  reset, and an output that is lit but has had neither a timer armed nor a
+  frame in flight for two looks in a row has its loop started again. It is
+  the backstop for the deadline itself failing to arm.
 * **Every state change that strands a flip drops it.** Switching the displays
   off, and resuming after a VT switch or suspend, both cancel the flip in
-  flight rather than let its deadline fire on a display that is off on purpose.
-  This is what aquamarine calls invalidating the frame, and Hyprland's comment
-  on it describes exactly the black-screen-after-resume this avoids.
+  flight rather than let its deadline fire on a display that is off on
+  purpose, and hand back the frame Smithay still holds for it, which would
+  otherwise keep every new frame from being queued. This is what aquamarine
+  calls invalidating the frame, and Hyprland's comment on it describes
+  exactly the black-screen-after-resume this avoids. Resuming also gives
+  every output a new mode blob, since one from before the hand-over can be
+  refused from then on, and draws every buffer whole.
+* **Nothing else on the event loop waits on a monitor or on the journal.**
+  Everything the compositor does happens on one thread, so a single call that
+  blocks there freezes every display and the pointer at once.
+  * A udev change event has the kernel read every monitor's EDID again over
+    DDC, which can take a long time. That forced probe runs on a
+    `mindwm-probe` thread; events arriving together are gathered for 400 ms
+    into one probe, and the event loop then only reads what the kernel found.
+    Changes that arrive during a reset wait for it to finish.
+  * The log goes to journald through a `mindwm-log` thread. A write to a
+    journal that fell behind blocks; when the thread cannot keep up, lines are
+    counted and dropped rather than waited for, and the count is written once
+    it can.
+  * A `mindwm-stall` thread watches the event loop. When one turn has run for
+    a second, it logs which part of the compositor the loop is in and the
+    system call it waits in (`in ioctl DRM_IOCTL_MODE_ATOMIC on
+    /dev/dri/card1, sleeping in nv_drm_atomic_commit`), again at 5, 15 and 60
+    seconds and every minute after, and `the event loop is running again`
+    once it moves.
 
 `[graphics] direct_scanout` chooses how much of a frame an output may hand
 straight to the display hardware:
@@ -634,23 +709,50 @@ test-only atomic commit first, falling back to composing on any rejection.
 When an output does freeze, the journal is the place to start:
 
 ```sh
-journalctl -b _COMM=mindwm | grep -i 'resetting the output'
+journalctl -b -t mindwm | grep -E 'resetting the output|showing frames again|did not take a frame|still has not let go|compositor is stuck'
+journalctl -b -k | grep -E 'Flip event timeout|Failed to apply atomic modeset|NVRM: Xid'
 ```
 
-The line names the output, how long the flip waited, whether a client buffer
-was being scanned out, and how long ago a frame last reached the screen. An
-output can also be recovered by hand without ending the session, by switching
-the displays off and on over the IPC socket:
+`resetting the output` names the output, the cause (`StuckFlip`,
+`Refused(...)`, `Requested`, `Device`), how many resets in a row, whether a
+client buffer was being scanned out, how long ago a frame last reached the
+screen, and the step taken; `the display is showing frames again` says how
+long after the reset the first frame arrived. `the compositor is stuck` is
+the whole event loop stopping rather than one display.
+
+A display can also be reset by hand without ending the session, with
+`Super+Ctrl+Shift+B` or the `reset_displays` request: every display is
+switched off and its mode set again, and asking again within ten seconds
+switches every display on the GPU off and on. That is the one to reach for
+when a monitor lost its picture but the compositor sees nothing wrong, like a
+DisplayPort link that dropped after the monitor was probed again: its page
+flips keep completing, so no deadline can notice.
 
 ```sh
-python3 -c 'import os,socket,time
+python3 -c 'import os,socket
 s=socket.socket(socket.AF_UNIX); s.connect(os.environ["MINDWM_SOCKET"])
-s.sendall(b"{\"id\":1,\"type\":\"blank\"}\n"); time.sleep(0.3)
-s.sendall(b"{\"id\":2,\"type\":\"wake\"}\n"); time.sleep(0.3)'
+s.sendall(b"{\"id\":1,\"type\":\"reset_displays\"}\n"); print(s.makefile().readline())'
 ```
 
 (`socat - UNIX-CONNECT:"$MINDWM_SOCKET"` does the same where socat is
 installed; it is not part of a MindOS install.)
+
+### Breaking a display on purpose
+
+With `MINDWM_DEBUG_FAULTS=1` in the compositor's environment (for a session,
+`export MINDWM_DEBUG_FAULTS=1` in `/etc/mindos/session-env`), the
+`debug_fault` request breaks a display the way failing hardware does, so the
+recovery can be watched in the journal and on screen:
+
+| `fault` | fields | what it does |
+| --- | --- | --- |
+| `lose_vblank` | `output`, `count` (1) | drops the next `count` page flip events, as a driver that loses them does; `count` 4 walks every step, 5 also waits out the first pause |
+| `reject_frames` | `output`, `ms` (3000) | refuses every frame for `ms`, as a kernel that refuses commits does: retries, then after two seconds a reset, and one step further every two seconds while it lasts |
+| `stall` | `ms` (3000, at most 60000) | blocks the event loop, as a call that waits on the kernel does; the stall watcher reports it |
+
+`output` names one output and defaults to all of them. Without the variable
+the request is refused. On the dev VM, `lose_vblank` with `count` 4 is back
+on screen in about four seconds.
 
 ## GPUs, software rendering and virtual machines
 

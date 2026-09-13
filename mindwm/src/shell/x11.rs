@@ -76,6 +76,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.request_repaint();
         window.set_mapped(true).unwrap();
         let elem = WindowElement(Window::new_x11_window(window.clone()));
@@ -203,6 +204,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.request_repaint();
         let location = window.geometry().loc;
         let window = WindowElement(Window::new_x11_window(window));
@@ -210,6 +212,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.request_repaint();
         let maybe = self
             .space
@@ -250,6 +253,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         let mut geo = window.geometry();
         if let Some(w) = w {
             geo.size.w = w as i32;
@@ -288,6 +292,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         geometry: Rectangle<i32, Logical>,
         _above: Option<u32>,
     ) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         let Some(elem) = self
             .space
             .elements()
@@ -306,11 +311,13 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.request_repaint();
         self.maximize_request_x11(&window);
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.request_repaint();
         let Some(elem) = self
             .space
@@ -337,6 +344,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.request_repaint();
         if let Some(elem) = self
             .space
@@ -373,6 +381,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.request_repaint();
         if let Some(elem) = self
             .space
@@ -401,6 +410,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn resize_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32, edges: X11ResizeEdge) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         // luckily anvil only supports one seat anyway...
         let start_data = self.pointer.grab_start_data().unwrap();
 
@@ -447,6 +457,7 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     }
 
     fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {
+        let _phase = crate::stall::enter(crate::stall::Phase::XWayland);
         self.move_request_x11(&window)
     }
 

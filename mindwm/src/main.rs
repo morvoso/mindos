@@ -9,17 +9,8 @@
 //!   mindwm --winit         run nested inside another Wayland/X11 session (development)
 
 fn main() {
-    if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt()
-            .compact()
-            .with_env_filter(env_filter)
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .compact()
-            .with_env_filter("info,smithay=warn")
-            .init();
-    }
+    // Held to the end of `main`, so the last lines reach the journal.
+    let _log = mindwm::logging::init("info,smithay=warn");
 
     profiling::register_thread!("Main Thread");
 

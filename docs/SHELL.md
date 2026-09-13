@@ -513,7 +513,9 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `inhibit_idle` | `on` | hold the session awake while this client is connected — what the shell does while a game runs. Dropped with the connection |
 | `game_scene` | `on` | clear the game's screen (`true`) or give everything back (`false`) — what the shell sends 2.5 s after GameMode reports a game, and at once when it ends. Nothing on a single display |
 | `tray_click` | `icon` (the `id` from the `tray` event), `button` (1 left, 2 middle, 3 right, 4/5 wheel up/down, 6/7 wheel left/right) | replays the click on the XEmbed icon at the pointer's position, so the program's own menu opens under the cursor |
-| `set_output` | `name`, then any of `width` + `height` + `refresh` (mHz), `scale`, `position: [x, y]`, `transform`, `enabled`, `vrr`, `primary` | applies the mode/scale/position/rotation/VRR/primary change, persists it and sends an `outputs` event |
+| `set_output` | `name`, then any of `width` + `height` + `refresh` (mHz), `scale`, `position: [x, y]`, `transform`, `enabled`, `vrr`, `primary` | applies the mode/scale/position/rotation/VRR/primary change, persists it and sends an `outputs` event. While a display is being reset, a mode or on/off change on its GPU is refused with `a display is being reset; try again in a moment`, and a VRR change on that display with `<name> is being reset; try again in a moment` |
+| `reset_displays` | | switch every display off and set its mode again, what `Super+Ctrl+Shift+B` does: for a screen that froze, went dark or lost its picture. Asking again within ten seconds switches every display on the GPU off and on. Does nothing while the displays are off, since lighting them redraws everything anyway |
+| `debug_fault` | `fault`: `lose_vblank` \| `reject_frames` \| `stall`, `output?`, `count?`, `ms?` | breaks a display on purpose to test that it comes back (docs/COMPOSITOR.md, *Breaking a display on purpose*). Refused unless mindwm runs with `MINDWM_DEBUG_FAULTS` set |
 
 Events (`{"event":"...", ...}`):
 
