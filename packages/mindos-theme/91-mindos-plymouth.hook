@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/share/plymouth/themes/mindos/*
+
+[Action]
+Description = Rebuilding the initramfs for the MindOS boot splash...
+When = PostTransaction
+Depends = mkinitcpio
+Exec = /usr/lib/mindos/plymouth-initramfs

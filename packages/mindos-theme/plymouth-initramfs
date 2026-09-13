@@ -1,0 +1,31 @@
+#!/bin/bash
+# plymouth-initramfs: rebuild the initramfs after a change to the MindOS
+# Plymouth boot splash. Run from the 91-mindos-plymouth pacman hook.
+#
+# The splash a machine actually shows comes from the initramfs, not from
+# /usr/share: mkinitcpio's plymouth hook copies the whole theme directory into
+# the image when the image is built, and nothing in mkinitcpio or plymouth
+# watches that directory afterwards. Without this hook a new theme installs
+# cleanly and the machine keeps booting the old one until the next kernel
+# upgrade happens to rebuild the image.
+set -u
+theme=/usr/share/plymouth/themes/mindos
+command -v mkinitcpio >/dev/null 2>&1 || exit 0
+[[ -d $theme ]] || exit 0
+
+# Only the images that already exist matter. During pacstrap and the ISO build
+# there are none yet and the initramfs is generated afterwards anyway.
+shopt -s nullglob
+images=(/boot/initramfs-*.img)
+(( ${#images[@]} )) || exit 0
+
+# A kernel upgrade in the same transaction already ran mkinitcpio (hook 90) and
+# picked the new theme up with it; only rebuild when an image predates a theme
+# file.
+stale=0
+for img in "${images[@]}"; do
+  [[ -n $(find "$theme" -newer "$img" -print -quit 2>/dev/null) ]] && stale=1
+done
+(( stale )) || exit 0
+
+mkinitcpio -P

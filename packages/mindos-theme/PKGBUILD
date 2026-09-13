@@ -1,7 +1,7 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-theme
 pkgver=0.5.0
-pkgrel=3
+pkgrel=4
 pkgdesc="MindOS look: white-on-red boot menu and console (boot stage), modernist Plymouth boot trace, fonts and font rendering, wallpaper and icon"
 arch=(any)
 url="https://github.com/morvoso/mindos"
@@ -16,14 +16,16 @@ source=(limine-theme.conf
         logo.png logo-glow.png caption-boot.png caption-halt.png
         bar.png px-track.png px-fill.png px-line.png bar-head.png scan.png bullet.png
         corner-tl.png corner-tr.png corner-bl.png corner-br.png
-        wallpaper.png mindos.png splash.png console-theme mindos-console-theme.service)
+        wallpaper.png mindos.png splash.png console-theme mindos-console-theme.service
+        plymouth-initramfs 91-mindos-plymouth.hook)
 sha256sums=(SKIP
             SKIP SKIP
             SKIP SKIP SKIP
             SKIP SKIP SKIP SKIP
             SKIP SKIP SKIP SKIP SKIP SKIP SKIP
             SKIP SKIP SKIP SKIP
-            SKIP SKIP SKIP SKIP SKIP)
+            SKIP SKIP SKIP SKIP SKIP
+            SKIP SKIP)
 
 package() {
   # The boot menu colours; mindos-boot (mindos-base) folds them into /boot/limine.conf.
@@ -45,6 +47,10 @@ package() {
   install -Dm755 gen-assets.py   "$pkgdir/usr/share/mindos/theme/gen-assets.py"
   install -Dm755 console-theme   "$pkgdir/usr/lib/mindos/console-theme"
   install -Dm644 mindos-console-theme.service "$pkgdir/usr/lib/systemd/system/mindos-console-theme.service"
+
+  # The splash lives in the initramfs, so a theme change has to rebuild it.
+  install -Dm755 plymouth-initramfs      "$pkgdir/usr/lib/mindos/plymouth-initramfs"
+  install -Dm644 91-mindos-plymouth.hook "$pkgdir/usr/share/libalpm/hooks/91-mindos-plymouth.hook"
 
   # The MindOS display fonts (Orbitron and Share Tech Mono; SIL OFL), used by
   # Plymouth and by the shell's wordmark. The text faces are the packaged

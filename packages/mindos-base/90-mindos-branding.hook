@@ -4,6 +4,7 @@ Operation = Upgrade
 Type = Package
 Target = filesystem
 Target = plymouth
+Target = mindos-theme
 Target = mindos-base
 
 [Action]
