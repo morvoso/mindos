@@ -1,0 +1,40 @@
+# Carry an existing /etc/mindos/greetd.toml forward. It is a backup= file, so
+# pacman leaves the administrator's copy in place and writes .pacnew; without
+# this the settings below would only ever reach fresh installs.
+_migrate_greetd() {
+  local f=/etc/mindos/greetd.toml
+  [[ -f $f ]] || return 0
+  local changed=0
+
+  # greetd's own profile sourcing runs `. $HOME/.profile` in /bin/sh, where a
+  # failed `.` ends the shell before the session starts -- a stale line in one
+  # user's ~/.profile made every login bounce straight back to the login
+  # screen, with nothing logged. mindos-session and mindos-greeter source the
+  # profiles themselves now, in bash, where a bad line is one message.
+  if ! grep -q '^[[:space:]]*source_profile' "$f"; then
+    if grep -q '^\[terminal\]' "$f"; then
+      sed -i '0,/^\[terminal\]/s//[general]\n# The sessions source \/etc\/profile and ~\/.profile themselves (in bash), so a\n# bad line in one cannot end the login before it starts.\nsource_profile = false\n\n[terminal]/' "$f"
+    else
+      printf '\n[general]\nsource_profile = false\n' >> "$f"
+    fi
+    changed=1
+  fi
+
+  # With the profiles no longer sourced, PATH is whatever greetd was started
+  # with: name the sessions by path so finding them never depends on it.
+  if grep -qE '^[[:space:]]*command = "mindos-(greeter|session|session-safe|session-library)"' "$f"; then
+    sed -i -E 's#^([[:space:]]*command = ")(mindos-(greeter|session|session-safe|session-library))"#\1/usr/bin/\2"#' "$f"
+    changed=1
+  fi
+
+  (( changed )) && echo "  updated /etc/mindos/greetd.toml (source_profile, absolute session paths)"
+  return 0
+}
+
+post_install() {
+  _migrate_greetd
+}
+
+post_upgrade() {
+  _migrate_greetd
+}

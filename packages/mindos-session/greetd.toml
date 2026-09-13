@@ -5,15 +5,25 @@
 # PAM authentication itself and then starts the chosen session as the user.
 # When the installer is told to log in automatically it appends:
 #   [initial_session]
-#   command = "mindos-session"
+#   command = "/usr/bin/mindos-session"
 #   user = "alice"
 # (used once per boot; logging out brings the login screen).
 # A text fallback, should the graphical greeter ever fail to start:
-#   command = "agreety --cmd mindos-session"
+#   command = "agreety --cmd /usr/bin/mindos-session"
 
 [terminal]
 vt = 1
 
+[general]
+# greetd's own profile sourcing runs `. $HOME/.profile` in /bin/sh, where a
+# failed `.` ends the shell -- so a single stale line in a user's ~/.profile
+# ended every login before the session started, silently, and the login screen
+# just came back. mindos-session and mindos-greeter source /etc/profile and
+# ~/.profile themselves, in bash, where that is one message and not a lockout.
+# Both are named by absolute path here and in the .desktop files, so finding
+# them never depends on the PATH /etc/profile sets.
+source_profile = false
+
 [default_session]
-command = "mindos-greeter"
+command = "/usr/bin/mindos-greeter"
 user = "greeter"

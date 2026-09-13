@@ -2,6 +2,18 @@
 # mindos-session: set up the environment for Wayland-native applications and
 # start the MindOS compositor on the current seat. Started by greetd.
 
+# The login environment. greetd used to source these itself (its
+# general.source_profile), but it does that in /bin/sh, where a failed `.` is
+# fatal: one stale line in ~/.profile -- a rustup env file that is not there,
+# say -- ended the session before this script ever ran, and the login screen
+# came back with nothing logged anywhere. Sourced here in bash instead, a bad
+# line is one message on the way past. /etc/profile is also what sets PATH.
+for profile in /etc/profile "$HOME/.profile"; do
+  # shellcheck disable=SC1090
+  [ -r "$profile" ] && . "$profile"
+done
+export PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}"
+
 export XDG_SESSION_TYPE=wayland
 # MindOS application defaults (GTK settings, ...) come first; /etc/xdg stays as the fallback
 case ":${XDG_CONFIG_DIRS:-}:" in

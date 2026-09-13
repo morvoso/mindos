@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=MindOS — Safe graphics
 Comment=Software-rendered recovery desktop
-Exec=mindos-session-safe
+Exec=/usr/bin/mindos-session-safe
 Type=Application
 DesktopNames=MindOS

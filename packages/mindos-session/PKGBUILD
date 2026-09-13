@@ -1,7 +1,7 @@
 # Maintainer: MindOS <build@mindos.local>
 pkgname=mindos-session
 pkgver=0.1.0
-pkgrel=26
+pkgrel=28
 pkgdesc="MindOS session: greetd configuration and the MindOS login screen, session launcher, compositor defaults and the dark-mode defaults for GTK, the portal and Firefox"
 arch=(any)
 url="https://github.com/morvoso/mindos"
@@ -13,6 +13,7 @@ depends=(mindwm mindshell mindos-apps mindos-mind mindos-cursors greetd greetd-a
          pamixer brightnessctl playerctl util-linux pavucontrol blueman network-manager-applet nm-connection-editor
          xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk dconf gsettings-desktop-schemas)
 optdepends=('firefox: gets the MindOS dark defaults from /usr/lib/firefox/defaults/pref/mindos.js')
+install=$pkgname.install
 backup=(etc/xdg/xdg-desktop-portal-wlr/MindOS etc/mindos/greetd.toml etc/mindos/greeter/mindwm.toml etc/mindos/mindwm.toml etc/xdg/kitty/kitty.conf
         etc/mindos/xdg/gtk-3.0/settings.ini etc/mindos/xdg/gtk-4.0/settings.ini)
 source=(mindos-session session-startup greetd.toml greetd-mindos.conf greetd-vt mindwm.toml mindos.desktop kitty.conf

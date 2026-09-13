@@ -229,7 +229,7 @@ if [[ $AUTOLOGIN == 1 ]]; then
   cat >> "$TARGET/etc/mindos/greetd.toml" <<GREETD
 
 [initial_session]
-command = "mindos-session"
+command = "/usr/bin/mindos-session"
 user = "$USERNAME"
 GREETD
 fi

@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=MindOS — Game library
 Comment=Sign in and open your installed games
-Exec=mindos-session-library
+Exec=/usr/bin/mindos-session-library
 Type=Application
 DesktopNames=MindOS
