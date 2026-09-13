@@ -22,3 +22,9 @@
 @define-color warning_color #ffb454;
 @define-color error_color #ff5d8f;
 @define-color success_color #3ddc97;
+
+/* No focus rings anywhere in MindOS. GTK draws a ring around every focused
+   widget (dashed in GTK 3, a solid accent line in GTK 4); the MindOS shell
+   shows focus with the control's own colour instead, and its applications
+   match. Widgets that need a visible focus still get GTK's :focus background. */
+* { outline-style: none; outline-width: 0; }

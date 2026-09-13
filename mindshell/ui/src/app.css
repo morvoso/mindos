@@ -113,8 +113,9 @@ svg { display: block; flex: none; }
 img { display: block; }
 .mono { font-family: var(--mono); font-weight: 400; font-variant-numeric: tabular-nums; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-:focus { outline: none; }
-:focus-visible { outline: 2px solid rgb(var(--accent-a) / .7); outline-offset: 2px; }
+/* No focus rings anywhere in MindOS. A focused control says so with its own
+   border, tint or glow -- never with a ring drawn around the outside of it. */
+:focus, :focus-visible { outline: none; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgb(255 255 255 / .12); border: 3px solid transparent; background-clip: padding-box; border-radius: 10px; }
@@ -224,7 +225,7 @@ input[type=text], input[type=number], input[type=search], input[type=email], sel
 }
 input[type=number] { font-family: var(--mono); width: 90px; }
 textarea { height: auto; padding: 8px 10px; resize: vertical; font-family: var(--mono); font-size: 13px; line-height: 1.4; }
-input[type=text]:focus, input[type=number]:focus, input[type=search]:focus, input[type=email]:focus, select:focus, textarea:focus { border-color: rgb(var(--accent-a) / .6); box-shadow: 0 0 0 3px rgb(var(--accent-a) / .15); }
+input[type=text]:focus, input[type=number]:focus, input[type=search]:focus, input[type=email]:focus, select:focus, textarea:focus { border-color: rgb(var(--accent-a) / .6); background: rgb(0 0 0 / .38); }
 input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
 select { -webkit-appearance: none; appearance: none; padding-right: 26px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b9bb0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
 select option { background: var(--bg-1); color: var(--fg); }
@@ -235,7 +236,7 @@ select option { background: var(--bg-1); color: var(--fg); }
 .switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / .5); transition: transform var(--spring), background var(--fast); }
 .switch input:checked + i { background: var(--accent); border-color: var(--accent); box-shadow: none; }
 .switch input:checked + i::after { transform: translateX(18px); background: var(--void); }
-.switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 3px; }
+.switch input:focus-visible + i { border-color: rgb(var(--accent-a) / .7); }
 .switch input:disabled + i { opacity: .45; cursor: not-allowed; }
 
 /* menus (context menu, tray menu, dropdowns) */
@@ -898,7 +899,7 @@ html[data-kind=greeter], html[data-kind=greeter] body { background: var(--void);
   background: rgb(0 0 0 / .38); border: 1px solid var(--glass-border); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45);
   transition: border-color var(--fast), box-shadow var(--fast);
 }
-.g-field:focus-within { border-color: rgb(var(--accent-a) / .65); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45), 0 0 0 3px rgb(var(--accent-a) / .16), 0 0 24px rgb(var(--accent-a) / .12); }
+.g-field:focus-within { border-color: rgb(var(--accent-a) / .65); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45), 0 0 24px rgb(var(--accent-a) / .12); }
 .g-pw { flex: 1; min-width: 0; height: 100%; padding: 0 8px 0 22px; background: transparent; border: 0; outline: 0; font: 500 15px/1 var(--ui); color: var(--fg); }
 .g-pw[type=password] { font-family: var(--mono); font-size: 17px; letter-spacing: .22em; }
 .g-pw::placeholder { font-family: var(--ui); font-size: 14px; letter-spacing: .02em; color: var(--fg-faint); }
@@ -989,7 +990,7 @@ html[data-kind=lock], html[data-kind=lock] body { background: #000; }
 .picker-item { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--fg); font: 500 11.5px/1.3 var(--ui); text-align: center; transition: background var(--fast), border-color var(--fast); }
 .picker-item:hover { background: rgb(255 255 255 / .06); border-color: var(--glass-border); }
 .picker-item.on { background: rgb(var(--accent-a) / .14); border-color: rgb(var(--accent-a) / .45); }
-.picker-item:focus-visible { box-shadow: var(--ring); outline: 0; }
+.picker-item:focus-visible { background: rgb(255 255 255 / .06); border-color: var(--glass-border-strong); }
 .picker-art { position: relative; display: flex; width: 40px; height: 40px; align-items: center; justify-content: center; }
 .picker-art img, .picker-art svg { width: 40px; height: 40px; object-fit: contain; }
 .picker-check { position: absolute; right: -6px; bottom: -4px; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: var(--accent-fg); }
@@ -1244,7 +1245,7 @@ html[data-kind=toast], html[data-kind=toast] body { background: transparent; }
   color: var(--fg-faint); background: rgb(0 0 0 / .38); border: 1px solid var(--glass-border);
   box-shadow: inset 0 1px 2px rgb(0 0 0 / .45); transition: border-color var(--fast), box-shadow var(--fast);
 }
-.auth-field:focus-within { color: var(--accent); border-color: rgb(var(--accent-a) / .65); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45), 0 0 0 3px rgb(var(--accent-a) / .16); }
+.auth-field:focus-within { color: var(--accent); border-color: rgb(var(--accent-a) / .65); box-shadow: inset 0 1px 2px rgb(0 0 0 / .45); }
 .auth-pw { flex: 1; min-width: 0; height: 100%; background: transparent; border: 0; outline: 0; color: var(--fg); font: 500 14px/1 var(--ui); }
 .auth-pw[type=password] { font-family: var(--mono); letter-spacing: .2em; }
 .auth-pw::placeholder { font-family: var(--ui); letter-spacing: .02em; color: var(--fg-faint); }
@@ -1254,7 +1255,7 @@ html[data-kind=toast], html[data-kind=toast] body { background: transparent; }
 
 /* Settings: searchable groups and deeper tuning without continuous effects. */
 .nav-search { display: flex; align-items: center; gap: 7px; margin: 0 4px 12px; padding: 9px 10px; color: var(--fg-dim); border: 1px solid var(--glass-border); border-radius: var(--r-sm); background: rgb(0 0 0 / .16); }
-.nav-search:focus-within { border-color: rgb(var(--accent-a) / .65); box-shadow: 0 0 0 2px rgb(var(--accent-a) / .08); }
+.nav-search:focus-within { border-color: rgb(var(--accent-a) / .65); }
 .nav-search input.nav-search-input { height: 20px; box-shadow: none; min-width: 0; width: 100%; padding: 0; color: var(--fg); font: 13px/1.4 var(--ui); background: transparent; border: 0; outline: none; }
 .nav-search-input:focus-visible { outline: none; }
 .nav-group { display: flex; flex-direction: column; gap: 2px; }
@@ -1365,7 +1366,6 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
  --shadow-1:0 1px 2px rgb(0 0 0 / .28),0 10px 26px rgb(0 0 0 / .30);
  --shadow-2:0 2px 6px rgb(0 0 0 / .34),0 26px 64px rgb(0 0 0 / .46);
  --blur:blur(22px) saturate(1.25);
- --ring:0 0 0 1px rgb(var(--accent-a) / .45);
 }
 :root[data-theme=light] {
  color-scheme:light;
@@ -1376,7 +1376,6 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 :root[data-theme] .btn.primary {background:var(--action);color:var(--action-fg);border-color:transparent;box-shadow:var(--glow-accent)}
 :root[data-theme] .btn.primary:hover {filter:brightness(1.06);box-shadow:var(--glow-accent),0 0 0 1px rgb(var(--accent-a) / .5)}
 :root[data-theme] .wallpaper.builtin::before,:root[data-theme] .wallpaper.builtin::after {display:none}
-:root[data-theme] button:focus-visible,:root[data-theme] input:focus-visible,:root[data-theme] select:focus-visible {outline:2px solid rgb(var(--accent-a) / .8);outline-offset:2px}
 .gaming-active > .desktop-icons,.gaming-active > .desktop-widgets {visibility:hidden}
 .gaming-workspace {position:absolute;inset:var(--gaming-top,0px) var(--gaming-right,0px) var(--gaming-bottom,80px) var(--gaming-left,0px);display:grid;grid-template-columns:180px minmax(0,1fr) 306px;grid-template-rows:44px minmax(0,1fr);gap:24px;padding:0 28px 26px 0;pointer-events:none}
 .gaming-workspace > * {pointer-events:auto;min-width:0}
@@ -1568,7 +1567,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .play-card svg { width:100%; color:var(--accent); }
 .gaming-app .btn { white-space:normal; }
 .gaming-app[aria-busy=true] button { opacity:.6; pointer-events:none; }
-.play-controller-focus { outline:3px solid var(--accent)!important; outline-offset:3px; }
+.play-controller-focus { background:rgb(var(--accent-a) / .18)!important; border-color:rgb(var(--accent-a) / .6)!important; }
 .play-osk { position:fixed; z-index:100000; bottom:18px; left:50%; transform:translateX(-50%); width:min(640px,94vw); padding:14px; border-radius:var(--r-lg); background:rgb(var(--glass) / .95); border:1px solid var(--glass-border); box-shadow:var(--shadow-2); display:flex; gap:6px; flex-wrap:wrap; }
 .play-osk button { flex:1 0 8%; padding:12px 5px; border:1px solid var(--glass-border); border-radius:var(--r-xs); background:var(--surface); color:var(--fg); }
 .app-window[data-app="gaming"] { display:block; overflow:hidden; }
@@ -1700,7 +1699,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .work-shortcut,.work-shortcut-add {position:relative;display:flex;flex-direction:column;align-items:center;gap:9px;width:108px;padding:12px 6px 10px;border:1px solid transparent;border-radius:var(--r-md);background:transparent;color:var(--fg);text-align:center;font:500 12px/1.35 var(--ui);transition:background var(--fast),border-color var(--fast),transform var(--fast)}
 .work-shortcut:hover,.work-shortcut-add:hover {background:rgb(255 255 255 / .06);border-color:var(--glass-border)}
 .work-shortcut:active,.work-shortcut-add:active {transform:scale(.96)}
-.work-shortcut:focus-visible,.work-shortcut-add:focus-visible {box-shadow:var(--ring);outline:0}
+.work-shortcut:focus-visible,.work-shortcut-add:focus-visible {background:rgb(255 255 255 / .06);border-color:var(--glass-border)}
 .work-shortcut-art {position:relative;display:flex;width:56px;height:56px;align-items:center;justify-content:center}
 .work-shortcut-art img,.work-shortcut-art svg {width:48px;height:48px;object-fit:contain;filter:drop-shadow(0 3px 6px rgb(0 0 0 / .45));transition:transform var(--fast)}
 .work-shortcut:hover .work-shortcut-art img,.work-shortcut:hover .work-shortcut-art svg {transform:translateY(-2px) scale(1.04)}
