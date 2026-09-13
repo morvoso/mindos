@@ -115,6 +115,17 @@ const P: Record<string, string> = {
   // Where a window comes from, shown beside a task in the window list:
   // `linux` a native Wayland client, `x11` one going through Xwayland,
   // `winapp` (above) a Windows program under Wine or Proton.
+  // For spaces: something to put next to a name like Hobby or Studio.
+  book: '<path d="M4.5 5.5A2 2 0 0 1 6.5 3.5H19.5v14H6.5a2 2 0 0 0-2 2z"/><path d="M4.5 19.5a2 2 0 0 0 2 2h13v-4"/>',
+  brush: '<path d="M19.5 3.5l-8.2 8.2"/><path d="M13.5 9.5l1 1"/><path d="M10.8 12.2a3 3 0 0 0-4.2 0c-1.2 1.2-.7 3.3-2.6 4.8 2.6 1.5 5.6 1 6.9-.3a3 3 0 0 0-.1-4.5z"/>',
+  film: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M7.5 4.5v15M16.5 4.5v15M3.5 9h4M3.5 15h4M16.5 9h4M16.5 15h4"/>',
+  headphones: '<path d="M4 16v-3.5a8 8 0 0 1 16 0V16"/><rect x="3.5" y="14.5" width="4" height="6" rx="1.5"/><rect x="16.5" y="14.5" width="4" height="6" rx="1.5"/>',
+  trophy: '<path d="M7.5 4.5h9v5a4.5 4.5 0 0 1-9 0z"/><path d="M7.5 6.5h-3a3 3 0 0 0 3 4M16.5 6.5h3a3 3 0 0 1-3 4"/><path d="M12 14v3.5M8.5 20.5h7M9.5 17.5h5v3h-5z"/>',
+  coffee: '<path d="M4.5 9.5h12v5a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5z"/><path d="M16.5 11h1.5a2.5 2.5 0 0 1 0 5h-1.8"/><path d="M8.5 3.5v3M12.5 3.5v3"/>',
+  briefcase: '<rect x="3.5" y="7.5" width="17" height="12" rx="1.5"/><path d="M9 7.5V5.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M3.5 12.5h17"/>',
+  heart: '<path d="M12 20s-7.5-4.6-7.5-10.1A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/>',
+  camera: '<path d="M4.5 8.5h3l1.5-2.5h6L16.5 8.5h3v11h-15z"/><circle cx="12" cy="13.5" r="3.3"/>',
+  flask: '<path d="M9.5 3.5h5M10.5 3.5v6L5 18.5a1.4 1.4 0 0 0 1.2 2h11.6a1.4 1.4 0 0 0 1.2-2L13.5 9.5v-6"/><path d="M7.5 14.5h9"/>',
   linux: '<path d="M9.6 3.6a2.4 2.4 0 0 1 4.8 0v2.6c0 1.3 3.1 3.7 3.1 7.3 0 1.5.9 2.4 1.4 3.4.6 1.2-.2 2.4-1.9 2.4H7c-1.7 0-2.5-1.2-1.9-2.4.5-1 1.4-1.9 1.4-3.4 0-3.6 3.1-6 3.1-7.3z"/><circle cx="10.6" cy="7.4" r=".9" fill="currentColor" stroke="none"/><circle cx="13.4" cy="7.4" r=".9" fill="currentColor" stroke="none"/><path d="M10.9 10.2l1.1 1 1.1-1"/>',
   x11: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M9 9.5l6 5M15 9.5l-6 5"/>',
   minimize: '<path d="M6 17.5h12"/>',

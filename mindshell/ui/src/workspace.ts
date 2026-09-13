@@ -2,25 +2,19 @@ import * as actions from './actions';
 import * as bridge from './bridge';
 import { launchWithFeedback } from './app-match';
 import { appearanceControls } from './appearance';
-import { renderSettings } from './apps/settings';
-import { renderGaming } from './apps/gaming';
-import { h, RESUME_EVENT } from './dom';
+import { every, h, RESUME_EVENT } from './dom';
 import { rectIn, setDesktopBar } from './geometry';
-import { renderGamingDesktop } from './gaming-desktop';
 import { icon } from './icons';
-import { modeSwitch, type WorkspaceMode } from './mode-switch';
-import { setPerfMode } from './perf';
+import { modeInfo, perfRefresh, perfSubscribe, perfSwitch } from './perf';
 import { systemReadout } from './readout';
+import { openLibrary, resumeCard } from './resume';
+import { spaceSwitch } from './space-switch';
+import { activeSpace, followSpaces, spaces, updateSpace } from './spaces';
 import { store } from './state';
 import { systemControls } from './system-menu';
 import { renderDesktopIcons } from './desktop-icons';
-import type { Layout, PerfMode, WorkspaceShortcut } from './types';
+import type { Layout, PerfStatus, Space, WorkspaceShortcut } from './types';
 
-type Mode = WorkspaceMode;
-type Page = { name: string; page?: string; arg?: string };
-/// What each desktop mode asks of the machine: everything it has for gaming,
-/// and back to the everyday profile for work.
-const MODE_PERF: Record<Mode, PerfMode> = { gaming: 'performance', productivity: 'balanced' };
 export function isMainOutput(output: string): boolean {
   const outputs = store.state.outputs;
   const primary = outputs.find(o => o.primary) ?? outputs.find(o => o.name === store.prefs.primary_output) ?? outputs[0];
@@ -103,52 +97,29 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
       // the ground rather than fading out and reappearing.
       return bridge.send('desktop.panel', { active: false, fade: occupied() });
     }
-    // Back to the page that was open before the desktop went away, and only
-    // then ask for the raise: it fades in showing where the user left off.
-    putAway?.(false);
     applyHome(false);
     requestAnimationFrame(() => { if (presenting) bridge.send('desktop.panel', { active: true }); });
   };
-  let mountedMode: Mode | undefined;
-  let openPage: ((p: Page) => void) | undefined;
-  /// Show the home view instead of the open system page, or bring it back.
-  let putAway: ((away: boolean) => void) | undefined;
   let previousPrimary = false;
-  const mode = (): Mode => store.state.layout.desktop.workspace?.mode ?? 'gaming';
-  /// Ask `mindos-perf` for the mode this workspace runs in. A game already
-  /// running holds its own mode until it ends (GameMode's doing), so this is
-  /// what the machine goes back to rather than something that fights it.
-  const applyModePerf = (m: Mode) => {
-    void setPerfMode(MODE_PERF[m]).catch((e) => console.warn('performance mode', e));
-  };
   let mounting = false;
   let again = false;
   // Tearing a workspace down writes to the layout (a pending note flushes on
   // the way out), and that change comes straight back here. Take the teardown
-  // first, read the mode again afterwards, and let a nested call ask for one
-  // more pass instead of building a second workspace over the top of this one.
-  function mount(animate = false) {
+  // first, look again afterwards, and let a nested call ask for one more pass
+  // instead of building a second workspace over the top of this one.
+  function mount() {
     if (mounting) { again = true; return; }
     mounting = true;
     try {
       do {
         again = false;
         const primary = isMainOutput(output);
-        if (primary === previousPrimary && (!primary || mountedMode === mode())) return;
+        if (primary === previousPrimary) return;
         const previous = dispose;
-        const previousMode = mountedMode;
-        dispose = undefined; openPage = undefined; mountedMode = undefined;
+        dispose = undefined;
         previous?.();
         previousPrimary = primary;
-        if (!primary) continue;
-        mountedMode = mode();
-        dispose = mountMode(mountedMode, animate, previousMode);
-        // Switching the desktop between the two modes is also a statement
-        // about what the machine is for, so the performance mode follows it.
-        // Only on a real switch: a shell that restarts, or a display that
-        // becomes the primary one, must not walk over a mode the user chose
-        // by hand since.
-        if (previousMode && previousMode !== mountedMode) applyModePerf(mountedMode);
+        if (primary) dispose = mountDesktop();
       } while (again);
     } finally {
       mounting = false;
@@ -157,51 +128,39 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
       applyHome(false);
     }
   }
-  function mountMode(current: Mode, animate: boolean, from?: Mode): () => void {
+  function mountDesktop(): () => void {
     const offs: (() => void)[] = [];
-    let systemDispose: (() => void) | undefined;
     let alive = true;
-    let productivityCustomNav: HTMLElement | undefined;
-    let area: HTMLElement, nav: HTMLElement, main: HTMLElement, rail: HTMLElement, header: HTMLElement;
-    if (current === 'gaming') {
-      const desktop = renderGamingDesktop(root, output);
-      offs.push(desktop.destroy);
-      area = desktop.el;
-      nav = area.querySelector('.gaming-nav')!;
-      main = area.querySelector('.gaming-main')!;
-      rail = area.querySelector('.gaming-rail')!;
-      header = area.querySelector('.gaming-menubar')!;
-    } else {
-      const appearance = appearanceControls(); const systemMenu = systemControls(); offs.push(appearance.destroy, systemMenu.destroy);
-      header = h('header', { class: 'gaming-menubar' }, h('strong', { class: 'gaming-brand' }, h('i'), 'MINDOS'), h('span', { class: 'gaming-meta gaming-edition' }, '// Home'), h('div', { class: 'header-actions' }, appearance.el, systemMenu.el));
-      nav = h('nav', { class: 'gaming-nav', 'aria-label': 'Desktop shortcuts' });
-      main = h('section', { class: 'gaming-main productivity-main' });
-      rail = h('aside', { class: 'gaming-rail', 'aria-label': 'Work and home tools' });
-      area = h('div', { class: 'gaming-workspace productivity-workspace' }, header, nav, main, rail);
-      root.append(area);
-      // The user's panels keep their edges whichever view the screen is in, so
-      // the workspace lays itself out inside what they leave.
-      const place = () => {
-        const pads = { top: 0, right: 0, bottom: 80, left: 0 };
-        for (const p of store.state.layout.panels) if (['*', 'primary', output].includes(p.output)) pads[p.edge] = Math.max(pads[p.edge], p.size + p.margin * 2);
-        for (const edge of ['top', 'right', 'bottom', 'left'] as const) area.style.setProperty(`--gaming-${edge}`, `${pads[edge]}px`);
-      };
-      place(); offs.push(store.on('layout', place));
-      const customNav = h('span', { class: 'workspace-custom-nav' });
-      productivityCustomNav = customNav;
-      offs.push(renderProductivity(main, rail, output, customNav));
-      (area as HTMLElement).dataset.productivityNav = 'true';
-    }
-    area.dataset.workspaceMode = current;
-    // The crossfade between the two views, and the only thing that decides
-    // whether the workspace is on screen. The bar is not part of it: it stays
-    // whichever view the screen is in, and the compositor keeps windows out
-    // of the strip it covers (`reportBar` below). Everything under it fades.
-    // `gaming-active` goes with the fade: what the workspace covers while it
-    // is up -- the desktop icons, the desktop widgets -- is what the user is
-    // meant to see once it steps aside, and `is-away` takes the faded parts
-    // out of the layout rather than merely hiding them, which is what stops
-    // whichever of the two is out of sight from sampling the machine.
+    const appearance = appearanceControls(); const systemMenu = systemControls();
+    offs.push(appearance.destroy, systemMenu.destroy);
+    const title = h('span', { class: 'gaming-meta gaming-edition' });
+    const header = h('header', { class: 'gaming-menubar' }, h('strong', { class: 'gaming-brand' }, h('i'), 'MINDOS'), title);
+    const nav = h('nav', { class: 'gaming-nav', 'aria-label': 'Desktop shortcuts' });
+    const main = h('section', { class: 'gaming-main productivity-main space-main', 'aria-label': 'Desktop' });
+    const rail = h('aside', { class: 'gaming-rail', 'aria-label': 'System and notes' });
+    const area = h('div', { class: 'gaming-workspace space-workspace' }, header, nav, main, rail);
+    root.append(area);
+    // The compositor's desk, the performance mode and the window layout follow
+    // the active space; only the primary desktop drives them.
+    offs.push(followSpaces());
+    // The user's panels keep their edges whichever space the screen is on, so
+    // the workspace lays itself out inside what they leave.
+    const place = () => {
+      const pads = { top: 0, right: 0, bottom: 80, left: 0 };
+      for (const p of store.state.layout.panels) if (['*', 'primary', output].includes(p.output)) pads[p.edge] = Math.max(pads[p.edge], p.size + p.margin * 2);
+      for (const edge of ['top', 'right', 'bottom', 'left'] as const) area.style.setProperty(`--gaming-${edge}`, `${pads[edge]}px`);
+    };
+    place(); offs.push(store.on('layout', place));
+    // The crossfade between the home screen and the windows, and the only
+    // thing that decides whether the workspace is on screen. The bar is not
+    // part of it: it stays whichever view the screen is in, and the compositor
+    // keeps windows out of the strip it covers (`reportBar` below). Everything
+    // under it fades. `gaming-active` goes with the fade: what the workspace
+    // covers while it is up -- the desktop icons, the desktop widgets -- is
+    // what the user is meant to see once it steps aside, and `is-away` takes
+    // the faded parts out of the layout rather than merely hiding them, which
+    // is what stops whichever of the two is out of sight from sampling the
+    // machine.
     let shown = true;
     let fades: Animation[] = [];
     const stopFades = () => { for (const f of fades) f.cancel(); fades = []; };
@@ -249,99 +208,82 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
     watchBar.observe(header); watchBar.observe(area);
     offs.push(() => watchBar.disconnect(), store.on('layout', reportBar));
     reportBar();
-    if (animate && !matchMedia('(prefers-reduced-motion: reduce)').matches && !store.state.game) {
-      area.animate([{ opacity: .35, transform: 'translateY(12px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 240, easing: 'ease-out' });
-    }
-    const title = header.querySelector<HTMLElement>('.gaming-edition')!;
-    const homeTitle = current === 'gaming' ? 'Library' : 'Home';
-    const panelHost = h('section', { class: 'desktop-system-panel', hidden: true });
-    const panelBody = h('div', { class: 'desktop-system-body' });
-    const back = h('button', { class: 'btn', onclick: () => showHome() }, icon('arrow-left', 14), `Back to ${homeTitle}`);
-    panelHost.append(h('header', { class: 'desktop-panel-toolbar' }, back), panelBody);
-    area.append(panelHost);
-    // The system page mounted in the panel, or undefined for the home view. It
-    // stays mounted while the desktop is away behind the windows: what shows
-    // through the gaps is the desktop, and summoning it again comes back to
-    // the page the user was on rather than to the top of the menu.
-    let openName: 'settings' | 'gaming' | undefined;
-    const showPanel = (on: boolean) => {
-      if (!openName) return;
-      panelHost.hidden = !on; main.hidden = on; rail.hidden = on;
-      area.classList.toggle('system-page-open', on);
-      title.textContent = `// ${on ? (openName === 'settings' ? 'Settings' : 'Gaming Center') : homeTitle}`;
-      const page = on ? openName : 'home';
-      for (const b of nav.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.page === page));
-    };
-    putAway = (away) => showPanel(!away);
-    const showHome = () => {
-      // Back to the library or the home view -- still the desktop, still
-      // forward. Only a window taking focus sends it back.
-      systemDispose?.(); systemDispose = undefined; panelBody.replaceChildren();
-      openName = undefined;
-      panelHost.hidden = true; main.hidden = false; rail.hidden = false;
-      area.classList.remove('system-page-open', 'library-hidden');
-      title.textContent = `// ${homeTitle}`;
-      for (const b of nav.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.page === 'home'));
-    };
-    openPage = (p) => {
-      if (p.name === 'library') {
-        present(true);
-        if (current === 'productivity') {
-          void store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: 'gaming', notes: l.desktop.workspace?.notes ?? '' }; });
-        } else showHome();
-        return;
-      }
-      if (p.name !== 'settings' && p.name !== 'gaming') return;
-      systemDispose?.(); panelBody.replaceChildren();
-      const content = h('div', { class: `app-window embedded-app`, dataset: { app: p.name } });
-      panelBody.append(content);
-      openName = p.name;
-      area.classList.remove('library-hidden');
-      showPanel(true);
-      present(true);
-      systemDispose = p.name === 'settings' ? renderSettings(content, p.page) : renderGaming(content, p.page, p.arg);
-    };
     const report = (e: unknown) => {
       if (!alive) return;
       let status = area.querySelector<HTMLElement>('.workspace-error');
       if (!status) { status = h('p', { class: 'workspace-error', role: 'status' }); area.append(status); }
-      status.textContent = String(e);
+      status.textContent = e instanceof Error || typeof e === 'string' ? String(e) : bridge.reason(e);
     };
-    const run = (fn: () => Promise<unknown>) => () => { void fn().catch(report); };
-    const link = (label: string, glyph: string, fn: () => void, page = '') => h('button', { class: 'gaming-nav-link', dataset: { page }, onclick: fn }, icon(glyph, 18), h('span', {}, label));
-    const open = (name: string, page?: string) => () => openPage?.({ name, page });
-    const launch = (pattern: RegExp) => run(async () => {
-      const app = store.state.apps.find(a => pattern.test(a.id));
-      if (app) await bridge.call('apps.launch', { id: app.id });
-      else openPage?.({ name: 'settings', page: 'software' });
-    });
-    nav.replaceChildren(h('span', { class: 'gaming-meta' }, current === 'gaming' ? 'Gaming' : 'Work'),
-      link(homeTitle, current === 'gaming' ? 'gamepad' : 'grid', showHome, 'home'),
-      ...(current === 'gaming' ? [link('Gaming Center', 'sliders', open('gaming'), 'gaming')] : [
-        link('Documents', 'folder', run(() => bridge.call('fs.open', { path: '~/Documents' }))),
-      ]),
-      ...(current === 'gaming' ? [link('Files', 'folder', run(() => bridge.call('fs.open', { path: '~' }))), link('Browser', 'globe', launch(/firefox|chromium/i))] : []),
-      link('Settings', 'gear', open('settings'), 'settings'),
-      ...(current === 'productivity' && productivityCustomNav ? [productivityCustomNav] : []),
-      h('span', { class: 'gaming-nav-bottom gaming-meta' }, 'Super + Space'));
-    const modes = modeSwitch(current, m => {
-      if (m !== mode()) void store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: m, notes: l.desktop.workspace?.notes ?? '' }; });
-    }, animate ? from : undefined);
-    header.insertBefore(modes, header.querySelector('.header-actions'));
-    showHome();
-    return () => { alive = false; systemDispose?.(); offs.forEach(off => off()); area.remove(); };
+    // Settings, the Game Library and Gaming Center are apps with windows of
+    // their own; the desktop only opens them (or brings an open one forward).
+    const openApp = (name: string, page?: string) => { void bridge.call('shell.openApp', { name, page }).catch(report); };
+    const switcher = spaceSwitch(() => openApp('settings', 'shell'));
+    offs.push(switcher.destroy);
+    header.append(switcher.el, h('div', { class: 'header-actions' }, appearance.el, systemMenu.el));
+
+    // What is on the desktop belongs to the space: the menu down the left,
+    // the shortcuts, Resume playing and the notes. Moving to another space
+    // fades that out and the new space's in; the bar and the switch stay.
+    let body: (() => void) | undefined;
+    let bodyKey = '';
+    let shownSpace = '';
+    let swaps: Animation[] = [];
+    const build = (space: Space) => {
+      body?.(); body = undefined;
+      const run = (fn: () => Promise<unknown>) => () => { void fn().catch(report); };
+      const link = (label: string, glyph: string, fn: () => void, page = '') => h('button', { class: 'gaming-nav-link', dataset: { page }, onclick: fn }, icon(glyph, 18), h('span', {}, label));
+      const open = (name: string, page?: string) => () => openApp(name, page);
+      const launch = (pattern: RegExp) => run(async () => {
+        const app = store.state.apps.find(a => pattern.test(a.id));
+        if (app) await bridge.call('apps.launch', { id: app.id });
+        else openApp('settings', 'software');
+      });
+      const customNav = h('span', { class: 'workspace-custom-nav' });
+      nav.replaceChildren(h('span', { class: 'gaming-meta' }, space.name),
+        link('Home', space.icon || 'home', () => undefined, 'home'),
+        ...(space.recent ? [link('Game Library', 'gamepad', run(openLibrary)), link('Gaming Center', 'sliders', open('gaming'), 'gaming')] : []),
+        link('Files', 'folder', run(() => bridge.call('fs.open', { path: '~' }))),
+        link('Browser', 'globe', launch(/firefox|chromium/i)),
+        link('Settings', 'gear', open('settings'), 'settings'),
+        customNav,
+        h('span', { class: 'gaming-nav-bottom gaming-meta' }, 'Super + Space'));
+      main.replaceChildren(); rail.replaceChildren();
+      body = renderSpace(space.id, main, rail, output, customNav);
+      area.dataset.space = space.id;
+      title.textContent = `// ${space.name}`;
+      nav.querySelector('[data-page=home]')?.setAttribute('aria-pressed', 'true');
+    };
+    const syncSpace = () => {
+      const space = activeSpace();
+      const key = JSON.stringify([space.id, space.name, space.icon, !!space.recent]);
+      if (key === bodyKey) return;
+      const switched = shownSpace !== '' && space.id !== shownSpace;
+      // Set before building: the old body flushes its notes on the way out,
+      // and that layout change comes straight back here.
+      bodyKey = key; shownSpace = space.id;
+      for (const a of swaps) a.cancel();
+      swaps = [];
+      const parts = [nav, main, rail];
+      if (!switched || !shown || matchMedia('(prefers-reduced-motion: reduce)').matches) return build(space);
+      swaps = parts.map(el => el.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(6px)' }], { duration: 110, easing: 'ease-in', fill: 'forwards' }));
+      const outs = swaps;
+      outs[0].onfinish = () => {
+        if (!alive || swaps !== outs) return;
+        const now = activeSpace();
+        build(now.id === space.id ? now : space);
+        for (const a of outs) a.cancel();
+        swaps = parts.map(el => el.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: 'ease-out' }));
+      };
+    };
+    syncSpace();
+    offs.push(store.on('layout', syncSpace));
+    return () => { alive = false; for (const a of swaps) a.cancel(); body?.(); offs.forEach(off => off()); area.remove(); };
   }
-  const offOpen = bridge.on<Page>('desktop.open', p => { if (isMainOutput(output)) { store.setEditMode(false); openPage?.(p); } });
   // The host asks for this when a window takes the keyboard.
   const offSink = bridge.on<{ active: boolean }>('desktop.present', p => present(p.active === true));
-  // The desktop has finished fading out. Put the open page away now that
-  // nothing can see it happen, so what shows between the windows is the
-  // desktop rather than a settings page nobody is looking at.
+  // The desktop has finished fading out.
   const offAway = bridge.on('desktop.away', () => {
     if (presenting) return;
-    // Only when the windows have the screen: with nothing open the home screen
-    // is still being looked at, and closing its open page would be a jump.
-    if (occupied()) putAway?.(true);
     // The surface is invisible at this point, so the workspace can go back to
     // whatever the ground calls for without a fade of its own.
     applyHome(false);
@@ -352,36 +294,39 @@ export function renderWorkspace(root: HTMLElement, output: string): () => void {
     if (e.key === 'Escape' && presenting && !e.defaultPrevented) present(false);
   };
   window.addEventListener('keydown', onKey);
-  const localOpen = (e: Event) => { if (isMainOutput(output)) openPage?.((e as CustomEvent<Page>).detail); };
-  const appTitle = (e: Event) => {
-    const el = root.querySelector('.gaming-edition');
-    if (el && root.querySelector('.system-page-open')) el.textContent = `// ${(e as CustomEvent<string>).detail.replace(' · ', ' / ')}`;
-  };
-  window.addEventListener('desktop.open', localOpen); window.addEventListener('desktop.title', appTitle);
   mount();
-  const offs = [store.on('layout', () => mount(true)), store.on('outputs', () => mount()), store.on('prefs', () => mount()),
+  const offs = [store.on('outputs', () => mount()), store.on('prefs', () => mount()),
     store.on('windows', settleHome), store.on('editMode', () => applyHome()),
-    offOpen, offSink, offAway, offShortcut];
+    offSink, offAway, offShortcut];
   return () => {
     if (settle !== undefined) clearTimeout(settle);
     dispose?.(); present(false); offs.forEach(off => off());
     window.removeEventListener('keydown', onKey);
-    window.removeEventListener('desktop.open', localOpen); window.removeEventListener('desktop.title', appTitle);
   };
 }
 
-function renderProductivity(main: HTMLElement, rail: HTMLElement, output: string, customNav: HTMLElement): () => void {
+const LAUNCHERS = /^(steam|com\.valvesoftware\.Steam)\.desktop$|heroic|lutris|discord/i;
+const OFFICE = /firefox|chromium|libreoffice-writer|libreoffice-calc|onlyoffice|thunderbird|evolution|geary/i;
+
+/** The body of one space's desktop: Resume playing, its shortcuts and the
+ *  files on the desktop in the middle; the machine and its notes on the right. */
+function renderSpace(spaceId: string, main: HTMLElement, rail: HTMLElement, output: string, customNav: HTMLElement): () => void {
   let alive = true;
+  const own = () => spaces().find(s => s.id === spaceId);
   const status = h('p', { class: 'play-status', role: 'status' });
-  const run = (fn: () => Promise<unknown>) => () => { void fn().catch(e => { if (alive) status.textContent = String(e); }); };
+  const say = (text: string) => { if (alive) status.textContent = text; };
+  const run = (fn: () => Promise<unknown>) => () => { void fn().catch(e => say(bridge.reason(e))); };
   const card = (title: string, ...body: HTMLElement[]) => h('section', { class: 'gaming-rail-card work-card' }, h('header', { class: 'gaming-panel-title' }, h('h2', {}, title)), ...body);
   const open = (el: HTMLElement, appId: string) => run(async () => {
     if (!store.state.apps.some(a => a.id === appId)) return bridge.call('shell.openApp', { name: 'settings', page: 'software' });
     return launchWithFeedback(el, appId);
   });
-  const defaultShortcuts = (): WorkspaceShortcut[] => store.state.apps.filter(a => /firefox|chromium|libreoffice-writer|libreoffice-calc|onlyoffice|thunderbird|evolution|geary/i.test(a.id)).slice(0, 4).map(a => ({ id: `app-${a.id}`, appId: a.id, label: a.name, pinned: true, icon: /firefox|chromium/i.test(a.id) ? 'globe' : /mail|evolution|geary/i.test(a.id) ? 'mail' : 'edit' }));
-  const currentShortcuts = () => store.state.layout.desktop.workspace?.shortcuts ?? defaultShortcuts();
-  const saveShortcuts = (shortcuts: WorkspaceShortcut[]) => void store.updateLayout(l => { l.desktop.workspace = { ...l.desktop.workspace, mode: 'productivity', notes: l.desktop.workspace?.notes ?? '', shortcuts }; });
+  const glyph = (id: string) => /firefox|chromium/i.test(id) ? 'globe' : /mail|evolution|geary|thunderbird/i.test(id) ? 'mail' : /steam|heroic|lutris/i.test(id) ? 'gamepad' : /discord/i.test(id) ? 'headphones' : 'edit';
+  // A space that has never had shortcuts starts with a few that suit it; once
+  // the list is written down, even empty, it is the user's.
+  const defaultShortcuts = (): WorkspaceShortcut[] => store.state.apps.filter(a => (own()?.recent ? LAUNCHERS : OFFICE).test(a.id)).slice(0, 4)
+    .map(a => ({ id: `app-${a.id}`, appId: a.id, label: a.name, pinned: true, icon: glyph(a.id) }));
+  const currentShortcuts = () => own()?.shortcuts ?? [];
   const shortcutGrid = h('div', { class: 'work-shortcuts' });
   const addButton = h('button', { class: 'work-shortcut-add', title: 'Add an application shortcut' }, h('span', { class: 'work-shortcut-art' }, icon('plus', 26)), h('span', {}, 'Add shortcut'));
   addButton.addEventListener('click', () => {
@@ -433,39 +378,61 @@ function renderProductivity(main: HTMLElement, rail: HTMLElement, output: string
       return el;
     }));
   };
-  main.setAttribute('aria-label', 'Desktop');
+  const resume = own()?.recent ? resumeCard(say) : undefined;
   const desktopFiles = h('div', { class: 'desktop-icons home-desktop-files' });
-  main.append(shortcutGrid, desktopFiles, status);
+  main.append(...(resume ? [resume.el] : []), shortcutGrid, desktopFiles, status);
   const disposeFiles = renderDesktopIcons(main, desktopFiles, output);
-  const notes = h('textarea', { class: 'work-notes', placeholder: 'Type a note…', 'aria-label': 'Desktop notes', value: store.state.layout.desktop.workspace?.notes ?? '' });
-  notes.value = store.state.layout.desktop.workspace?.notes ?? '';
-  // Every keystroke lands in the local layout at once, so a mode switch carries
-  // it; the file write and the broadcast to every other page wait for a pause
-  // in typing (or for this view to go away).
-  const workspaceNotes = (l: Layout) => { l.desktop.workspace = { ...l.desktop.workspace, mode: l.desktop.workspace?.mode ?? 'productivity', notes: notes.value }; };
+
+  const notes = h('textarea', { class: 'work-notes', placeholder: 'Type a note…', 'aria-label': 'Notes for this space' });
+  notes.value = own()?.notes ?? '';
+  // Every keystroke lands in the local layout at once, so a space switch
+  // carries it; the file write and the broadcast to every other page wait for
+  // a pause in typing (or for this view to go away).
+  const writeNotes = (l: Layout) => { const s = spaces(l).find(x => x.id === spaceId); if (s) s.notes = notes.value; };
   let pendingNotes: ReturnType<typeof setTimeout> | undefined;
   const flushNotes = () => {
     if (pendingNotes === undefined) return;
     clearTimeout(pendingNotes); pendingNotes = undefined;
-    void store.updateLayout(workspaceNotes);
+    void store.updateLayout(writeNotes);
   };
   notes.addEventListener('input', () => {
-    workspaceNotes(store.state.layout);
+    writeNotes(store.state.layout);
     if (pendingNotes !== undefined) clearTimeout(pendingNotes);
     pendingNotes = setTimeout(flushNotes, 400);
   });
   notes.addEventListener('blur', flushNotes);
-  // The same readout the gaming rail carries, so the machine is visible in
-  // either mode without either one sampling it twice.
+
+  // The machine, on every space: the Task Manager in miniature and the
+  // performance mode, which the space may have just set.
   const readout = systemReadout({ intervalMs: 3000 });
-  rail.append(card('System', h('div', { class: 'gaming-rail-body' }, readout.el)), card('Notes', notes));
+  const paused = h('p', { class: 'gaming-meta', hidden: true }, 'Sampling paused while gaming');
+  const profile = h('div', { class: 'gaming-profiles' });
+  const profileLabel = h('p', { class: 'gaming-meta' });
+  let perf: PerfStatus | undefined, switching = false;
+  const renderPerf = () => {
+    profileLabel.textContent = perf ? `${modeInfo(perf.effective).label}${perf.game ? ' / GameMode active' : ' / System profile'}` : 'Performance controls unavailable';
+    profile.replaceChildren(...(['quiet', 'balanced', 'performance'] as const).map((mode) => h('button', {
+      class: 'btn', 'aria-pressed': String(perf?.mode === mode), disabled: switching || !perf,
+      onclick: async () => {
+        switching = true; renderPerf();
+        try { say(await perfSwitch(mode)); }
+        catch (e) { say(bridge.reason(e)); }
+        finally { switching = false; if (alive) renderPerf(); }
+      },
+    }, mode === 'performance' ? 'Max' : modeInfo(mode).label)));
+  };
+  // A game gets the machine to itself: the readout's timer already stops on a
+  // desktop surface while one runs (see quiet.ts), so the card only has to say
+  // why the numbers have stopped moving.
+  const gameState = () => { paused.hidden = !store.state.game; readout.el.hidden = !!store.state.game; };
+  rail.append(card('System', h('div', { class: 'gaming-rail-body' }, paused, readout.el, profileLabel, profile)), card('Notes', notes));
+  renderPerf(); gameState();
   renderShortcuts();
-  // The first-run suggestions are only a suggestion until they are written
-  // down; the right-click menu and the picker both edit the saved list.
   const seed = () => {
-    if (store.state.layout.desktop.workspace?.shortcuts?.length) return;
+    const s = own();
+    if (!s || s.shortcuts !== undefined) return;
     const defaults = defaultShortcuts();
-    if (defaults.length) saveShortcuts(defaults);
+    if (defaults.length) void updateSpace(spaceId, x => { x.shortcuts ??= defaults; });
   };
   seed();
   let shortcutKey = JSON.stringify(currentShortcuts()) + activation();
@@ -475,6 +442,11 @@ function renderProductivity(main: HTMLElement, rail: HTMLElement, output: string
     const key = JSON.stringify(currentShortcuts()) + activation();
     if (key === shortcutKey) return;
     shortcutKey = key; renderShortcuts();
+    // Notes typed in another window (a second session of Settings, say).
+    if (document.activeElement !== notes && pendingNotes === undefined) notes.value = own()?.notes ?? '';
   });
-  return () => { alive = false; flushNotes(); readout.destroy(); disposeFiles(); offApps(); offLayout(); };
+  const offs = [offApps, offLayout, store.on('game', gameState),
+    perfSubscribe(rail, (s) => { perf = s; renderPerf(); }),
+    every(rail, 15000, () => { if (!store.state.game && !document.hidden) void perfRefresh(); })];
+  return () => { alive = false; flushNotes(); readout.destroy(); resume?.destroy(); disposeFiles(); offs.forEach(off => off()); };
 }

@@ -90,5 +90,11 @@ export function renderGaming(root: HTMLElement, initial = 'downloads', gameId = 
   const offApps = store.on('apps', () => { if (!root.isConnected) { offApps(); return; } const before = games.map(g => g.id).join('\n'); updateGames(); if (before !== games.map(g => g.id).join('\n')) void render(); });
   window.addEventListener('pagehide', offApps, { once: true });
   void (async () => { try { scanned = (await gameCommand<GameLibrary>('scan')).games; } catch (e) { status.textContent = String(e); } updateGames(); await render(); })();
-  return () => { generation++; offApps(); window.removeEventListener('pagehide', offApps); };
+  // Opened again from elsewhere: turn to the tab (and game) asked for.
+  const offOpen = bridge.on<{ page?: string; arg?: string }>('app.open', (p) => {
+    if (p.page && tabs.includes(p.page)) page = p.page;
+    if (p.arg) chosen = p.arg;
+    void render();
+  });
+  return () => { generation++; offOpen(); offApps(); window.removeEventListener('pagehide', offApps); };
 }

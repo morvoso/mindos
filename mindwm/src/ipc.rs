@@ -63,6 +63,15 @@ pub struct WindowInfo {
     /// The window belongs to a Wine (or Proton) process: a Windows program.
     pub wine: bool,
     pub output: Option<String>,
+    /// The desk (the shell's space) the window belongs to; "" before the
+    /// shell has chosen one.
+    pub desk: String,
+    /// Hidden because its desk is not the current one. Still listed, so the
+    /// shell knows what runs elsewhere; focusing it switches to its desk.
+    pub away: bool,
+    /// On every desk: its app id is on the sticky list (or it is a dialog of
+    /// a window that is).
+    pub sticky: bool,
 }
 
 /// One entry of the `tray` event: an XEmbed tray icon hosted by the compositor.
@@ -243,6 +252,19 @@ pub enum Request {
     /// it. `output` is a connector name, or absent for the only screen with
     /// a bar; `0` gives the strip back.
     DesktopBar { output: Option<String>, size: i32 },
+    /// Switch the current desk (the shell's space). `sticky` replaces the app
+    /// ids shown on every desk (absent: keep the list); `mode` is the layout
+    /// mode the desk uses (absent: leave the mode alone).
+    SetDesk {
+        desk: String,
+        #[serde(default)]
+        sticky: Option<Vec<String>>,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    GetDesk,
+    /// Give a window to another desk.
+    MoveToDesk { window: u64, desk: String },
 }
 
 impl Request {
@@ -266,6 +288,7 @@ impl Request {
                 | Request::GetInput
                 | Request::GetLayoutMode
                 | Request::GetIdle
+                | Request::GetDesk
         )
     }
 }
@@ -333,6 +356,10 @@ pub fn layout_mode_event(mode: LayoutMode) -> String {
         .map(|m| json!({"name": m.name(), "label": m.label()}))
         .collect();
     json!({"event": "layout_mode", "mode": mode.name(), "label": mode.label(), "modes": modes}).to_string()
+}
+
+pub fn desk_event(desk: &str, sticky: &[String]) -> String {
+    json!({"event": "desk", "desk": desk, "sticky": sticky}).to_string()
 }
 
 pub fn prefs_event(prefs: &Prefs) -> String {
@@ -684,10 +711,12 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         let layout_mode = layout_mode_event(self.layout.mode);
         let prefs = prefs_event(&self.prefs);
         let tray = self.tray_snapshot();
+        let desk = desk_event(&self.desks.current, &self.desks.sticky);
         let ok = self.ipc.send(id, &windows_event(&windows))
             && self.ipc.send(id, &outputs_event(&outputs))
             && self.ipc.send(id, &mindbar_event(open))
             && self.ipc.send(id, &layout_mode)
+            && self.ipc.send(id, &desk)
             && self.ipc.send(id, &prefs)
             && self.ipc.send(id, &tray_event(&tray));
         self.ipc.last_windows = Some(windows);
@@ -716,10 +745,12 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         true
     }
 
-    /// Called once per event-loop turn: prune dead minimised windows and send
+    /// Called once per event-loop turn: prune dead minimised and stashed
+    /// windows, give new windows their desk, and send
     /// `windows`/`outputs`/`mindbar` events when the last snapshot changed.
     pub fn ipc_refresh(&mut self) {
         self.minimized.retain(|m| m.window.alive());
+        self.desks_refresh();
         if !self.ipc.has_subscribers() || !self.ipc.refresh_due(Instant::now()) {
             return;
         }
@@ -817,6 +848,11 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             Request::ToggleMinimize { window } => self.with_window(window, |state, window| {
                 if state.is_minimized(&window) {
                     state.unminimize_window(&window);
+                } else if state.is_stashed(&window) {
+                    // On another desk: the taskbar click that would minimise
+                    // it brings it, and its desk, back instead.
+                    state.show_desk_of(&window);
+                    state.activate_window(&window);
                 } else {
                     state.minimize_window(&window);
                 }
@@ -959,7 +995,32 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 self.set_desktop_bar(output.as_deref(), size);
                 Reply::Ok(json!({ "size": size.max(0) }))
             }
+            Request::SetDesk { desk, sticky, mode } => {
+                let mode = match mode.as_deref().map(|m| (m, LayoutMode::parse(m))) {
+                    None => None,
+                    Some((_, Some(mode))) => Some(mode),
+                    Some((name, None)) => return Reply::Err(format!("unknown layout mode: {name}")),
+                };
+                let desk = desk.trim();
+                if desk.is_empty() {
+                    return Reply::Err("desk is required".into());
+                }
+                self.set_desk(desk, sticky, mode);
+                self.desk_reply()
+            }
+            Request::GetDesk => self.desk_reply(),
+            Request::MoveToDesk { window, desk } => {
+                let desk = desk.trim().to_string();
+                if desk.is_empty() {
+                    return Reply::Err("desk is required".into());
+                }
+                self.with_window(window, |state, window| state.move_window_to_desk(&window, &desk))
+            }
         }
+    }
+
+    fn desk_reply(&self) -> Reply {
+        Reply::Ok(json!({"desk": self.desks.current, "sticky": self.desks.sticky}))
     }
 
     /// A click on a hosted tray icon lands where the pointer is.
@@ -1043,6 +1104,24 @@ mod tests {
             })
         );
 
+        let (_, req) = parse_request(r#"{"type":"set_desk","desk":"gaming","sticky":["discord","vesktop"],"mode":"columns"}"#);
+        assert_eq!(
+            req,
+            Ok(Request::SetDesk {
+                desk: "gaming".into(),
+                sticky: Some(vec!["discord".into(), "vesktop".into()]),
+                mode: Some("columns".into()),
+            })
+        );
+        let (_, req) = parse_request(r#"{"type":"set_desk","desk":"work"}"#);
+        assert_eq!(req, Ok(Request::SetDesk { desk: "work".into(), sticky: None, mode: None }));
+        let (_, req) = parse_request(r#"{"type":"get_desk"}"#);
+        assert_eq!(req, Ok(Request::GetDesk));
+        assert!(!Request::GetDesk.changes_the_screen());
+        let (_, req) = parse_request(r#"{"type":"move_to_desk","window":12,"desk":"work"}"#);
+        assert_eq!(req, Ok(Request::MoveToDesk { window: 12, desk: "work".into() }));
+        assert!(Request::MoveToDesk { window: 12, desk: "work".into() }.changes_the_screen());
+
         let (_, req) = parse_request(r#"{"type":"teleport"}"#);
         assert!(req.unwrap_err().starts_with("invalid request"));
         let (_, req) = parse_request("nope");
@@ -1072,6 +1151,9 @@ mod tests {
                 x11: true,
                 wine: false,
                 output: Some("DP-1".into()),
+                desk: "gaming".into(),
+                away: true,
+                sticky: false,
             }],
             focused: Some(1),
         };
@@ -1081,6 +1163,11 @@ mod tests {
         assert_eq!(line["windows"][0]["app_id"], "steam");
         assert_eq!(line["windows"][0]["output"], "DP-1");
         assert_eq!(line["windows"][0]["wine"], false);
+        assert_eq!(line["windows"][0]["desk"], "gaming");
+        assert_eq!(line["windows"][0]["away"], true);
+        assert_eq!(line["windows"][0]["sticky"], false);
+        let line: Value = serde_json::from_str(&desk_event("work", &["discord".into()])).unwrap();
+        assert_eq!(line, json!({"event": "desk", "desk": "work", "sticky": ["discord"]}));
         let line: Value = serde_json::from_str(&shortcut_event("launcher")).unwrap();
         assert_eq!(line["name"], "launcher");
     }

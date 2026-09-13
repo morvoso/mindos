@@ -3,6 +3,7 @@
 // the user to name an app. Clicking a tile toggles it, so several can go in
 // without reopening the picker.
 
+import { activeSpace, updateSpace } from '../spaces';
 import { h } from '../dom';
 import { icon } from '../icons';
 import type { AppInfo, WorkspaceShortcut } from '../types';
@@ -28,17 +29,15 @@ export function appPickerPopup(ctx: PopupCtx): PopupContent {
   const grid = h('div', { class: 'picker-grid' });
   const empty = h('p', { class: 'pop-hint' }, 'No application matches that.');
 
-  const shortcuts = (): WorkspaceShortcut[] => store.state.layout.desktop.workspace?.shortcuts ?? [];
+  const shortcuts = (): WorkspaceShortcut[] => activeSpace(store.state.layout).shortcuts ?? [];
   const has = (id: string) => shortcuts().some((s) => s.appId === id);
 
   const toggle = (a: AppInfo) => {
-    void store.updateLayout((l) => {
-      const w = l.desktop.workspace ?? { mode: 'productivity' as const, notes: '' };
+    void updateSpace(activeSpace().id, (w) => {
       const list = w.shortcuts ?? [];
       w.shortcuts = list.some((s) => s.appId === a.id)
         ? list.filter((s) => s.appId !== a.id)
         : [...list, { id: `app-${a.id}`, appId: a.id, label: a.name, icon: glyphFor(a) }];
-      l.desktop.workspace = w;
     });
     render();
   };

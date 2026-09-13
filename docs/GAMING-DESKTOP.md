@@ -9,7 +9,7 @@ highlights and soft shadows. The wallpaper is entirely static; the animated
 canvas and its toggle have been removed. Dark/light mode and image selection
 remain in Settings → Wallpaper.
 
-Desktop library panels use translucent backdrop blur on hardware renderers.
+Desktop panels use translucent backdrop blur on hardware renderers.
 Software renderers use cached frosted wallpaper bitmaps instead of live blur;
 the small bitmap is created once per theme and never animated. Separate shell app
 windows use the existing cached frosted-wallpaper layer with a translucent
@@ -25,54 +25,79 @@ Installed systems use native service data.
 
 [Work preview](img/productivity-desktop.png) · [Embedded Settings](img/desktop-settings.png)
 
-## Gaming and Work
+## Spaces
 
-The header carries the mode switch: one recessed track with two stops
-(**Gaming** and **Work**, the productivity desktop) and a lit thumb that slides
-onto the live one. It is a radio group -- the arrow keys move between the stops
--- and below 1100px the labels drop, leaving the two glyphs. Switching modes
-rebuilds the workspace with a brief 240 ms fade/slide. Reduced-motion and
-GameMode disable the transition. No animation runs at rest. The header reads
-`MINDOS // <panel title>` and has an icon-only theme switch; hardware readings
-appear only in the System panel.
+A space is a desktop the user makes for what they are doing: **Gaming**,
+**Work**, **Hobby**. Each has its own name, an optional icon (chosen from the
+shell's icon set; a space without one shows its initial where labels are
+hidden), its own shortcuts and notes, and its own windows. A layout written
+before spaces existed becomes two spaces, Gaming and Work, with the old notes
+and shortcuts on Work.
 
-Switching modes also says what the machine is for, so the performance mode
-follows it: **Gaming** sets `mindos-perf set performance`, **Work** sets
-`balanced`. Only an actual switch does this — a shell that restarts, or a
-display that becomes the primary one, leaves a mode the user chose by hand
-alone — and a game already running keeps its own mode until it ends, so this
-is what the machine returns to rather than something that fights GameMode.
-Either mode can still be overridden from the panel's performance widget or
-Settings › Performance.
+The header carries the space switch: one recessed track with a stop for every
+space and a lit thumb that springs onto the live one. Stops are as wide as the
+names, so the thumb is measured onto its stop and both its position and width
+animate. It is a radio group -- the arrow keys move between the stops -- and
+below 1100px the labels drop, leaving the glyphs. The + beside it opens
+Settings › Desktop, where spaces are added, renamed, reordered, given an icon
+and removed (the last one cannot be). Switching fades the menu, the middle and
+the right-hand cards out and the new space's in; the bar stays put.
+Reduced-motion skips the fade.
 
-Both modes carry the same **System** card on the right: the load graph, the
-processor, graphics and memory meters, the network, disk and container line,
-the busiest processes and *Open Task Manager* for the rest (see
-[the Task Manager](SHELL.md#the-task-manager)). It samples once every three
-seconds through the shell's shared sampler, so the card, the panel's `sysmon`
-widget and any open Task Manager page cost one call between them — and while a
-game is running the desktop stops sampling altogether, the card saying so
+A space can ask for three things when the user moves to it, each "leave as it
+is" by default:
+
+- **Performance**: `mindos-perf set <mode>`. Only an actual switch (or a change
+  to the space the user is on) does this -- a shell that restarts leaves a mode
+  chosen by hand alone -- and a game already running keeps its own mode until
+  it ends.
+- **Colours**: a preset or a saved palette. It covers the Appearance colours
+  without replacing them, and moving between spaces with different colours
+  eases across.
+- **Window layout**: floating, tiles or columns.
+
+A space can also show **Resume playing**: the last game played, large, with a
+Resume (or Return to game) button, and the few before it as small tiles, plus
+a link to the Game Library. The list comes from the launchers' own last-played
+times and from launches made in MindOS; the scan is shared and refreshed at
+most once a minute, never while a game is running.
+
+Windows belong to the space they opened on (mindwm calls them desks; see
+COMPOSITOR.md). Switching spaces puts the other space's windows away and
+brings this one's back, focus included. Reaching for a window on another space
+-- Alt+Tab, the Task Manager shortcut, an app raising itself -- switches to its
+space, and the desktop follows. Apps on the **On every space** list (Discord,
+a music player) stay open whichever space is on screen: right-click the window
+in the task bar and choose *Show on all spaces*. The same menu moves a window
+to another space. A window left on another space gets no frame callbacks, so a
+game there stops drawing until its space comes back.
+
+Every space carries the same **System** card on the right: the load graph, the
+processor, graphics and memory meters, the busiest processes and the
+performance buttons (see [the Task Manager](SHELL.md#the-task-manager)). It
+samples once every three seconds through the shell's shared sampler, and while
+a game is running the desktop stops sampling altogether, the card saying so
 instead of drawing stale numbers.
 
-Gaming has the library, sessions, downloads, friends and system tools.
-Work has everyday application launchers, recent files from Documents,
-persistent desktop notes and this monitor's open windows. Missing applications
-open Software settings. The mode and notes are saved in `desktop.workspace` in
-layout.json. Switching modes does not close applications or change power profiles.
+The spaces, their settings, shortcuts and notes, the active space and the
+sticky list are saved in `desktop.workspace` in layout.json.
 
-Settings and Gaming Center open inside the main desktop panel, including launches
-from desktop entries and `mindshell --app`. The session socket forwards these
-requests to the shell; standalone windows remain a fallback when no shell runs.
-The Back button returns to the mode's home panel. Companion stays a separate
-window so it can be pinned beside a game.
+## The Game Library
 
-Opening one of these brings the desktop forward over the windows, fading in;
-clicking a window sends it back, fading out, and the page it had open is put
-away so what shows between the windows is the desktop again. Super + D toggles
-the desktop by hand, Escape sends it back, and nothing else moves it — changing
-the window layout, editing a panel or a window opening on another screen leave
-an open page exactly where it is. Summoning the desktop again returns to that
-page. See *The home screen and the windows* in SHELL.md.
+The library is its own app (`mindshell --app library`, app id
+`mindos-library`), not part of the desktop: it opens as a normal window, on the
+space it was opened from, and *Game Library* in a space's menu or Resume
+playing brings an open one forward instead of starting a second.
+
+Settings, Gaming Center and the Task Manager are apps too (`mindshell --app
+settings`, `gaming`, `tasks`), each a normal window on the space it was opened
+from. Each runs once: a second launch -- from the menu, a desktop entry or
+`mindshell --app settings --page shell` -- is handed to the open window over a
+per-app socket, which turns to the asked-for page and brings itself forward.
+Companion stays a separate window so it can be pinned beside a game.
+
+Super + D brings the desktop forward over the windows and Escape sends it back.
+See *The home screen and the windows* in SHELL.md.
 
 The desktop itself is an overlay: with nothing open it is the whole screen,
 the first window crossfades it away, and closing the last one brings it back.
@@ -107,7 +132,7 @@ disconnected monitors fall back to a connected display.
 Open **Gaming** from the desktop, **Session / Saves / Companion** from a game's
 library card, or run `mindshell --app gaming`, `mindshell --app companion` or
 `mindshell --app library`. Keep ordinary files, browser and Discord on the
-existing dock. Layout edit mode retains the existing panel/widget editor.
+existing dock, and put Discord on every space from its task bar menu. Layout edit mode retains the existing panel/widget editor.
 
 ## Sessions and tuning
 

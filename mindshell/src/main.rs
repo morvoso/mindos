@@ -10,7 +10,7 @@
 //! is the login screen: a full-screen overlay per output, started by greetd
 //! (see `mindos-greeter` in mindos-session).
 
-mod workspace;
+mod instance;
 mod app;
 mod apps;
 mod auth;
@@ -56,7 +56,7 @@ pub enum HostEvent {
     LayoutFile,
     /// Something in the Desktop folder changed (the desktop icons re-list).
     DesktopDir,
-    DesktopOpen(Value),
+    AppOpen(Value),
     /// A game started or ended (the GameMode counter in /run/mindos/perf).
     Game,
     /// logind completed a sleep cycle; rebuild shell render content.
@@ -205,9 +205,11 @@ fn main() {
             }
         }
     }
-    if matches!(opts.app.as_deref(), Some("settings" | "gaming" | "library")) {
-        let request = serde_json::json!({"name": opts.app, "page": opts.page, "arg": opts.arg});
-        if workspace::forward(&request) { return; }
+    // An app that is already open turns to the page asked for instead of
+    // opening a second window.
+    if let Some(name) = opts.app.as_deref().filter(|n| instance::single(n)) {
+        let request = serde_json::json!({"name": name, "page": opts.page, "arg": opts.arg});
+        if instance::forward(name, &request) { return; }
     }
     if let Some(name) = &opts.app {
         if !APPS.contains(&name.as_str()) {

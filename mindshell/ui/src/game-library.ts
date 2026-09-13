@@ -1,15 +1,14 @@
 import * as bridge from './bridge';
 import { h, reconcile } from './dom';
-import { Game, GameLibrary, gameCommand, launchGame, libraryPreferences, nativeGames, runningWindow, saveLibraryPreferences, sourceLabel } from './games';
+import { Game, GameLibrary, gameArt, gameCommand, launchGame, libraryPreferences, nativeGames, playedAt, runningWindow, saveLibraryPreferences, sourceLabel } from './games';
 import { icon } from './icons';
 import { store } from './state';
 import { openGaming, play as gamingRequest, type GameMeta } from './gaming';
 
 type Details = { metadata: Record<string, GameMeta>; storage: Record<string, unknown> };
 
-/** The last scan, kept for the life of the page. Switching between the gaming
- *  and productivity desktops remounts the library, which then paints from here
- *  at once instead of spawning the scanner again. A scan older than FRESH_MS,
+/** The last scan, kept for the life of the page, so a library that is
+ *  rendered again paints from here at once instead of spawning the scanner. A scan older than FRESH_MS,
  *  or one taken before the desktop entries changed, is repeated quietly behind
  *  the cached grid; the Refresh button always scans again. */
 const cache: { scanned: Game[]; warnings: string[]; details: Details; native: string; selected: string; at: number } =
@@ -17,7 +16,7 @@ const cache: { scanned: Game[]; warnings: string[]; details: Details; native: st
 const FRESH_MS = 5 * 60_000;
 const nativeKey = () => nativeGames().map((g) => g.id).join(' ');
 
-export function renderGameLibrary(root: HTMLElement, close?: () => void): () => void {
+export function renderGameLibrary(root: HTMLElement): () => void {
   root.classList.add('game-library');
   let alive = true, loading = false, launchPending = false;
   let scanned = cache.scanned, selected = cache.selected, source = 'all', filter = 'all';
@@ -38,8 +37,7 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
   const tabs = h('div', { class: 'game-tabs', 'aria-label': 'Library view' });
   const footer = h('footer', { class: 'gaming-panel-footer' },
     h('button', { class: 'gaming-text-action', onclick: () => void command(() => bridge.call('mind.open', { text: 'Help me troubleshoot a game on Linux.' })) }, 'Ask Mind', icon('arrow-right', 12)));
-  const heading = h('header', { class: 'gaming-panel-title' }, h('h2', {}, 'Library'), summary,
-    close ? h('button', { class: 'gaming-close', title: 'Show desktop', 'aria-label': 'Close library', onclick: close }, icon('x', 14)) : null);
+  const heading = h('header', { class: 'gaming-panel-title' }, h('h2', {}, 'Library'), summary);
   root.append(heading, h('div', { class: 'game-library-body' },
     h('div', { class: 'game-toolbar' }, search, sources, sort, refresh), message, hero,
     h('div', { class: 'game-section-title' }, tabs, count), grid), footer);
@@ -57,28 +55,9 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
   const allGames = () => {
     const games = [...scanned, ...nativeGames()];
     return games.sort((a, b) => sort.value === 'name' ? a.name.localeCompare(b.name)
-      : Math.max(b.lastPlayed || 0, Number(prefs.launched[b.id]) || 0) - Math.max(a.lastPlayed || 0, Number(prefs.launched[a.id]) || 0) || a.name.localeCompare(b.name));
+      : playedAt(b, prefs) - playedAt(a, prefs) || a.name.localeCompare(b.name));
   };
-  const art = (game: Game, cls: string) => {
-    const box = h('div', { class: `game-art ${cls}`, 'aria-hidden': 'true' },
-      h('span', { class: 'game-art-index' }, sourceLabel[game.source] || game.source),
-      h('span', { class: 'game-art-letter' }, game.name.split(/\s+/).map((s) => s[0]).slice(0, 2).join('')),
-      h('span', { class: 'game-art-cross' }, '+'));
-    let hash = 0;
-    for (const ch of game.id) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-    box.style.setProperty('--art-hue', String(Math.abs(hash) % 360));
-    const steamId = game.id.match(/^steam:(\d+)$/)?.[1];
-    const fallback = steamId ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamId}/header.jpg` : '';
-    if (game.art || fallback) {
-      const img = h('img', { src: game.art ? `mindos://shell/file/${encodeURIComponent(game.art)}` : fallback, alt: '', loading: 'lazy' });
-      img.onerror = () => {
-        if (fallback && img.src !== fallback) img.src = fallback;
-        else img.remove();
-      };
-      box.append(img);
-    }
-    return box;
-  };
+  const art = gameArt;
   const play = async (game: Game) => {
     if (launchPending) return;
     launchPending = true;
@@ -206,9 +185,9 @@ export function renderGameLibrary(root: HTMLElement, close?: () => void): () => 
   };
   window.addEventListener('storage', storage);
   // Window events arrive on every focus change; only a change in what runs matters here.
-  let running = store.state.windows.map((w) => w.app_id).join(' ');
+  let running = store.state.allWindows.map((w) => w.app_id).join(' ');
   const windows = () => {
-    const now = store.state.windows.map((w) => w.app_id).join(' ');
+    const now = store.state.allWindows.map((w) => w.app_id).join(' ');
     if (now === running) return;
     running = now; render();
   };

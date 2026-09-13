@@ -1800,7 +1800,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 
 /* Frosted surfaces: the palette's surface colour over the blurred wallpaper,
    a hairline of light on the top edge, and a soft shadow underneath. */
-:root[data-theme] .game-library,:root[data-theme] .gaming-rail-card,:root[data-theme] .g-card,:root[data-theme] .desktop-system-panel {
+:root[data-theme] .game-library,:root[data-theme] .gaming-rail-card,:root[data-theme] .g-card {
  background:rgb(var(--glass) / .66);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
  border:1px solid var(--glass-border);border-radius:var(--r-lg);box-shadow:var(--shadow-1),inset 0 1px 0 var(--glass-hi)
 }
@@ -1819,41 +1819,81 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 
 /* A software renderer gets the same look without a live blur filter. */
 :root.software-rendered *,:root.software-rendered *::before,:root.software-rendered *::after {backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
-:root.software-rendered .game-library,:root.software-rendered .gaming-rail-card,:root.software-rendered .g-card,:root.software-rendered .desktop-system-panel {background-image:linear-gradient(rgb(var(--glass) / .74),rgb(var(--glass) / .74)),var(--frosted-wallpaper);background-size:cover}
+:root.software-rendered .game-library,:root.software-rendered .gaming-rail-card,:root.software-rendered .g-card {background-image:linear-gradient(rgb(var(--glass) / .74),rgb(var(--glass) / .74)),var(--frosted-wallpaper);background-size:cover}
 :root.software-rendered .app-window.game-library {background-image:none}
 
 /* The primary screen owns the desktop workspace; other outputs are wallpaper. */
 .secondary-desktop > :not(.wallpaper) {display:none!important}
-/* The mode switch: one recessed track with two stops and a lit thumb on the
-   live one. The thumb slides rather than blinks, and the track is the only
-   pill in the bar, so the control reads as the switch it is. */
-.mode-switch {position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;align-items:stretch;flex-shrink:0;padding:3px;border:1px solid var(--glass-border);border-radius:999px;background:rgb(0 0 0 / .22);box-shadow:inset 0 1px 2px rgb(0 0 0 / .3)}
-.mode-switch-thumb {position:absolute;top:3px;bottom:3px;left:3px;width:calc(50% - 3px);border-radius:999px;background:linear-gradient(180deg,rgb(var(--accent-a) / .30),rgb(var(--accent-a) / .12));box-shadow:0 0 0 1px rgb(var(--accent-a) / .5),0 4px 14px rgb(var(--accent-a) / .22),inset 0 1px 0 rgb(255 255 255 / .18);transition:transform var(--spring);pointer-events:none}
-.mode-switch[data-mode=productivity] .mode-switch-thumb {transform:translateX(100%)}
-.mode-opt {position:relative;z-index:1;display:flex;align-items:center;justify-content:center;gap:7px;min-height:26px;padding:0 13px;border:0;border-radius:999px;background:transparent;color:var(--fg-faint);font:600 10px/1 var(--ui);letter-spacing:.11em;text-transform:uppercase;white-space:nowrap;cursor:pointer;transition:color var(--fast)}
-.mode-opt .ic {flex:none;opacity:.75;transition:opacity var(--fast)}
-.mode-opt:hover {color:var(--fg-dim)}
-.mode-opt:hover .ic {opacity:1}
-.mode-opt[aria-checked=true] {color:var(--accent)}
-.mode-opt[aria-checked=true] .ic {opacity:1}
-.mode-opt:focus-visible {outline:0;color:var(--fg)}
+/* The space switch: one recessed track with a stop for every space and a lit
+   thumb on the live one. Stops are as wide as their names, so the thumb is
+   measured onto its stop (space-switch.ts) and both its position and width
+   spring. The track is the only pill in the bar, so it reads as a switch. */
+.space-switch {display:flex;align-items:center;gap:4px;flex-shrink:1;min-width:0}
+.space-switch-track {position:relative;display:flex;align-items:stretch;min-width:0;overflow:hidden;padding:3px;border:1px solid var(--glass-border);border-radius:999px;background:rgb(0 0 0 / .22);box-shadow:inset 0 1px 2px rgb(0 0 0 / .3)}
+.space-switch-thumb {position:absolute;top:3px;bottom:3px;left:3px;width:0;border-radius:999px;background:linear-gradient(180deg,rgb(var(--accent-a) / .30),rgb(var(--accent-a) / .12));box-shadow:0 0 0 1px rgb(var(--accent-a) / .5),0 4px 14px rgb(var(--accent-a) / .22),inset 0 1px 0 rgb(255 255 255 / .18);transition:transform var(--spring),width var(--spring);pointer-events:none}
+.space-opt {position:relative;z-index:1;display:flex;align-items:center;justify-content:center;gap:7px;min-height:26px;padding:0 13px;border:0;border-radius:999px;background:transparent;color:var(--fg-faint);font:600 10px/1 var(--ui);letter-spacing:.11em;text-transform:uppercase;white-space:nowrap;cursor:pointer;transition:color var(--fast)}
+.space-opt .ic {flex:none;opacity:.75;transition:opacity var(--fast)}
+.space-opt:hover {color:var(--fg-dim)}
+.space-opt:hover .ic {opacity:1}
+.space-opt[aria-checked=true] {color:var(--accent)}
+.space-opt[aria-checked=true] .ic {opacity:1}
+.space-opt:focus-visible {outline:0;color:var(--fg)}
+.space-opt-label {overflow:hidden;text-overflow:ellipsis;max-width:14ch}
+/* A space without an icon shows its initial, but only where the labels are gone. */
+.space-opt .space-initial {display:none}
+.space-initial {display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:4px;font:700 10px/1 var(--ui);letter-spacing:0;background:rgb(var(--accent-a) / .14)}
+.space-switch-edit {display:flex;align-items:center;justify-content:center;width:26px;height:26px;border:1px solid transparent;border-radius:50%;background:transparent;color:var(--fg-faint);cursor:pointer;transition:color var(--fast),border-color var(--fast)}
+.space-switch-edit:hover {color:var(--accent);border-color:var(--glass-border)}
 /* On the light theme the track is a shallow well rather than a dark one,
    and the thumb keeps a white body so the lit label stays readable. */
-:root[data-theme=light] .mode-switch {background:rgb(0 0 0 / .05);box-shadow:inset 0 1px 2px rgb(0 0 0 / .08)}
-:root[data-theme=light] .mode-switch-thumb {background:linear-gradient(180deg,#fff,rgb(var(--accent-a) / .12));box-shadow:0 0 0 1px rgb(var(--accent-a) / .4),0 2px 6px rgb(0 0 0 / .12)}
+:root[data-theme=light] .space-switch-track {background:rgb(0 0 0 / .05);box-shadow:inset 0 1px 2px rgb(0 0 0 / .08)}
+:root[data-theme=light] .space-switch-thumb {background:linear-gradient(180deg,#fff,rgb(var(--accent-a) / .12));box-shadow:0 0 0 1px rgb(var(--accent-a) / .4),0 2px 6px rgb(0 0 0 / .12)}
+/* Moving to a space with its own colours eases across (appearance.ts sets the
+   class for a moment); the switch's own spring is left alone. */
+:root.palette-shift body, :root.palette-shift *:not(.space-switch-thumb) {transition:background-color .4s ease,color .4s ease,border-color .4s ease,fill .4s ease,stroke .4s ease!important}
+/* Resume playing: the last game large, the few before it small. */
+.resume-card {display:flex;flex-direction:column;gap:10px;padding:4px 0 6px}
+.resume-card .gaming-panel-title {display:flex;align-items:center;justify-content:space-between;gap:12px}
+.resume-card .gaming-panel-title h2 {margin:0}
+.resume-body {display:grid;grid-template-columns:minmax(260px,1.4fr) minmax(0,1fr);gap:12px;align-items:stretch}
+.resume-hero {position:relative;display:flex;min-height:150px;overflow:hidden;border:1px solid var(--glass-border-strong);border-radius:var(--r-md);box-shadow:var(--shadow-2)}
+.resume-hero-art {position:absolute!important;inset:0}
+.resume-hero-copy {position:relative;z-index:3;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;gap:6px;width:100%;padding:16px;background:linear-gradient(180deg,transparent 20%,rgb(0 0 0 / .78))}
+.resume-hero-copy strong {font:700 20px/1.15 var(--ui);letter-spacing:-.02em;color:#fff;text-shadow:0 2px 8px rgb(0 0 0 / .6)}
+.resume-hero-copy .gaming-meta {color:rgb(255 255 255 / .75)}
+.resume-play {margin-top:4px}
+.resume-more {display:flex;flex-direction:column;gap:8px;min-width:0}
+.resume-tile {display:flex;align-items:center;gap:10px;min-width:0;padding:6px;border:1px solid var(--glass-border);border-radius:var(--r-sm);background:rgb(var(--glass) / .5);color:var(--fg);text-align:left;cursor:pointer;transition:border-color var(--fast),background var(--fast)}
+.resume-tile:hover {border-color:rgb(var(--accent-a) / .5);background:var(--surface-hover)}
+.resume-tile-art {flex:none;width:72px;height:40px;border-radius:4px}
+.resume-tile-art .game-art-letter {font-size:18px;left:6px;bottom:4px}
+.resume-tile-art::after,.resume-tile-art .game-art-index,.resume-tile-art .game-art-cross {display:none}
+.resume-tile-copy {display:flex;flex-direction:column;gap:2px;min-width:0}
+.resume-tile-copy strong {font:600 13px/1.2 var(--ui);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.resume-empty {display:flex;align-items:center;gap:8px;margin:0;color:var(--fg-dim)}
+@media(max-width:1100px) {.resume-body{grid-template-columns:1fr}}
+/* Settings › Desktop › Spaces. */
+.spaces-list {display:flex;flex-direction:column;gap:6px;margin:4px 0 10px}
+.space-item {border:1px solid var(--hairline);border-radius:var(--r-sm);background:var(--surface)}
+.space-item.active {border-color:rgb(var(--accent-a) / .45)}
+.space-item-head {display:flex;align-items:center;gap:8px;padding:6px 8px}
+.space-item-head .space-name {flex:1;min-width:0;max-width:260px}
+.space-item-head .strip-gap {flex:1}
+.space-icon-btn {display:flex;align-items:center;justify-content:center;flex:none;width:34px;height:34px;border:1px solid var(--glass-border);border-radius:var(--r-sm);background:transparent;color:var(--accent);cursor:pointer}
+.space-icon-btn:hover,.space-icon-btn[aria-expanded=true] {border-color:var(--accent)}
+.space-icon-grid {display:grid;grid-template-columns:repeat(auto-fill,38px);gap:4px;padding:8px;border-top:1px solid var(--hairline)}
+.space-icon-opt {display:flex;align-items:center;justify-content:center;width:38px;height:38px;border:1px solid transparent;border-radius:var(--r-sm);background:transparent;color:var(--fg-dim);cursor:pointer}
+.space-icon-opt:hover {color:var(--fg);background:var(--surface-hover)}
+.space-icon-opt.on {color:var(--accent);border-color:var(--accent)}
+.space-editor {padding:0 12px 6px;border-top:1px solid var(--hairline)}
+.spaces-sticky-list {display:flex;flex-wrap:wrap;gap:6px}
+.spaces-sticky-app {display:inline-flex;align-items:center;gap:4px}
 /* The bar is two clusters: who you are on the left, what you can change on
    the right. One automatic margin between them, so the right-hand cluster
    stays a cluster instead of spreading across the bar. */
 .gaming-menubar > .gaming-edition {margin-right:auto}
 .gaming-menubar > .gaming-top-status,.gaming-menubar > .header-actions {margin-left:0}
 .gaming-edition {white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:35vw}
-.system-page-open {grid-template-columns:144px minmax(0,1fr)}
-.desktop-system-panel {grid-column:2;grid-row:2;min-height:0;display:flex;flex-direction:column;border:1px solid var(--glass-border-strong);background:rgb(var(--glass) / .72);box-shadow:var(--shadow-2)}
-.desktop-panel-toolbar {display:flex;padding:8px 12px;border-bottom:1px solid var(--hairline)}
-.desktop-system-body {flex:1;min-height:0;overflow:hidden;position:relative}
-.desktop-system-body .embedded-app {position:relative;width:100%;height:100%;min-height:0;overflow:auto;display:flex}
-.desktop-system-body .app-settings {display:grid;grid-template-columns:220px minmax(0,1fr)}
-.desktop-system-body .gaming-app {width:100%;min-height:0;overflow:auto}
 .productivity-main {display:flex;flex-direction:column;gap:22px;overflow:auto;min-height:0}
 .productivity-main {position:relative;background:transparent;border:0;box-shadow:none;padding:12px;gap:8px}
 .productivity-main .home-desktop-files {position:relative;inset:auto;flex:1;min-height:120px;padding:0!important;visibility:visible}
@@ -1888,7 +1928,7 @@ kbd { display: inline-block; padding: 4px 7px; border: 1px solid var(--glass-bor
 .work-file small {color:var(--fg-faint);font-size:11px}
 .work-notes {display:block;width:calc(100% - 36px);min-height:180px;margin-top:15px;padding:10px;background:var(--surface);border:1px solid var(--hairline);color:var(--fg);resize:vertical;line-height:1.65}
 .workspace-error {position:absolute;bottom:0;left:165px;background:var(--bg-0);padding:12px;color:var(--danger);max-width:80%}
-@media(max-width:1100px) {.mode-opt{padding:0 9px;gap:0}.mode-opt-label{display:none}.gaming-menubar{gap:12px}.gaming-top-status{display:none}.desktop-system-body .app-settings{grid-template-columns:185px minmax(0,1fr)}}
+@media(max-width:1100px) {.space-opt{padding:0 9px;gap:0}.space-opt-label{display:none}.space-opt .space-initial{display:inline-flex}.gaming-menubar{gap:12px}.gaming-top-status{display:none}}
 @media(prefers-reduced-motion:reduce) {.gaming-workspace{animation:none!important}}
 .work-file {border:0;border-bottom:1px solid var(--hairline)}
 .work-file:hover {background:var(--surface-hover);color:var(--accent)}

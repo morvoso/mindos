@@ -291,7 +291,7 @@ and one `mindos://shell/` origin.
 
 ### The home screen and the windows
 
-The home screen — the workspace the primary display shows, in either mode —
+The home screen — the workspace the primary display shows, on whichever space —
 is an overlay, not a permanent ground. With nothing open it is the whole
 screen. The moment a window opens it crossfades away and leaves the windows
 over the wallpaper, the desktop icons and any desktop widgets. Closing the
@@ -299,19 +299,17 @@ last window brings it back. **Super + D** asks for it over the top of the
 windows in between, and the panel's `desktop-view` widget says which of the
 two views the screen is in and switches between them.
 
-Settings, the Gaming Center and the library are pages on the home screen, not
-toplevels: they never join the tiling, never take a column and never need a
-window of their own. The price is that the desktop lives *behind* the windows,
-so it has to come forward to be read, and the rule for when it does has to be
+Settings, the Gaming Center and the library are apps with windows of their
+own; the home screen holds the space's shortcuts, notes and Resume playing.
+It lives *behind* the windows, so it has to come forward to be read, and the rule for when it does has to be
 one the user can predict:
 
-* It comes forward when the user asks for it — a system page opens (`desktop.open`,
-  the menu down the left, the panel), **Super + D**, or the view indicator.
+* It comes forward when the user asks for it — **Super + D**, or the view indicator.
 * It goes back when a window takes the keyboard, and only then. A window
   taking focus is a *transition* in the compositor's `windows` event: the same
   window reporting focus again is a relayout, a title change or a window
   opening on another screen, and none of those touch the desktop. Switching
-  between tiles and columns with a page open leaves the page where it is.
+  between tiles and columns leaves the desktop where it is.
 * Escape sends it back too, and so does the panel, which stays above the
   desktop as the way out.
 
@@ -439,6 +437,8 @@ data so the UI can be developed in Chromium/Firefox.
 | `desktop.toggle` | none, from the panel's view indicator: broadcasts `shortcut` `desktop`, the same route Super + D takes — the desktop decides what the switch means, and there is one rule for it |
 | `wm.layoutMode` | → `{ mode, label, modes: [{ mode, label, description }] }` |
 | `wm.setLayoutMode` / `wm.cycleLayoutMode` | `{ mode }` / none → the new `{ mode, label }`; also broadcast as `layout_mode` |
+| `wm.setDesk` / `wm.getDesk` | `{ desk, sticky?, mode? }` / none → `{ desk, sticky }`: the space on screen, the apps shown on every space, and the space's window layout; changes are broadcast as `desk` |
+| `wm.moveToDesk` | `{ id, desk }`: move a window to another space |
 | `wm.outputs` | → `{ outputs }` with the compositor's full output records (modes, position, transform, VRR, primary) |
 | `wm.setOutput` | `{ name, width?, height?, refresh? (mHz), scale?, position?: [x, y], transform?, enabled?, vrr?, primary? }` → applied and persisted by the compositor |
 | `prefs.get` / `prefs.set` | none / `{ prefs }` → `{ prefs }` (compositor preferences: `layout_mode`, `mind_show_tools`, `primary_output`, `cursor_theme`, `cursor_size`, `outputs`); `prefs` is broadcast on every change |
@@ -449,7 +449,7 @@ data so the UI can be developed in Chromium/Firefox.
 | `fs.list` | `{ path, hidden? }` → `{ path, parent, entries: [{ name, path, dir, size, mtime, hidden, symlink, mime, icon, image }] }` |
 | `fs.trash` | `{ paths }` → `{ count }` (through GIO, so it lands in the freedesktop trash) |
 | `fs.open` | `{ path }` → opens with the default application for the file's MIME type (GIO; a folder opens in the file manager, `Terminal=true` entries get the configured terminal) |
-| `shell.openApp` | `{ name: "settings" \| "library" \| "gaming" \| "tasks", page?, arg? }` → settings, library and gaming are handed to the workspace when one is open, everything else spawns `mindshell --app` |
+| `shell.openApp` | `{ name, page?, arg? }` → spawns `mindshell --app name`; settings, library, gaming and tasks run once, so an open one is handed the page instead and comes forward |
 | `app.close` / `app.setTitle` | none / `{ title }` (app windows only) |
 | `system.power` | `{ action: "shutdown" \| "reboot" \| "suspend" \| "logout" }` |
 | `greeter.info` | → `{ users: [{ name, display, avatar? }], sessions: [{ id, name, exec }], last: { user?, session? }, host }` (login screen only; accounts with a login shell and a uid from 1000, `/usr/share/wayland-sessions`, `/var/lib/AccountsService/icons`) |
@@ -506,9 +506,9 @@ data so the UI can be developed in Chromium/Firefox.
 | `layout_mode` | `{ mode, label, modes? }` whenever the compositor's window layout changes |
 | `prefs` | `{ prefs }` whenever a compositor preference changes |
 | `desktop.changed` | `{ path }` when something in the Desktop folder changed (debounced) |
-| `desktop.open` | `{ name, page?, arg? }`: open a system page on the desktop (from `shell.openApp`, or another process over the workspace socket) |
+| `app.open` | `{ name, page?, arg? }`: a single-instance app was launched again; turn to `page` (the host has already raised the window) |
 | `desktop.present` | `{ active: false }` to the desktop that is forward when a window takes the keyboard: fade out |
-| `desktop.away` | the desktop has finished fading out; the page it had open is put away, so what shows between the windows is the desktop |
+| `desktop.away` | the desktop has finished fading out |
 | `desktop_view` | `{ home }` whenever the primary screen changes view (see `desktop.view`); what the `desktop-view` widget draws |
 | `config` | `{ config }` when a host setting changed while the shell runs — today the icon theme, when the desktop's icon pack changes |
 | `lock` | `{ stage: "active" \| "screensaver" \| "blank", locked, inhibited, saver }` whenever the compositor's idle state changes (also in `shell.state.lock`) |
@@ -621,6 +621,9 @@ Requests → replies (`{"id":1,"ok":true,"result":{...}}` or `{"id":1,"ok":false
 | `quit` | | end the session |
 | `get_layout_mode` | | `{ mode, label, modes: [{ mode, label, description }] }` |
 | `set_layout_mode` / `cycle_layout_mode` | `mode` / | the new `{ mode, label }`; every window is re-arranged and the choice is persisted |
+| `set_desk` | `desk`, `sticky?` (app ids), `mode?` (layout mode) | `{ desk, sticky }`. Shows only the windows of `desk` plus sticky ones; the others are stashed away (kept apart from minimised ones). Windows without a desk yet adopt the first one set; sticky windows are carried along to the new desk. `sticky` replaces the list when given (matched case-insensitively), `mode` is applied like `set_layout_mode`. Desks are global across outputs and not persisted, so send it on connect. Errors: `desk is required`, `unknown layout mode: X` |
+| `get_desk` | | `{ desk, sticky }` |
+| `move_to_desk` | `window`, `desk` | put a window on another desk, hiding or showing it at once |
 | `get_prefs` / `set_prefs` | / `prefs` (partial) | `{ prefs }`: `layout_mode`, `mind_show_tools` (show the Mind's tool lines), `primary_output`, `outputs: { name: { enabled, mode: "WxH@mHz", scale, position, transform, vrr } }`, `idle: { screensaver, saver, lock, blank, lock_on_blank, lock_on_sleep, stay_awake_when_busy }` (seconds, `0` = never), stored in `$XDG_STATE_HOME/mindos/mindwm.json` |
 | `get_idle` | | `{ stage, locked, inhibited, saver }` — where the session stands (same shape as the `idle` event) |
 | `lock` / `unlock` | | lock or unlock the session. Locking drops the keyboard focus and closes the Mind bar; from then on only `mindshell-lock` surfaces are drawn and reachable, and every request that would start or focus a program is refused with `the session is locked` |
@@ -638,11 +641,12 @@ Events (`{"event":"...", ...}`):
 
 | event | fields |
 |---|---|
-| `windows` | `windows: [{ id, title, app_id, focused, fullscreen, maximized, minimized, x11, wine, output }]`, `focused: id \| null`. `wine` is true when the window's process runs under Wine or Proton (a Windows program), judged from `/proc/<pid>/exe` and `WINELOADER` in its environment |
+| `windows` | `windows: [{ id, title, app_id, focused, fullscreen, maximized, minimized, x11, wine, output, desk, away, sticky }]`, `focused: id \| null`. `desk` is the window's desk (empty until the shell sets one; a dialog takes its parent's), `away` is true when it is hidden because it belongs to another desk (stashed windows are listed too, `minimized: false`), `sticky` when its app id (or its parent's) is on the sticky list. `wine` is true when the window's process runs under Wine or Proton (a Windows program), judged from `/proc/<pid>/exe` and `WINELOADER` in its environment |
 | `outputs` | `outputs: [{ name, make, model, x, y, width, height, scale, refresh, transform, modes: [{ width, height, refresh (mHz), preferred, current }], enabled, vrr, vrr_supported, primary, mm_width, mm_height }]` (logical pixels; `refresh` in Hz, e.g. `240.0`) |
 | `shortcut` | `name`: `overview` (`Super+W`). Only sent while someone is subscribed; without a shell the compositor opens its own window preview instead. `Super+Space` always opens the compositor's Mind bar |
 | `mindbar` | `open: bool` |
 | `layout_mode` | `mode`, `label`, `modes` (after `subscribe` and on every change) |
+| `desk` | `desk`, `sticky` (after `subscribe` and on every change, including when the compositor switches desk itself: `focus`, `unminimize`, `toggle_minimize`, launch-or-raise or an xdg-activation request on a window of another desk goes to that desk first) |
 | `prefs` | `prefs` (after `subscribe` and on every change) |
 | `idle` | `stage`: `active` \| `screensaver` \| `blank`, `locked`, `inhibited` (something is holding the session awake), `saver` (the chosen screensaver). Sent whenever any of it changes |
 | `tray` | `items: [{ id, title, class, pid, width, height, pixels }]`: the XEmbed (legacy X11) tray icons the compositor hosts, `pixels` base64 RGBA with straight alpha, `width`/`height` 24. Sent after `subscribe` and whenever an icon docks, undocks, renames or redraws (icons are read back every 400 ms) |

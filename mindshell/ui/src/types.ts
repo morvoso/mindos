@@ -67,15 +67,35 @@ export interface Layout {
     /** Show the Desktop folder as icons (default true). */
     icons?: boolean;
     workspace?: {
-      mode: 'gaming' | 'productivity';
-      notes: string;
-      shortcuts?: WorkspaceShortcut[];
+      /** The id of the space the desktop is on. */
+      space: string;
+      spaces: Space[];
       /** How a desktop shortcut runs: one click or two. The menu is always one. */
       activate?: 'single' | 'double';
+      /** App ids whose windows stay open on every space (Discord, a music player). */
+      sticky?: string[];
     };
     appearance?: { theme: 'dark' | 'light'; live?: boolean; dark?: AppearancePalette; light?: AppearancePalette; preset?: string; saved?: SavedPalette[] };
     library?: { favorites: string[]; launched: Record<string, number> };
   };
+}
+
+/** A space: a desktop of its own, with its own windows, shortcuts, notes,
+ *  performance mode, colours and window layout. Anything unset leaves the
+ *  machine as it is when the space is entered. */
+export interface Space {
+  id: string;
+  name: string;
+  icon?: string;
+  perf?: PerfMode;
+  /** `preset:<id>` or `saved:<name>`; unset uses the colours in Appearance. */
+  palette?: string;
+  /** A compositor layout mode: floating, dwindle or columns. */
+  layoutMode?: string;
+  /** Show the Resume playing card. */
+  recent?: boolean;
+  notes: string;
+  shortcuts?: WorkspaceShortcut[];
 }
 
 export interface WorkspaceShortcut {
@@ -113,6 +133,12 @@ export interface WindowInfo {
   /** A Windows program running under Wine or Proton. */
   wine?: boolean;
   output: string | null;
+  /** The space the window belongs to (the compositor calls it a desk). */
+  desk?: string;
+  /** Hidden because its space is not the one on screen. */
+  away?: boolean;
+  /** Shown on every space. */
+  sticky?: boolean;
 }
 
 export interface AppInfo {
@@ -711,7 +737,12 @@ export interface ShellState {
   host: string;
   uptime?: number;
   outputs: OutputInfo[];
+  /** The windows on screen: every space's but the ones away on another space. */
   windows: WindowInfo[];
+  /** Every window, including those on other spaces. */
+  allWindows: WindowInfo[];
+  /** The space the compositor is showing, as it last reported it. */
+  desk: string;
   focused: number | null;
   apps: AppInfo[];
   tray: TrayItem[];
@@ -945,7 +976,8 @@ export type Action =
   | { pin: { panel: string; widget: string; app: string; pinned: boolean } }
   | { desktopIcons: boolean }
   | { removeWidget: { kind: Container; panel?: string; widget: string } }
-  | { shortcut: { id: string; op: 'pin' | 'remove' } };
+  | { shortcut: { id: string; op: 'pin' | 'remove' } }
+  | { sticky: { app: string; on: boolean } };
 
 export interface MenuAction {
   label: string;

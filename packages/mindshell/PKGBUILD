@@ -4,7 +4,7 @@
 # and the user service the session starts it through.
 pkgname=mindshell
 pkgver=0.1.0
-pkgrel=61
+pkgrel=63
 pkgdesc="MindOS desktop shell: panels, dock, tray and desktop widgets on layer-shell windows, plus the Settings app and the login screen, all rendered by WebKitGTK"
 arch=(x86_64)
 url="https://github.com/morvoso/mindos"

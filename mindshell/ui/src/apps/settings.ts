@@ -1,6 +1,7 @@
 // The Settings app: Mind, updates, performance, games, software, wallpaper,
 // displays, the screen (screensaver and lock), the desktop shell and about.
 
+import * as bridge from '../bridge';
 import { h } from '../dom';
 import { appFrame, setTitle } from './shared';
 import { displaysPage } from './settings-displays';
@@ -49,5 +50,8 @@ export function renderSettings(root: HTMLElement, page?: string): () => void {
     setTitle(`${p.label} · Settings`);
   }
   show(page ?? 'home');
-  return () => { if (dispose) dispose(); frame.dispose(); };
+  // Opened again from elsewhere (a desktop link, a notification): the one
+  // window turns to the page asked for.
+  const offOpen = bridge.on<{ page?: string }>('app.open', (p) => { if (p.page) show(p.page); });
+  return () => { offOpen(); if (dispose) dispose(); frame.dispose(); };
 }

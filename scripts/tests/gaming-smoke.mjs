@@ -76,30 +76,34 @@ try {
   };
   await send('Runtime.enable');
   const page = pathToFileURL(resolve(root, 'mindshell/ui/dist/index.html')).href;
-  const open = async (query, width = 1440, height = 1000) => {
+  const desktopReady = "!!document.querySelector('.space-switch .space-opt')";
+  const libraryReady = "document.querySelector('.game-library')?.getAttribute('aria-busy') === 'false'";
+  const open = async (query, width = 1440, height = 1000, ready = query.includes('id=library') ? libraryReady : desktopReady) => {
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: page + '?' + query });
-    await waitFor("document.querySelector('.game-library')?.getAttribute('aria-busy') === 'false'");
+    await waitFor(ready);
   };
+  const space = (id) => evaluate(`document.querySelector('.space-opt[data-space=${id}]').click()`);
   await open('kind=desktop&output=Virtual-1');
-  assert.equal(await evaluate("document.querySelector('.game-feature h1').textContent"), 'Cyberpunk 2077');
-  assert.equal(await evaluate("document.querySelectorAll('.game-tile').length"), 8);
+  // Spaces replace the two fixed modes; an old layout becomes Gaming and Work.
+  assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('.space-opt')].map(b => b.dataset.space))")), ['gaming', 'work']);
+  assert.equal(await evaluate("document.querySelector('.game-library')"), null, 'The library is its own app, not part of the desktop');
+  await waitFor("!!document.querySelector('.resume-card:not([hidden]) .resume-play')");
   await shot('desktop-dark');
   assert.equal(await evaluate("document.querySelector('.appearance-controls button').textContent"), '');
-  assert.equal(await evaluate("document.querySelector('.gaming-top-status')"), null);
   assert.doesNotMatch(await evaluate("document.querySelector('.gaming-nav').textContent"), /Capture|Recording|Screenshot/);
-  await evaluate("document.querySelector('.gaming-nav [data-page=settings]').click()");
-  await waitFor("!!document.querySelector('.embedded-app .page-home')");
-  assert.match(await evaluate("document.querySelector('.gaming-edition').textContent"), /Settings/);
-  await shot('desktop-settings');
-  await evaluate("document.querySelector('.desktop-panel-toolbar button').click(); document.querySelectorAll('.mode-switch button')[1].click()");
-  await waitFor("!!document.querySelector('.productivity-workspace')");
+  assert.match(await evaluate("document.querySelector('.gaming-nav').textContent"), /Game Library/);
+  assert.equal(await evaluate("document.querySelector('.embedded-app')"), null, 'Settings is its own app, not part of the desktop');
+  await space('work');
+  await waitFor("document.querySelector('.space-workspace').dataset.space === 'work' && !document.querySelector('.resume-card')");
   assert.doesNotMatch(await evaluate("document.querySelector('.gaming-nav').textContent"), /Gaming Center|Capture/);
   await evaluate("const n = document.querySelector('.work-notes'); n.value = 'Finish the budget'; n.dispatchEvent(new Event('input'))");
-  await shot('desktop-productivity');
-  await evaluate("document.querySelectorAll('.mode-switch button')[0].click()");
-  await waitFor("document.querySelector('.game-library')?.getAttribute('aria-busy') === 'false'");
-  await evaluate("document.querySelectorAll('.mode-switch button')[1].click()");
+  await shot('desktop-work-space');
+  await space('gaming');
+  await waitFor("document.querySelector('.space-workspace').dataset.space === 'gaming'");
+  assert.notEqual(await evaluate("document.querySelector('.work-notes').value"), 'Finish the budget', 'Notes belong to their space');
+  await space('work');
+  await waitFor("document.querySelector('.space-workspace').dataset.space === 'work'");
   assert.equal(await evaluate("document.querySelector('.work-notes').value"), 'Finish the budget');
   await evaluate("window.mindos._dispatch('outputs', { outputs: [{name:'Virtual-1',width:1440,height:1000,x:0,y:0,scale:1,primary:false},{name:'Virtual-2',width:1440,height:1000,x:1440,y:0,scale:1,primary:true}] })");
   assert.equal(await evaluate("document.querySelector('.gaming-workspace')"), null, 'Secondary output has no workspace');
@@ -107,8 +111,8 @@ try {
   await shot('secondary-wallpaper');
   await evaluate("window.mindos._dispatch('outputs', { outputs: [{name:'Virtual-1',width:1440,height:1000,x:0,y:0,scale:1,primary:true},{name:'Virtual-2',width:1440,height:1000,x:1440,y:0,scale:1}] })");
   assert.equal(await evaluate("document.querySelector('.work-notes').value"), 'Finish the budget');
-  await evaluate("document.querySelectorAll('.mode-switch button')[0].click()");
-  await waitFor("document.querySelector('.game-library')?.getAttribute('aria-busy') === 'false'");
+  await space('gaming');
+  await waitFor("!!document.querySelector('.resume-card')");
 
   await evaluate("document.querySelector('[aria-label=\"Use light theme\"]').click()");
   assert.equal(await evaluate("document.documentElement.dataset.theme"), 'light');
@@ -118,15 +122,13 @@ try {
   await evaluate("document.querySelector('[aria-label=\"Use dark theme\"]').click()");
   assert.equal(await evaluate("document.querySelector('.live-background')"), null, 'No wallpaper animation canvas');
   assert.equal(await evaluate("document.querySelector('[aria-label=\"Live background\"]')"), null, 'Animated wallpaper control removed');
-  assert.match(await evaluate("getComputedStyle(document.querySelector('.game-library')).backdropFilter"), /blur/, 'Desktop window has frosted glass');
+  assert.match(await evaluate("getComputedStyle(document.querySelector('.gaming-rail-card')).backdropFilter"), /blur/, 'Desktop cards have frosted glass');
   await evaluate("window.mindos.call('shell.state').then(state => { window.savedOutputs = state.outputs; window.mindos._dispatch('outputs', {outputs:state.outputs.map(o => ({...o,software_rendering:true}))}); })");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.game-library')).backdropFilter"), 'none', 'CPU renderer does not run a live blur filter');
-  assert.match(await evaluate("getComputedStyle(document.querySelector('.game-library')).backgroundImage"), /data:image\/png/, 'CPU renderer uses a cached frosted bitmap');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.gaming-rail-card')).backdropFilter"), 'none', 'CPU renderer does not run a live blur filter');
   await evaluate("window.mindos._dispatch('outputs', {outputs:window.savedOutputs})");
-  await evaluate("window.mindos._dispatch('game', {running: true})");
-  assert.match(await evaluate("document.querySelector('.gaming-metrics').textContent"), /Sampling paused/);
-  await evaluate("window.mindos._dispatch('game', {running: false})");
 
+  // The library, in its own window.
+  await open('kind=app&id=library', 1040, 700);
   await evaluate(`window.libraryCalls = []; window.originalCall = window.mindos.call;
     window.mindos.call = function(method, params) {
       window.libraryCalls.push({method, params}); return window.originalCall.call(this, method, params);
@@ -148,18 +150,15 @@ try {
   await shot('library-window');
   await evaluate(`window.mindos.call = async (method, params) => {throw new Error('Launcher unavailable')}; document.querySelector('.game-play').click()`);
   await waitFor("document.querySelector('.gaming-message').textContent.includes('Launcher unavailable') && !document.querySelector('.game-play').disabled");
-  await open('kind=desktop&output=Virtual-1&library=empty');
+  await open('kind=app&id=library&library=empty', 1040, 700);
   assert.equal(await evaluate("document.querySelector('.game-empty h3').textContent"), 'No installed games');
   await shot('empty-library');
-  await open('kind=desktop&output=Virtual-1&library=missing');
+  await open('kind=app&id=library&library=missing', 1040, 700);
   assert.equal(await evaluate("document.querySelector('.gaming-message').dataset.error"), 'true');
-  await open('kind=desktop&output=Virtual-1', 800, 700);
+  await open('kind=app&id=library', 800, 700);
   assert.equal(await evaluate("const el=document.querySelector('.game-library-body');el.scrollWidth <= el.clientWidth"), true);
+  await open('kind=desktop&output=Virtual-1', 800, 700);
   await shot('desktop-compact');
-  await evaluate("document.querySelector('[aria-label=\"Close library\"]').click()");
-  assert.equal(await evaluate("document.querySelector('.gaming-main').hidden"), true);
-  await evaluate("document.querySelector('.gaming-nav-link').click()");
-  assert.equal(await evaluate("document.querySelector('.gaming-main').hidden"), false);
   await open('kind=preview', 1920, 1080);
   await shot('desktop-with-shelf');
   await evaluate("document.querySelector('[aria-label=\"Use light theme\"]').click()");

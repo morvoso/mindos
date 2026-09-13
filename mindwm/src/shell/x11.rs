@@ -250,6 +250,9 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
         // A minimised window that its client unmaps is gone for the shell too.
         self.minimized
             .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
+        self.desks
+            .stashed
+            .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
         if !window.is_override_redirect() {
             if let Err(err) = window.set_mapped(false) {
                 xwayland_refused("unmap a window", err);
@@ -266,6 +269,9 @@ impl<BackendData: Backend> XwmHandler for AnvilState<BackendData> {
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         self.request_repaint();
         self.minimized
+            .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
+        self.desks
+            .stashed
             .retain(|m| !matches!(m.window.0.x11_surface(), Some(w) if w == &window));
     }
 

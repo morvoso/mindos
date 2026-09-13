@@ -528,6 +528,28 @@ export function installMock(): MindosGlobal {
   const sys = systemMock(t0);
 
   const focused = () => windows.find((w) => w.focused)?.id ?? null;
+  // Desks, as mindwm keeps them: every window lives on one (or on all, when its
+  // app is on the sticky list) and the others are put away.
+  let desk = '';
+  let sticky: string[] = [];
+  const placeDesks = () => {
+    for (const w of windows) {
+      w.desk ||= desk;
+      w.sticky = sticky.some((a) => a.toLowerCase() === w.app_id.toLowerCase());
+      w.away = !w.sticky && w.desk !== desk;
+    }
+  };
+  const setDesk = (p: Record<string, unknown>) => {
+    if (Array.isArray(p.sticky)) sticky = p.sticky.map(String);
+    const next = typeof p.desk === 'string' && p.desk ? p.desk : desk;
+    const changed = next !== desk;
+    desk = next;
+    placeDesks();
+    if (typeof p.mode === 'string') setMode(p.mode);
+    pushWindows();
+    if (changed) emit('desk', { desk, sticky: [...sticky] });
+    return { desk, sticky: [...sticky] };
+  };
   const pushWindows = () => emit('windows', { windows: windows.map((w) => ({ ...w })), focused: focused() });
 
   setTimeout(() => {
@@ -547,6 +569,8 @@ export function installMock(): MindosGlobal {
       uptime: 3600 * 5 + 812,
       outputs: [{ name: 'Virtual-1', make: 'QEMU', model: 'Virtual', x: 0, y: 0, width: 1920, height: 1080, scale: 1, refresh: 60000 }],
       windows: windows.map((w) => ({ ...w })),
+      allWindows: windows.map((w) => ({ ...w })),
+      desk,
       focused: focused(),
       apps: APPS,
       tray: TRAY,
@@ -758,6 +782,13 @@ export function installMock(): MindosGlobal {
       return {};
     },
     'wm.layoutMode': () => modeEvent(),
+    'wm.setDesk': (p) => setDesk(p),
+    'wm.getDesk': () => ({ desk, sticky: [...sticky] }),
+    'wm.moveToDesk': (p) => {
+      const w = windows.find((x) => x.id === Number(p.id));
+      if (w && typeof p.desk === 'string') { w.desk = p.desk; placeDesks(); pushWindows(); }
+      return {};
+    },
     'wm.setLayoutMode': (p) => setMode(String(p.mode)),
     'wm.cycleLayoutMode': () => setMode(MODE_LIST[(MODE_LIST.findIndex((m) => m.name === layoutMode) + 1) % MODE_LIST.length].name),
     'wm.outputs': () => ({ outputs: JSON.parse(JSON.stringify(outputs)) }),

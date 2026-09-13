@@ -916,8 +916,15 @@ impl<BackendData: Backend> AnvilState<BackendData> {
     }
 
     fn restore_the_game_screen(&mut self) {
-        let windows: Vec<WindowElement> =
-            self.space.elements().filter(|w| w.tile().away.borrow().is_some()).cloned().collect();
+        // A window put away on another desk meanwhile comes home as well,
+        // for when its desk does.
+        let windows: Vec<WindowElement> = self
+            .space
+            .elements()
+            .chain(self.desks.stashed.iter().map(|s| &s.window))
+            .filter(|w| w.tile().away.borrow().is_some())
+            .cloned()
+            .collect();
         for window in windows {
             let Some(away) = window.tile().away.borrow_mut().take() else { continue };
             // Not if the screen it came from has since been unplugged, and
@@ -936,7 +943,13 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             }
             if !tiled {
                 let loc = self.apply_rect(&window, away.rect, false);
-                self.space.map_element(window.clone(), loc, false);
+                match self.desks.stashed.iter_mut().find(|s| s.window == window) {
+                    Some(stashed) => {
+                        stashed.location = loc;
+                        stashed.output = Some(away.from.clone());
+                    }
+                    None => self.space.map_element(window.clone(), loc, false),
+                }
             }
         }
         self.layout.dirty = true;
@@ -1135,7 +1148,7 @@ impl<BackendData: Backend> AnvilState<BackendData> {
             .map(|tiling| tiling.order.clone())
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| !self.is_minimized(w))
+            .filter(|w| !self.is_minimized(w) && !self.is_stashed(w))
             .collect();
         if order.is_empty() {
             return;

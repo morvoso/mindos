@@ -5,6 +5,7 @@
 // the greeter's choice is temporary.
 import { icon } from './icons';
 import { h } from './dom';
+import { activeSpace } from './spaces';
 import { store } from './state';
 import { frostedWallpaper } from './static-wallpaper';
 import type { AppearancePalette, SavedPalette } from './types';
@@ -96,9 +97,33 @@ function contrast(value: string): string {
   return luminance(value) > .46 ? '#111418' : '#ffffff';
 }
 
+/** The palette the active space asks for, if it names one that still exists.
+ *  It covers the saved colours without replacing them: leaving the space puts
+ *  back the user's own. */
+function spacePalette(theme: 'dark' | 'light'): AppearancePalette | undefined {
+  const ref = activeSpace().palette;
+  if (!ref) return undefined;
+  const [kind, name] = [ref.slice(0, ref.indexOf(':')), ref.slice(ref.indexOf(':') + 1)];
+  if (kind === 'preset') return PRESETS.find((x) => x.id === name)?.[theme];
+  return savedPalettes().find((x) => x.name === name)?.[theme];
+}
+
+let appliedPalette: string | undefined;
+let appliedSpace = '';
+let shiftTimer: ReturnType<typeof setTimeout> | undefined;
+
 function apply(): void {
   document.documentElement.dataset.theme = appearance.theme;
-  const p = appearance[appearance.theme];
+  const p = spacePalette(appearance.theme) ?? appearance[appearance.theme];
+  // Moving between spaces with different colours eases across instead of
+  // snapping; the first paint and every edit in Settings stay immediate.
+  const key = JSON.stringify(p);
+  if (appliedPalette !== undefined && key !== appliedPalette && activeSpace().id !== appliedSpace) {
+    document.documentElement.classList.add('palette-shift');
+    if (shiftTimer !== undefined) clearTimeout(shiftTimer);
+    shiftTimer = setTimeout(() => document.documentElement.classList.remove('palette-shift'), 450);
+  }
+  appliedPalette = key; appliedSpace = activeSpace().id;
   const light = appearance.theme === 'light';
   const root = document.documentElement.style;
   const set = (name: string, value: string) => root.setProperty(name, value);

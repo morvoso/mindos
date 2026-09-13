@@ -6,6 +6,7 @@
 // left open in the background costs nothing extra, and switching pages does
 // not start a second conversation with `/proc`.
 
+import * as bridge from '../bridge';
 import { h } from '../dom';
 import { appFrame, pageHeader, setTitle } from './shared';
 import { overviewPage, performancePage } from './tasks-overview';
@@ -46,7 +47,11 @@ export function renderTasks(root: HTMLElement, page?: string): () => void {
     setTitle(`${p.label} · Task Manager`);
   }
   show(page ?? 'overview');
+  // Opened again from elsewhere (a desktop link, a notification): the one
+  // window turns to the page asked for.
+  const offOpen = bridge.on<{ page?: string }>('app.open', (p) => { if (p.page) show(p.page); });
   return () => {
+    offOpen();
     if (dispose) dispose();
     frame.dispose();
   };

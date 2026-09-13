@@ -226,6 +226,8 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub ipc: IpcServer,
     /// Windows hidden by the shell; they leave the space and come back where they were.
     pub minimized: Vec<Minimized>,
+    /// The shell's spaces: the current desk and the windows of the others.
+    pub desks: crate::desk::Desks,
     /// Super + mouse wheel: notches counted since the last window step.
     pub super_scroll: f64,
     /// Window layout mode (floating / dwindle / columns) and its tiling state.
@@ -520,12 +522,15 @@ impl<BackendData: Backend> XdgActivationHandler for AnvilState<BackendData> {
     ) {
         if token_data.timestamp.elapsed().as_secs() < 10 {
             // Just grant the wish
+            // A window on another desk brings its desk along.
             let w = self
                 .space
                 .elements()
+                .chain(self.desks.stashed.iter().map(|s| &s.window))
                 .find(|window| window.wl_surface().map(|s| *s == surface).unwrap_or(false))
                 .cloned();
             if let Some(window) = w {
+                self.show_desk_of(&window);
                 self.activate_window(&window);
             }
         }
@@ -958,6 +963,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             xwayland_ready: false,
             ipc: IpcServer::default(),
             minimized: Vec::new(),
+            desks: Default::default(),
             super_scroll: 0.0,
             layout,
             prefs,
@@ -1611,6 +1617,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             .space
             .elements()
             .chain(self.minimized.iter().map(|m| &m.window))
+            .chain(self.desks.stashed.iter().map(|s| &s.window))
             .find(|w| w.app_id() == APP_ID)
             .cloned();
         match open {
@@ -1949,13 +1956,14 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     // Shell-facing window management (docs/SHELL.md)
     // ---------------------------------------------------------------------
 
-    /// A mapped or minimised window by its IPC id.
+    /// A mapped, minimised or stashed (on another desk) window by its IPC id.
     pub fn window_by_id(&self, id: u64) -> Option<WindowElement> {
         self.space
             .elements()
             .find(|w| w.id() == id)
             .cloned()
             .or_else(|| self.minimized.iter().find(|m| m.window.id() == id).map(|m| m.window.clone()))
+            .or_else(|| self.desks.stashed.iter().find(|s| s.window.id() == id).map(|s| s.window.clone()))
     }
 
     pub fn is_minimized(&self, window: &WindowElement) -> bool {
@@ -1964,7 +1972,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
     /// Raise a window to the top of the stack and give it the keyboard.
     pub fn activate_window(&mut self, window: &WindowElement) {
-        if self.idle.locked || self.is_minimized(window) {
+        if self.idle.locked || self.is_minimized(window) || self.is_stashed(window) {
             return;
         }
         // A parent must never cover its dialogs when clicked or activated.
@@ -2002,14 +2010,20 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
     /// Hide a window: it leaves the space (no rendering, no input, no frame
     /// callbacks) and the top-most remaining window takes the keyboard.
     pub fn minimize_window(&mut self, window: &WindowElement) {
-        if self.is_minimized(window) {
+        if self.is_minimized(window) || self.minimize_stashed(window) {
             return;
         }
-        let Some(location) = self.space.element_location(window) else {
-            return;
-        };
+        if let Some(entry) = self.take_out_of_space(window) {
+            self.minimized.push(entry);
+            self.refresh_focus();
+        }
+    }
+
+    /// Unmap a window, remembering where it was. A fullscreen window owns its
+    /// output's scanout slot; that is given back while it is away.
+    pub(crate) fn take_out_of_space(&mut self, window: &WindowElement) -> Option<Minimized> {
+        let location = self.space.element_location(window)?;
         let output = self.window_home(window).map(|o| o.name());
-        // A fullscreen window owns its output's scanout slot; give it back while hidden.
         for o in self.space.outputs() {
             if let Some(fullscreen) = o.user_data().get::<FullscreenSurface>() {
                 if fullscreen.get().as_ref() == Some(window) {
@@ -2019,33 +2033,42 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             }
         }
         self.space.unmap_elem(window);
-        self.minimized.push(Minimized {
+        Some(Minimized {
             window: window.clone(),
             location,
             output,
-        });
-        self.refresh_focus();
+        })
     }
 
-    /// Bring a minimised window back where it was, on top and focused.
+    /// Map a window taken out by `take_out_of_space` back where it was;
+    /// `false` if it has gone meanwhile.
+    pub(crate) fn put_back_in_space(&mut self, entry: &Minimized) -> bool {
+        if !entry.window.alive() {
+            return false;
+        }
+        self.space.map_element(entry.window.clone(), entry.location, false);
+        if window_is_fullscreen(&entry.window) {
+            if let Some(output) = self.space.outputs_for_element(&entry.window).first() {
+                output.user_data().insert_if_missing(FullscreenSurface::default);
+                if let Some(fullscreen) = output.user_data().get::<FullscreenSurface>() {
+                    fullscreen.set(entry.window.clone());
+                }
+            }
+        }
+        true
+    }
+
+    /// Bring a minimised window back where it was, on top and focused. A
+    /// window on another desk brings its desk along.
     pub fn unminimize_window(&mut self, window: &WindowElement) {
+        self.show_desk_of(window);
         let Some(pos) = self.minimized.iter().position(|m| &m.window == window) else {
             return;
         };
         let minimized = self.minimized.remove(pos);
-        if !minimized.window.alive() {
-            return;
+        if self.put_back_in_space(&minimized) {
+            self.activate_window(&minimized.window);
         }
-        self.space.map_element(minimized.window.clone(), minimized.location, true);
-        if window_is_fullscreen(&minimized.window) {
-            if let Some(output) = self.space.outputs_for_element(&minimized.window).first() {
-                output.user_data().insert_if_missing(FullscreenSurface::default);
-                if let Some(fullscreen) = output.user_data().get::<FullscreenSurface>() {
-                    fullscreen.set(minimized.window.clone());
-                }
-            }
-        }
-        self.activate_window(&minimized.window);
     }
 
     /// What `get_graphics` answers: the backend's per-output repaint numbers,
@@ -2172,17 +2195,30 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             .filter_map(|w| {
                 let output = self.window_home(w).map(|o| o.name());
                 window_info(w, focused.as_ref() == Some(w), false, output, &self.display_handle)
+                    .map(|info| self.with_desk(w, info, false))
             })
             .collect();
-        windows.extend(
-            self.minimized
-                .iter()
-                .filter_map(|m| window_info(&m.window, false, true, m.output.clone(), &self.display_handle)),
-        );
+        windows.extend(self.minimized.iter().filter_map(|m| {
+            window_info(&m.window, false, true, m.output.clone(), &self.display_handle)
+                .map(|info| self.with_desk(&m.window, info, self.is_away(&m.window)))
+        }));
+        windows.extend(self.desks.stashed.iter().filter_map(|s| {
+            window_info(&s.window, false, true, s.output.clone(), &self.display_handle)
+                .map(|info| self.with_desk(&s.window, WindowInfo { minimized: false, ..info }, true))
+        }));
         windows.sort_by_key(|w| w.id);
         WindowsSnapshot {
             focused: focused.map(|w| w.id()),
             windows,
+        }
+    }
+
+    fn with_desk(&self, window: &WindowElement, info: WindowInfo, away: bool) -> WindowInfo {
+        WindowInfo {
+            desk: self.window_desk(window),
+            sticky: self.window_sticky(window),
+            away,
+            ..info
         }
     }
 
@@ -2569,6 +2605,9 @@ fn window_info(
         wine: crate::procinfo::is_wine(pid),
         pid,
         output,
+        desk: String::new(),
+        away: false,
+        sticky: false,
     })
 }
 

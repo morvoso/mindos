@@ -7,6 +7,7 @@ import * as bridge from '../bridge';
 import { h, reconcile } from '../dom';
 import { hashHue, icon, iconSvg, letterIcon } from '../icons';
 import { registerWidget } from './registry';
+import { activeSpace, isSticky, spaces } from '../spaces';
 import { outputPoint } from './common';
 import { appIndex, launchWithFeedback, matchApp, norm } from '../app-match';
 import type { AppInfo, MenuAction, ShellState, WindowInfo } from '../types';
@@ -366,6 +367,17 @@ registerWidget({
         items.push({ label: w.minimized ? 'Restore' : 'Minimise', icon: w.minimized ? 'restore' : 'minimize', action: { call: w.minimized ? 'windows.unminimize' : 'windows.minimize', params: { id: w.id } } });
         items.push({ label: w.maximized ? 'Unmaximise' : 'Maximise', icon: 'maximize', action: { call: 'windows.toggleMaximize', params: { id: w.id } } });
         items.push({ label: w.fullscreen ? 'Leave full screen' : 'Full screen', icon: 'display', action: { call: 'windows.toggleFullscreen', params: { id: w.id } } });
+        // Spaces: keep the app on all of them, or send this window to another.
+        if (w.app_id) {
+          items.push({ label: '', separator: true });
+          const on = isSticky(w.app_id);
+          items.push({ label: on ? 'Keep on one space' : 'Show on all spaces', icon: on ? 'layers' : 'pin', action: { sticky: { app: w.app_id, on: !on } } });
+          if (!on) {
+            for (const s of spaces()) {
+              if (s.id !== (w.desk || activeSpace().id)) items.push({ label: `Move to ${s.name}`, icon: s.icon || 'swap', action: { call: 'wm.moveToDesk', params: { id: w.id, desk: s.id } } });
+            }
+          }
+        }
       }
       items.push({ label: '', separator: true });
       if (g.app && ctx.panel) {

@@ -12,6 +12,7 @@
 #[cfg(any(feature = "udev", feature = "xwayland"))]
 pub mod cursor;
 pub mod config;
+pub mod desk;
 pub mod capture;
 pub mod drawing;
 pub mod launcher;

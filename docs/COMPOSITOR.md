@@ -536,13 +536,35 @@ anything. Coming back is immediate.
 Windows opened *during* a game are not steered: the desktop is the user's, and
 dragging something onto the game's screen on purpose should stick.
 
+## Desks
+
+`src/desk.rs`. Every window carries a desk name; only the current desk's
+windows and sticky ones (app ids on a list the shell sends, matched without
+case, inherited by dialogs) are in the space. The rest are taken out exactly
+as minimising does — fullscreen released and restored — but kept in
+`Desks::stashed`, apart from the minimised list, so a window minimised on one
+desk is still minimised when that desk comes back. The shell drives it with
+`set_desk { desk, sticky?, mode? }` (and `move_to_desk`); a switch remembers
+the focused window per desk and focuses it again on return.
+
+* A new window takes the current desk, a dialog its parent's; windows that
+  existed before the first `set_desk` adopt that desk. A window of another
+  desk that appears anyway is stashed once it has drawn.
+* Sticky windows are carried to each desk the user goes to, so taking an app
+  off the list leaves it where the user is.
+* Focusing, unminimising, launch-or-raise and xdg-activation of a window on
+  another desk switch to that desk first, and a `desk` event tells the shell.
+* Desks are global across outputs and not persisted; the shell restores its
+  choice on connect. A stashed window gets no frame callbacks, like a
+  minimised one.
+
 ## The shell IPC
 
 `mindshell` (and anything else in the session) talks to the compositor over
 `$XDG_RUNTIME_DIR/mindwm-<wayland socket>.sock`, exported as `MINDWM_SOCKET`
 to every program mindwm starts and imported into `systemd --user` by
 `session-startup`. Newline-delimited JSON, one request per line, replies echo
-the request's `id`; subscribers get `windows`, `outputs`, `layout_mode`,
+the request's `id`; subscribers get `windows`, `outputs`, `layout_mode`, `desk`,
 `prefs`, `idle`, `shortcut`, `mindbar` and `mind_status` events, and can change the
 layout mode, the preferences and the outputs (mode, scale, position,
 rotation, VRR, primary) from the Settings app. The full request/event tables are in `docs/SHELL.md`

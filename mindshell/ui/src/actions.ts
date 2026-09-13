@@ -3,6 +3,7 @@
 // an action that a panel window created.
 
 import * as bridge from './bridge';
+import { setSticky } from './spaces';
 import { store } from './state';
 import type { Action, Anchor } from './types';
 
@@ -46,11 +47,15 @@ export async function runAction(action: Action | undefined): Promise<void> {
     // The desktop shortcuts live in the layout, so a menu in another window
     // can change them: every window redraws from the layout broadcast.
     const { id, op } = action.shortcut;
+    // Shortcuts belong to the space they are on screen in: the active one.
     await store.updateLayout((layout) => {
       const w = layout.desktop.workspace;
-      if (!w?.shortcuts) return;
-      w.shortcuts = op === 'remove' ? w.shortcuts.filter((s) => s.id !== id) : w.shortcuts.map((s) => (s.id === id ? { ...s, pinned: !s.pinned } : s));
+      const space = w?.spaces.find((s) => s.id === w.space);
+      if (!space?.shortcuts) return;
+      space.shortcuts = op === 'remove' ? space.shortcuts.filter((s) => s.id !== id) : space.shortcuts.map((s) => (s.id === id ? { ...s, pinned: !s.pinned } : s));
     });
+  } else if ('sticky' in action) {
+    await setSticky(action.sticky.app, action.sticky.on);
   } else if ('pin' in action) {
     const { panel, widget, app, pinned } = action.pin;
     await store.updateLayout((layout) => {

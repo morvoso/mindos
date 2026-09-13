@@ -320,7 +320,7 @@ impl App {
 
         crate::mark!("webkit settings done");
         let ipc = IpcClient::start(events.clone());
-        if app_mode.is_none() { crate::workspace::start(events.clone()); }
+        if let Some(mode) = app_mode.as_ref().filter(|m| crate::instance::single(&m.name)) { crate::instance::start(&mode.name, events.clone()); }
         let tray = if app_mode.is_some() { None } else { Some(TrayHandle::start(events.clone(), icon_theme.clone())) };
         let notify = if app_mode.is_some() { None } else { Some(NotifyHandle::start(events.clone())) };
         let polkit = if app_mode.is_some() { None } else { Some(PolkitHandle::start(events.clone())) };
@@ -1765,7 +1765,22 @@ impl App {
                 let mode = str_param("mode")?;
                 self.ipc.request(json!({ "type": "set_layout_mode", "mode": mode })).await
             }
-            "wm.cycleLayoutMode" => self.ipc.request(json!({ "type": "cycle_layout_mode" })).await,
+            // Spaces: the compositor keeps each window on a desk and shows the
+            // current one's (plus the apps on the sticky list).
+            "wm.setDesk" => {
+                let desk = str_param("desk")?;
+                let mut request = json!({ "type": "set_desk", "desk": desk });
+                if let Some(sticky) = params.get("sticky").filter(|v| v.is_array()) { request["sticky"] = sticky.clone(); }
+                if let Some(mode) = params.get("mode").and_then(Value::as_str) { request["mode"] = json!(mode); }
+                self.ipc.request(request).await
+            }
+            "wm.getDesk" => self.ipc.request(json!({ "type": "get_desk" })).await,
+            "wm.moveToDesk" => {
+                let id = params.get("id").cloned().ok_or("wm.moveToDesk: missing 'id'")?;
+                let desk = str_param("desk")?;
+                self.ipc.request(json!({ "type": "move_to_desk", "window": id, "desk": desk })).await
+            }
+            "wm.cycleLayoutMode" =>self.ipc.request(json!({ "type": "cycle_layout_mode" })).await,
             "wm.outputs" => self.ipc.request(json!({ "type": "get_outputs" })).await,
             "wm.setOutput" => {
                 let mut change = params.as_object().cloned().ok_or("wm.setOutput: expected an object")?;
@@ -2014,19 +2029,35 @@ impl App {
         }
     }
 
+    /// Another launch of this app: turn to the page it asked for and come
+    /// forward. The compositor is asked by window, found by this process id,
+    /// since a toplevel cannot raise itself on Wayland without a token.
+    fn app_open(self: &Rc<Self>, value: Value) {
+        if value.get("page").map(|p| !p.is_null() && p != "").unwrap_or(false) {
+            self.broadcast("app.open", &value);
+        }
+        let app = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(snapshot) = app.ipc.request(json!({"type":"get_windows"})).await else { return };
+            let mine = snapshot.get("windows").and_then(Value::as_array)
+                .and_then(|list| list.iter().find(|w| w.get("pid").and_then(Value::as_u64) == Some(std::process::id() as u64)))
+                .and_then(|w| w.get("id").cloned());
+            if let Some(id) = mine {
+                let _ = app.ipc.request(json!({"type":"unminimize","window":id})).await;
+                let _ = app.ipc.request(json!({"type":"focus","window":id})).await;
+            }
+        });
+    }
+
     /// Start `mindshell --app NAME` as a separate process (its own window,
     /// its own web process; the shell keeps running if it crashes).
     fn open_app(&self, name: &str, page: &str, arg: &str) -> Result<Value, String> {
         if !crate::APPS.contains(&name) {
             return Err(format!("unknown app '{name}'"));
         }
-        if matches!(name, "settings" | "gaming" | "library") {
+        if crate::instance::single(name) {
             let request = json!({"name": name, "page": page, "arg": arg});
-            if self.app_mode.is_none() {
-                self.broadcast("desktop.open", &request);
-                return Ok(Value::Null);
-            }
-            if crate::workspace::forward(&request) { return Ok(Value::Null); }
+            if crate::instance::forward(name, &request) { return Ok(Value::Null); }
         }
         let exe = std::env::current_exe().map_err(|e| format!("cannot find mindshell: {e}"))?;
         let mut cmd = format!("{} --app {}", shell_quote(&exe.to_string_lossy()), shell_quote(name));
@@ -2834,7 +2865,7 @@ impl App {
             HostEvent::Gpu(gpu) => self.state.borrow_mut().gpu = gpu,
             HostEvent::LayoutFile => self.layout_file_changed(),
             HostEvent::DesktopDir => self.desktop_dir_changed(),
-            HostEvent::DesktopOpen(value) => self.broadcast("desktop.open", &value),
+            HostEvent::AppOpen(value) => self.app_open(value),
             HostEvent::Game => self.game_changed(),
             HostEvent::Resumed => self.recover_shell_graphics(),
             HostEvent::Notify(mut n) => {

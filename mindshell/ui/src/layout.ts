@@ -1,7 +1,7 @@
 // Layout helpers: the default layout, lookups and small mutations.
 
 import { deepClone, newId } from './dom';
-import type { AppearancePalette, DesktopWidgetEntry, Layout, PanelDef, WidgetEntry, WorkspaceShortcut } from './types';
+import type { AppearancePalette, DesktopWidgetEntry, Layout, PanelDef, PerfMode, Space, WidgetEntry, WorkspaceShortcut } from './types';
 // The one copy of the shipped layout. The host compiles the same file into the
 // binary and installs it as /usr/share/mindos/shell/layout.json, so there is
 // nothing here to keep in sync by hand.
@@ -53,15 +53,7 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
     desktop: {
       wallpaper: desktop.wallpaper ?? { mode: 'builtin' },
       icons: desktop.icons !== false,
-      workspace: {
-        mode: desktop.workspace?.mode === 'productivity' ? 'productivity' : 'gaming',
-        notes: String(desktop.workspace?.notes ?? ''),
-        activate: desktop.workspace?.activate === 'double' ? 'double' : 'single',
-        shortcuts: Array.isArray(desktop.workspace?.shortcuts) ? desktop.workspace.shortcuts.map((s: WorkspaceShortcut) => ({
-          id: String(s.id), appId: String(s.appId), label: String(s.label),
-          ...(s.icon ? { icon: String(s.icon) } : {}), ...(s.pinned ? { pinned: true } : {}),
-        })) : [],
-      },
+      workspace: normalizeWorkspace(desktop.workspace),
       ...(desktop.appearance ? {
         appearance: {
           theme: desktop.appearance.theme === 'light' ? 'light' as const : 'dark' as const,
@@ -78,6 +70,59 @@ export function normalizeLayout(raw: Partial<Layout> | null | undefined): Layout
         x: Number(w.x) || 0, y: Number(w.y) || 0, w: Number(w.w) || 240, h: Number(w.h) || 120, config: w.config ?? {},
       })),
     },
+  };
+}
+
+type Workspace = NonNullable<Layout['desktop']['workspace']>;
+const PERF: PerfMode[] = ['balanced', 'performance', 'quiet'];
+const LAYOUT_MODES = ['floating', 'dwindle', 'columns'];
+
+function normalizeShortcuts(raw: unknown): WorkspaceShortcut[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((s) => s && typeof s === 'object').map((s: WorkspaceShortcut) => ({
+    id: String(s.id), appId: String(s.appId), label: String(s.label),
+    ...(s.icon ? { icon: String(s.icon) } : {}), ...(s.pinned ? { pinned: true } : {}),
+  }));
+}
+
+/** The spaces a layout from before them had: its two modes, what each asked
+ *  of the machine, and the one set of notes and shortcuts going to Work. */
+function legacySpaces(old: Record<string, unknown>): Space[] {
+  return [
+    { id: 'gaming', name: 'Gaming', icon: 'gamepad', perf: 'performance', recent: true, notes: '' },
+    { id: 'work', name: 'Work', icon: 'grid', perf: 'balanced', notes: String(old.notes ?? ''), ...(Array.isArray(old.shortcuts) ? { shortcuts: normalizeShortcuts(old.shortcuts) } : {}) },
+  ];
+}
+
+export function normalizeWorkspace(raw: unknown): Workspace {
+  const old = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const seen = new Set<string>();
+  let spaces: Space[] = Array.isArray(old.spaces) ? (old.spaces as Partial<Space>[]).filter((s) => s && typeof s === 'object').map((s, i) => {
+    let id = String(s.id || `space-${i}`);
+    while (seen.has(id)) id = `${id}-${i}`;
+    seen.add(id);
+    const shortcuts = normalizeShortcuts(s.shortcuts);
+    return {
+      id, name: String(s.name ?? '').slice(0, 40) || 'Space',
+      ...(s.icon ? { icon: String(s.icon) } : {}),
+      ...(PERF.includes(s.perf as PerfMode) ? { perf: s.perf } : {}),
+      ...(typeof s.palette === 'string' && /^(preset|saved):./.test(s.palette) ? { palette: s.palette } : {}),
+      ...(LAYOUT_MODES.includes(String(s.layoutMode)) ? { layoutMode: String(s.layoutMode) } : {}),
+      ...(s.recent ? { recent: true } : {}),
+      notes: String(s.notes ?? ''),
+      ...(shortcuts ? { shortcuts } : {}),
+    };
+  }) : [];
+  let space = String(old.space ?? '');
+  if (!spaces.length) {
+    spaces = legacySpaces(old);
+    space = old.mode === 'productivity' ? 'work' : 'gaming';
+  }
+  if (!spaces.some((s) => s.id === space)) space = spaces[0].id;
+  return {
+    space, spaces,
+    activate: old.activate === 'double' ? 'double' : 'single',
+    sticky: Array.isArray(old.sticky) ? [...new Set((old.sticky as unknown[]).map(String).filter(Boolean))] : [],
   };
 }
 

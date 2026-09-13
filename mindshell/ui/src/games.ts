@@ -1,4 +1,5 @@
 import * as bridge from './bridge';
+import { h } from './dom';
 import { store } from './state';
 import type { RunResult, WindowInfo } from './types';
 
@@ -34,7 +35,9 @@ export function runningWindow(game: Game): WindowInfo | undefined {
   const app = game.desktopId ? store.state.apps.find((a) => a.id === game.desktopId) : undefined;
   const ids = game.id.startsWith('steam:') ? [`steam_app_${game.id.slice(6)}`]
     : app ? [app.id.replace(/\.desktop$/, ''), ...(app.wmClass ? [app.wmClass] : [])] : [];
-  return store.state.windows.find((w) => ids.some((id) => w.app_id.toLowerCase() === id.toLowerCase()));
+  // Every space's windows: a game left running on another space is still
+  // running, and focusing it takes the desktop there.
+  return store.state.allWindows.find((w) => ids.some((id) => w.app_id.toLowerCase() === id.toLowerCase()));
 }
 
 export async function launchGame(game: Game): Promise<'focused' | 'launched'> {
@@ -56,7 +59,7 @@ export function nativeGames(): Game[] {
 }
 
 const KEY = 'mindos.library.v1';
-type Preferences = { favorites: string[]; launched: Record<string, number> };
+export type Preferences = { favorites: string[]; launched: Record<string, number> };
 export function libraryPreferences(): Preferences {
   try {
     const p = location.protocol === 'mindos:' ? store.state.layout.desktop.library || {} : JSON.parse(localStorage.getItem(KEY) || '{}');
@@ -70,4 +73,31 @@ export function saveLibraryPreferences(p: Preferences): void {
     return;
   }
   try { localStorage.setItem(KEY, JSON.stringify(p)); } catch { /* Storage may be disabled. */ }
+}
+
+/** When a game was last played: the launcher's own record, or when MindOS last started it. */
+export function playedAt(game: Game, prefs: Preferences = libraryPreferences()): number {
+  return Math.max(game.lastPlayed || 0, Number(prefs.launched[game.id]) || 0);
+}
+
+/** Box art for a game, with a drawn placeholder under it while (or if) it does not load. */
+export function gameArt(game: Game, cls: string): HTMLElement {
+  const box = h('div', { class: `game-art ${cls}`, 'aria-hidden': 'true' },
+    h('span', { class: 'game-art-index' }, sourceLabel[game.source] || game.source),
+    h('span', { class: 'game-art-letter' }, game.name.split(/\s+/).map((s) => s[0]).slice(0, 2).join('')),
+    h('span', { class: 'game-art-cross' }, '+'));
+  let hash = 0;
+  for (const ch of game.id) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  box.style.setProperty('--art-hue', String(Math.abs(hash) % 360));
+  const steamId = game.id.match(/^steam:(\d+)$/)?.[1];
+  const fallback = steamId ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamId}/header.jpg` : '';
+  if (game.art || fallback) {
+    const img = h('img', { src: game.art ? `mindos://shell/file/${encodeURIComponent(game.art)}` : fallback, alt: '', loading: 'lazy' });
+    img.onerror = () => {
+      if (fallback && img.src !== fallback) img.src = fallback;
+      else img.remove();
+    };
+    box.append(img);
+  }
+  return box;
 }

@@ -6,7 +6,7 @@ import { deepClone } from './dom';
 import { normalizeLayout } from './layout';
 import type { AudioState, HealthReport, Layout, LayoutModeInfo, LockState, MindNotice, MindStatus, Notification, NotifyState, OutputInfo, PolkitRequest, Prefs, ShellState, TrayItem, UpdateStatus, WindowInfo, AppInfo, VpnState, NetworkState } from './types';
 
-export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'desktopHome' | 'config' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth' | 'polkit' | 'game' | 'vpn' | 'network' | 'lock';
+export type StateKey = 'windows' | 'outputs' | 'apps' | 'tray' | 'layout' | 'editMode' | 'desktopHome' | 'config' | 'mind' | 'audio' | 'popups' | 'shortcut' | 'layoutMode' | 'prefs' | 'notify' | 'mindNotices' | 'mindUpdates' | 'mindHealth' | 'polkit' | 'game' | 'vpn' | 'network' | 'lock' | 'desk';
 
 type Cb = (state: ShellState) => void;
 
@@ -39,7 +39,9 @@ export class Store {
       host: raw.host ?? '',
       uptime: raw.uptime,
       outputs: raw.outputs ?? [],
-      windows: raw.windows ?? [],
+      windows: (raw.windows ?? []).filter((w) => !w.away),
+      allWindows: raw.windows ?? [],
+      desk: '',
       focused: raw.focused ?? null,
       apps: raw.apps ?? [],
       tray: raw.tray ?? [],
@@ -57,7 +59,11 @@ export class Store {
       lock: raw.lock,
     };
     bridge.on<{ windows: WindowInfo[]; focused: number | null }>('windows', (p) => {
-      this.state.windows = p.windows ?? [];
+      // Windows on another space are not on the screen, so everything that
+      // lists what is open (the task bar, the home screen) sees only the
+      // rest; `allWindows` still has them, for a game running elsewhere.
+      this.state.allWindows = p.windows ?? [];
+      this.state.windows = this.state.allWindows.filter((w) => !w.away);
       this.state.focused = p.focused ?? this.state.windows.find((w) => w.focused)?.id ?? null;
       this.emit('windows');
     });
@@ -148,6 +154,10 @@ export class Store {
     bridge.on<{ name: string }>('shortcut', (p) => {
       this.lastShortcut = p.name;
       this.emit('shortcut');
+    });
+    bridge.on<{ desk: string; sticky?: string[] }>('desk', (p) => {
+      this.state.desk = p.desk ?? '';
+      this.emit('desk');
     });
     bridge.on<LayoutModeInfo>('layout_mode', (p) => {
       this.layoutMode = { mode: p.mode, label: p.label, modes: p.modes ?? this.layoutMode?.modes };
